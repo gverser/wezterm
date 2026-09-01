@@ -32,7 +32,10 @@ impl crate::TermWindow {
                 )?;
             }
 
-            let border_left = border_dimensions.left.get() as f32;
+            // `border.left` also carries the sidebar's width. The decorative
+            // frame border belongs outboard of the sidebar, so paint only the
+            // part that isn't the sidebar; the sidebar draws its own area.
+            let border_left = border_dimensions.left.get() as f32 - self.sidebar_width();
             if border_left > 0.0 {
                 self.filled_rectangle(
                     layers,
@@ -78,11 +81,19 @@ impl crate::TermWindow {
         Ok(())
     }
 
+    /// The inset between the window edge and the terminal content area.
+    ///
+    /// `sidebar_width` is folded into the left inset: every consumer of this
+    /// value -- the terminal geometry in `resize.rs`, the pane and split origins
+    /// in `render/`, the tab bar's starting x, and the mouse coordinate mapping
+    /// in `mouseevent.rs` -- already treats `border.left` as the left edge of
+    /// the content area, so widening it moves all of them together.
     pub fn get_os_border_impl(
         os_parameters: &Option<window::parameters::Parameters>,
         config: &ConfigHandle,
         dimensions: &crate::Dimensions,
         render_metrics: &RenderMetrics,
+        sidebar_width: f32,
     ) -> window::parameters::Border {
         let mut border = os_parameters
             .as_ref()
@@ -134,6 +145,8 @@ impl crate::TermWindow {
                 .ceil() as usize,
         );
 
+        border.left += ULength::new(sidebar_width.max(0.).ceil() as usize);
+
         border
     }
 
@@ -143,6 +156,7 @@ impl crate::TermWindow {
             &self.config,
             &self.dimensions,
             &self.render_metrics,
+            self.sidebar_width(),
         )
     }
 }

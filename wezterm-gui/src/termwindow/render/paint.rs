@@ -275,6 +275,14 @@ impl crate::TermWindow {
         self.paint_window_borders(&mut layers)
             .context("paint_window_borders")?;
         drop(layers);
+
+        if self.sidebar_is_visible() {
+            // Cloning the palette costs nothing when the sidebar is off, and
+            // `palette()` needs &mut self to populate its cache.
+            let palette = self.palette().clone();
+            self.paint_sidebar(&palette).context("paint_sidebar")?;
+        }
+
         self.paint_modal().context("paint_modal")?;
 
         Ok(())

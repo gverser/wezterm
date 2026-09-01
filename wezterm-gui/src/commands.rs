@@ -2011,6 +2011,24 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Edit"],
             icon: None,
         },
+        ToggleSessionSidebar => CommandDef {
+            brief: "Toggle Session Sidebar".into(),
+            doc: "Show or hide the session sidebar along the left edge of the window".into(),
+            // No default binding: the sidebar is opt-in, and claiming a chord
+            // for it would collide with existing user bindings.
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["View"],
+            icon: Some("cod_layout_sidebar_left"),
+        },
+        FocusSessionSidebarSearch => CommandDef {
+            brief: "Search Sessions".into(),
+            doc: "Focus the session sidebar's search box".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["View"],
+            icon: Some("md_magnify"),
+        },
     })
 }
 
@@ -2063,6 +2081,8 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ScrollByPage(NotNan::new(1.0).unwrap()),
         ScrollToTop,
         ScrollToBottom,
+        ToggleSessionSidebar,
+        FocusSessionSidebarSearch,
         // ----------------- Window
         ToggleFullScreen,
         ToggleAlwaysOnTop,

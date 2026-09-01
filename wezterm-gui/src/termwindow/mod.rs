@@ -81,6 +81,7 @@ mod prevcursor;
 pub mod render;
 pub mod resize;
 mod selection;
+pub mod sidebar;
 pub mod spawn;
 pub mod webgpu;
 use crate::spawn::SpawnWhere;
@@ -159,6 +160,13 @@ pub enum UIItemType {
     ScrollThumb,
     BelowScrollThumb,
     Split(PositionedSplit),
+    /// The sidebar itself; rows are drawn on top of it, so this only catches
+    /// clicks in the empty area below the tree.
+    SidebarBackground,
+    SidebarNode(crate::sessions::NodeId),
+    SidebarSearch,
+    SidebarResizeHandle,
+    SidebarMenuItem(crate::termwindow::sidebar::MenuAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -394,6 +402,11 @@ pub struct TermWindow {
     show_scroll_bar: bool,
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
+
+    /// Cached sidebar geometry, paired with the session store generation it was
+    /// built from. Rebuilding it every frame means re-shaping every row's text,
+    /// which roughly doubled frame time; see `invalidate_sidebar`.
+    sidebar_computed: Option<(u64, Vec<box_model::ComputedElement>)>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -443,6 +456,10 @@ pub struct TermWindow {
 
     ui_items: Vec<UIItem>,
     dragging: Option<(UIItem, MouseEvent)>,
+
+    /// Per-window UI state for the session sidebar. The tree it displays is
+    /// process-wide; see `crate::sessions::store::with_store`.
+    pub sidebar: crate::termwindow::sidebar::SidebarState,
 
     modal: RefCell<Option<Rc<dyn Modal>>>,
 
@@ -662,7 +679,30 @@ impl TermWindow {
             dpi,
         };
 
-        let border = Self::get_os_border_impl(&None, &config, &dimensions, &render_metrics);
+        // We don't have a `self` to ask for the sidebar width yet, and the
+        // sidebar starts out at its configured width with nothing collapsed.
+        let initial_sidebar_width = if config.session_sidebar_enabled {
+            let context = DimensionContext {
+                dpi: dimensions.dpi as f32,
+                pixel_max: dimensions.pixel_width as f32,
+                pixel_cell: render_metrics.cell_size.width as f32,
+            };
+            crate::sessions::clamp_width(
+                config.session_sidebar_width.evaluate_as_pixels(context),
+                dimensions.pixel_width as f32,
+                context.pixel_cell * crate::termwindow::sidebar::MIN_SIDEBAR_CELLS,
+            )
+        } else {
+            0.
+        };
+
+        let border = Self::get_os_border_impl(
+            &None,
+            &config,
+            &dimensions,
+            &render_metrics,
+            initial_sidebar_width,
+        );
 
         dimensions.pixel_height += (border.top + border.bottom).get() as usize;
         dimensions.pixel_width += (border.left + border.right).get() as usize;
@@ -716,6 +756,7 @@ impl TermWindow {
             show_scroll_bar: config.enable_scroll_bar,
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
+            sidebar_computed: None,
             right_status: String::new(),
             left_status: String::new(),
             last_mouse_coords: (0, -1),
@@ -787,6 +828,7 @@ impl TermWindow {
             semantic_zones: HashMap::new(),
             ui_items: vec![],
             dragging: None,
+            sidebar: Default::default(),
             last_ui_item: None,
             is_click_to_focus_window: false,
             key_table_state: KeyTableState::default(),
@@ -995,7 +1037,21 @@ impl TermWindow {
                 } else {
                     log::trace!("DeadKeyStatus now: {:?}", status);
                 }
-                self.dead_key_status = status;
+                // The composing string is drawn at the cursor of whoever owns
+                // the keyboard. When that is a sidebar field, keeping it in
+                // `dead_key_status` would draw the half-typed text in the
+                // terminal instead.
+                if self.sidebar_has_keyboard_focus() {
+                    self.sidebar.composing = match &status {
+                        DeadKeyStatus::Composing(text) => Some(text.clone()),
+                        DeadKeyStatus::None => None,
+                    };
+                    self.dead_key_status = DeadKeyStatus::None;
+                    self.invalidate_sidebar();
+                } else {
+                    self.sidebar.composing = None;
+                    self.dead_key_status = status;
+                }
                 self.update_title();
                 // Ensure that we repaint so that any composing
                 // text is updated
@@ -1119,6 +1175,10 @@ impl TermWindow {
                 self.shape_generation += 1;
                 self.shape_cache.borrow_mut().clear();
                 self.invalidate_modal();
+                // Shaping asks for this when it had to load a fallback font,
+                // which is the normal case for CJK session names: the first
+                // attempt produced no usable glyphs and has to be redone.
+                self.invalidate_sidebar_cache();
                 window.invalidate();
             }
             TermWindowNotif::PerformAssignment {
@@ -2110,6 +2170,15 @@ impl TermWindow {
     }
 
     fn update_text_cursor(&mut self, pos: &PositionedPane) {
+        // While the sidebar owns the keyboard, the IME candidate window belongs
+        // beside the field being typed into, not beside the terminal cursor.
+        if let Some(rect) = self.sidebar_text_cursor_rect() {
+            if let Some(win) = self.window.as_ref() {
+                win.set_text_cursor_position(rect);
+            }
+            return;
+        }
+
         if let Some(win) = self.window.as_ref() {
             let cursor = pos.pane.get_cursor_position();
             let top = pos.pane.get_dimensions().physical_top;
@@ -3162,6 +3231,8 @@ impl TermWindow {
             PromptInputLine(args) => self.show_prompt_input_line(args),
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
+            ToggleSessionSidebar => self.toggle_session_sidebar(),
+            FocusSessionSidebarSearch => self.focus_session_sidebar_search(),
         };
         Ok(PerformAssignmentResult::Handled)
     }

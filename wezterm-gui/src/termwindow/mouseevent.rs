@@ -43,7 +43,12 @@ impl super::TermWindow {
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
             | UIItemType::ScrollThumb
-            | UIItemType::Split(_) => {}
+            | UIItemType::Split(_)
+            | UIItemType::SidebarBackground
+            | UIItemType::SidebarNode(_)
+            | UIItemType::SidebarSearch
+            | UIItemType::SidebarResizeHandle
+            | UIItemType::SidebarMenuItem(_) => {}
         }
     }
 
@@ -54,7 +59,12 @@ impl super::TermWindow {
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
             | UIItemType::ScrollThumb
-            | UIItemType::Split(_) => {}
+            | UIItemType::Split(_)
+            | UIItemType::SidebarBackground
+            | UIItemType::SidebarNode(_)
+            | UIItemType::SidebarSearch
+            | UIItemType::SidebarResizeHandle
+            | UIItemType::SidebarMenuItem(_) => {}
         }
     }
 
@@ -129,9 +139,14 @@ impl super::TermWindow {
                     // Completed a window drag
                     return;
                 }
-                if press == &MousePress::Left && self.dragging.take().is_some() {
-                    // Completed a drag
-                    return;
+                if press == &MousePress::Left {
+                    if let Some((item, _)) = self.dragging.take() {
+                        // Completed a drag
+                        if item.item_type == UIItemType::SidebarResizeHandle {
+                            self.commit_sidebar_resize(context);
+                        }
+                        return;
+                    }
                 }
             }
 
@@ -215,6 +230,19 @@ impl super::TermWindow {
         } else {
             None
         };
+
+        if matches!(event.kind, WMEK::Press(_)) {
+            // Any press that isn't on the context menu dismisses it. The menu
+            // is drawn last, so it is what `resolve_ui_item` finds first when
+            // the press really is on it.
+            let on_menu = matches!(
+                ui_item.as_ref().map(|item| &item.item_type),
+                Some(UIItemType::SidebarMenuItem(_))
+            );
+            if !on_menu {
+                self.close_sidebar_menu();
+            }
+        }
 
         if let Some(item) = ui_item.clone() {
             if capture_mouse {
@@ -348,6 +376,9 @@ impl super::TermWindow {
             UIItemType::ScrollThumb => {
                 self.drag_scroll_thumb(item, start_event, event, context);
             }
+            UIItemType::SidebarResizeHandle => {
+                self.drag_sidebar_splitter(item, start_event, event, context);
+            }
             _ => {
                 log::error!("drag not implemented for {:?}", item);
             }
@@ -381,6 +412,13 @@ impl super::TermWindow {
             }
             UIItemType::CloseTab(idx) => {
                 self.mouse_event_close_tab(idx, event, context);
+            }
+            UIItemType::SidebarBackground
+            | UIItemType::SidebarNode(_)
+            | UIItemType::SidebarSearch
+            | UIItemType::SidebarResizeHandle
+            | UIItemType::SidebarMenuItem(_) => {
+                self.mouse_event_sidebar(item, event, context);
             }
         }
     }

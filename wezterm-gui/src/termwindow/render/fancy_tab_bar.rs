@@ -53,6 +53,11 @@ const PLUS_BUTTON: &[Poly] = &[
 impl crate::TermWindow {
     pub fn invalidate_fancy_tab_bar(&mut self) {
         self.fancy_tab_bar.take();
+        // The sidebar caches a ComputedElement too, and its glyphs are sprites
+        // in the same texture atlas, so it goes stale under exactly the same
+        // conditions: atlas recreation, resize, scale and config changes.
+        // Keeping the two together means new call sites can't forget one.
+        self.sidebar_computed.take();
     }
 
     pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {

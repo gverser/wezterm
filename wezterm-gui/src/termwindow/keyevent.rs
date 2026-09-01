@@ -270,6 +270,18 @@ impl super::TermWindow {
 
         if is_down {
             if only_key_bindings == OnlyKeyBindings::No {
+                // The sidebar captures the keyboard only while its search or
+                // rename field is active, so the terminal keeps receiving keys
+                // the rest of the time. See `termwindow::sidebar`.
+                if self.sidebar.focus.is_some() {
+                    if let Key::Code(term_key) = self.win_key_code_to_termwiz_key_code(keycode) {
+                        if self.sidebar_key_down(&term_key, raw_modifiers.remove_positional_mods())
+                        {
+                            return true;
+                        }
+                    }
+                }
+
                 if let Some(modal) = self.get_modal() {
                     if let Key::Code(term_key) = self.win_key_code_to_termwiz_key_code(keycode) {
                         match modal.key_down(term_key, raw_modifiers.remove_positional_mods(), self)
@@ -664,6 +676,12 @@ impl super::TermWindow {
                     self.key_table_state.did_process_key();
                 }
 
+                if self.sidebar.focus.is_some() {
+                    if window_key.key_is_down && self.sidebar_key_down(&key, modifiers) {
+                        return;
+                    }
+                }
+
                 if let Some(modal) = self.get_modal() {
                     if window_key.key_is_down {
                         modal.key_down(key, modifiers, self).ok();
@@ -732,6 +750,19 @@ impl super::TermWindow {
                     return;
                 }
                 self.key_table_state.did_process_key();
+
+                // An IME delivers its committed text here rather than as key
+                // codes, and it composes plain ASCII too while it is in CJK
+                // mode. The sidebar is window chrome rather than a pane, so it
+                // has to be offered the text explicitly; otherwise every
+                // keystroke typed into its search or rename field lands in the
+                // terminal instead.
+                if self.sidebar_has_keyboard_focus() {
+                    self.sidebar_insert_text(&s);
+                    context.invalidate();
+                    return;
+                }
+
                 if self.config.debug_key_events {
                     log::info!("send to pane string={:?}", s);
                 }

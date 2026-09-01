@@ -75,6 +75,15 @@ As features stabilize some brief notes about them will accumulate here.
   easier to spot the remaining candidates. Thanks to @mr-felixoid and @bew! #7752
 
 #### New
+* Session sidebar: an optional tree of saved sessions down the left edge of the
+  window, enabled with
+  [session_sidebar_enabled](config/lua/config/session_sidebar_enabled.md) and
+  sized with
+  [session_sidebar_width](config/lua/config/session_sidebar_width.md). Each
+  entry is bound to its own workspace, so every session keeps its own set of
+  tabs. See also
+  [ToggleSessionSidebar](config/lua/keyassignment/ToggleSessionSidebar.md) and
+  [FocusSessionSidebarSearch](config/lua/keyassignment/FocusSessionSidebarSearch.md).
 * [command_palette_line_height](config/lua/config/command_palette_line_height.md)
   option to scale the vertical spacing of rows in the command palette,
   independently of [line_height](config/lua/config/line_height.md) which is for terminal cells only.

@@ -175,6 +175,17 @@ pub struct Config {
     #[dynamic(default = "default_command_palette_bg_color")]
     pub command_palette_bg_color: RgbaColor,
 
+    /// Whether to show the session sidebar down the left edge of the window
+    #[dynamic(default = "default_true")]
+    pub session_sidebar_enabled: bool,
+
+    /// How wide the session sidebar should be
+    #[dynamic(
+        try_from = "crate::units::PixelUnit",
+        default = "default_session_sidebar_width"
+    )]
+    pub session_sidebar_width: Dimension,
+
     /// Font to use for PaneSelect
     #[dynamic(default)]
     pub pane_select_font: Option<TextStyle>,
@@ -1666,6 +1677,10 @@ fn default_command_palette_fg_color() -> RgbaColor {
 
 fn default_command_palette_bg_color() -> RgbaColor {
     (0x33, 0x33, 0x33).into()
+}
+
+fn default_session_sidebar_width() -> Dimension {
+    Dimension::Cells(18.)
 }
 
 fn default_swallow_mouse_click_on_window_focus() -> bool {
