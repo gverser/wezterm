@@ -1,0 +1,17 @@
+[package]
+name = "wezterm-sessions"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/wezterm/wezterm"
+description = "Saved session tree shared by the gui sidebar and the bridge"
+license = "MIT"
+
+[dependencies]
+anyhow.workspace = true
+config.workspace = true
+log.workspace = true
+serde = {workspace=true, features = ["derive"]}
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

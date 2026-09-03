@@ -5,7 +5,7 @@
 //! this one costs the user real work, so writes are atomic and a file we can't
 //! parse is quarantined rather than overwritten.
 
-use crate::sessions::tree::SessionTree;
+use crate::tree::SessionTree;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -156,7 +156,7 @@ pub fn with_store<R>(func: impl FnOnce(&mut SessionStore) -> R) -> R {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::sessions::tree::{NodeId, SessionNode, SessionSpawn};
+    use crate::tree::{NodeId, SessionNode, SessionSpawn};
 
     fn scratch() -> tempfile::TempDir {
         tempfile::tempdir().expect("to make a temp dir")

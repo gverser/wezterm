@@ -1,13 +1,14 @@
-//! The session tree that backs the left sidebar.
+//! Gui-side helpers for the session sidebar.
 //!
-//! `tree` is the data model, `store` is its persistence. Both are free of
-//! rendering concerns; the drawing and event handling live in
-//! `termwindow::sidebar` and `termwindow::render::sidebar`.
+//! The data model and its persistence live in the `wezterm-sessions` crate so
+//! that the mux-server bridge can share them. What stays here is the sidebar's
+//! own layout arithmetic and prompt copy, which is a rendering concern; the
+//! drawing and event handling live in `termwindow::sidebar` and
+//! `termwindow::render::sidebar`.
 
-pub mod store;
-pub mod tree;
-
-pub use tree::{NodeId, NodeKind, RowKind, SessionNode, SessionSpawn, VisibleRow};
+pub use wezterm_sessions::{
+    store, NodeId, NodeKind, RowKind, SessionNode, SessionSpawn, VisibleRow,
+};
 
 use std::ops::Range;
 
