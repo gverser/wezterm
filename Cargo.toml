@@ -7,6 +7,7 @@ members = [
   "deps/cairo",
   "wezterm",
   "wezterm-blob-leases",
+  "wezterm-bridge",
   "wezterm-cell",
   "wezterm-escape-parser",
   "wezterm-dynamic",
@@ -241,6 +242,7 @@ wayland-protocols = "0.32"
 wayland-protocols-plasma = { version="0.3.6", features=["client"] }
 wezterm-bidi = { version="0.2.3", path = "bidi", default-features=false}
 wezterm-blob-leases = { version="0.1.1", path = "wezterm-blob-leases"}
+wezterm-bridge = { path = "wezterm-bridge" }
 wezterm-cell = { path = "wezterm-cell"}
 wezterm-char-props = { path = "wezterm-char-props", default-features=false }
 wezterm-client = { path = "wezterm-client" }

@@ -6923,6 +6923,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "wezterm-bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "log",
+ "mux",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "termwiz",
+ "wezterm-sessions",
+]
+
+[[package]]
 name = "wezterm-cell"
 version = "0.1.0"
 dependencies = [

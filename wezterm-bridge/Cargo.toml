@@ -1,0 +1,21 @@
+[package]
+name = "wezterm-bridge"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/wezterm/wezterm"
+description = "Local IPC bridge exposing mux panes to an external client"
+license = "MIT"
+
+[dependencies]
+anyhow.workspace = true
+config.workspace = true
+log.workspace = true
+mux.workspace = true
+parking_lot.workspace = true
+serde = {workspace=true, features = ["derive"]}
+serde_json.workspace = true
+termwiz.workspace = true
+wezterm-sessions.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
