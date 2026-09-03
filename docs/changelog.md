@@ -81,7 +81,9 @@ As features stabilize some brief notes about them will accumulate here.
   sized with
   [session_sidebar_width](config/lua/config/session_sidebar_width.md). Each
   entry is bound to its own workspace, so every session keeps its own set of
-  tabs. See also
+  tabs, and shows how many terminals it is holding. A single click selects; a
+  double click opens. Closing the window names any sessions running out of
+  sight before taking them with it. See also
   [ToggleSessionSidebar](config/lua/keyassignment/ToggleSessionSidebar.md) and
   [FocusSessionSidebarSearch](config/lua/keyassignment/FocusSessionSidebarSearch.md).
 * [command_palette_line_height](config/lua/config/command_palette_line_height.md)

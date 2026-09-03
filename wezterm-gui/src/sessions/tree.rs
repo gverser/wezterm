@@ -298,6 +298,22 @@ impl SessionTree {
         }
     }
 
+    /// Every session node paired with its name, in display order. Folders are
+    /// skipped: only sessions own a workspace.
+    pub fn sessions_with_names(&self) -> Vec<(NodeId, String)> {
+        fn walk(nodes: &[SessionNode], out: &mut Vec<(NodeId, String)>) {
+            for node in nodes {
+                if !node.is_folder() {
+                    out.push((node.id, node.name.clone()));
+                }
+                walk(node.children(), out);
+            }
+        }
+        let mut out = vec![];
+        walk(&self.roots, &mut out);
+        out
+    }
+
     /// The parent of `id`, or None when it is a root or absent.
     pub fn parent_of(&self, id: NodeId) -> Option<NodeId> {
         fn walk(nodes: &[SessionNode], id: NodeId, parent: Option<NodeId>) -> Option<NodeId> {
@@ -520,6 +536,27 @@ mod test {
         assert!(tree.rename(NodeId(2), "renamed"));
         assert_eq!(tree.find(NodeId(2)).unwrap().name, "renamed");
         assert_eq!(NodeId(2).workspace_name(), "session:2");
+    }
+
+    #[test]
+    fn sessions_with_names_skips_folders_and_descends() {
+        let tree = sample();
+        assert_eq!(
+            tree.sessions_with_names(),
+            vec![
+                (NodeId(2), "alpha".to_string()),
+                (NodeId(3), "beta".to_string()),
+                (NodeId(4), "gamma".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tree_of_folders_has_no_sessions() {
+        let mut tree = SessionTree::new();
+        let id = tree.alloc_id();
+        tree.roots.push(SessionNode::folder(id, "empty"));
+        assert!(tree.sessions_with_names().is_empty());
     }
 
     #[test]

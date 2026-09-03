@@ -42,9 +42,102 @@ pub fn clamp_width(desired: f32, window_width: f32, min_width: f32) -> f32 {
     desired.max(min_width).min(max_width)
 }
 
+/// The prompt shown when closing a window would also take workspaces the user
+/// cannot see.
+///
+/// `hidden` is (label, terminal count). Returns None when there is nothing to
+/// warn about, which is the signal to close the ordinary way.
+pub fn close_prompt(hidden: &[(String, usize)]) -> Option<String> {
+    if hidden.is_empty() {
+        return None;
+    }
+
+    let terminals: usize = hidden.iter().map(|(_, n)| n).sum();
+    let mut text = format!(
+        "{} terminal{} still running out of sight:
+",
+        terminals,
+        if terminals == 1 { "" } else { "s" },
+    );
+
+    // A long list would push the buttons off the bottom of a short window.
+    const MAX_LISTED: usize = 8;
+    for (label, count) in hidden.iter().take(MAX_LISTED) {
+        text.push_str(&format!(
+            "
+    {label}  ({count})"
+        ));
+    }
+    if hidden.len() > MAX_LISTED {
+        text.push_str(&format!(
+            "
+    ... and {} more",
+            hidden.len() - MAX_LISTED
+        ));
+    }
+
+    text.push_str(
+        "
+
+Close them all and quit?",
+    );
+    Some(text)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn hidden(items: &[(&str, usize)]) -> Vec<(String, usize)> {
+        items.iter().map(|(n, c)| (n.to_string(), *c)).collect()
+    }
+
+    #[test]
+    fn nothing_hidden_means_no_prompt() {
+        assert_eq!(close_prompt(&[]), None);
+    }
+
+    #[test]
+    fn a_single_terminal_reads_singular() {
+        let text = close_prompt(&hidden(&[("casb", 1)])).unwrap();
+        assert!(
+            text.contains("1 terminal still running out of sight"),
+            "{text}"
+        );
+        assert!(text.contains("casb  (1)"), "{text}");
+    }
+
+    #[test]
+    fn totals_are_summed_across_workspaces() {
+        let text = close_prompt(&hidden(&[("casb", 2), ("wezterm", 3)])).unwrap();
+        assert!(
+            text.contains("5 terminals still running out of sight"),
+            "{text}"
+        );
+        assert!(text.contains("casb  (2)"), "{text}");
+        assert!(text.contains("wezterm  (3)"), "{text}");
+    }
+
+    #[test]
+    fn a_long_list_is_truncated() {
+        let many: Vec<(String, usize)> = (0..12).map(|i| (format!("s{i}"), 1)).collect();
+        let text = close_prompt(&many).unwrap();
+        assert!(
+            text.contains("12 terminals still running out of sight"),
+            "{text}"
+        );
+        assert!(text.contains("... and 4 more"), "{text}");
+        assert!(
+            !text.contains("s8"),
+            "entries past the cap are not listed: {text}"
+        );
+    }
+
+    #[test]
+    fn always_asks_the_question() {
+        let text = close_prompt(&hidden(&[("casb", 1)])).unwrap();
+        assert!(text.ends_with("Close them all and quit?"), "{text}");
+    }
 
     #[test]
     fn shows_everything_when_it_fits() {

@@ -25,11 +25,20 @@ whatever was running under the previous one alive in the background.
 
 | Action | Result |
 |--------|--------|
-| Click a session | Switch to its workspace, opening a terminal if it has none yet |
-| Double click a session | Switch to it and open an additional tab |
+| Click a session | Select it, and switch to it if it is already running |
+| Double click a session | Open it: start it if it isn't running, otherwise add a tab |
 | Click a folder | Expand or collapse it |
 | Right click | New session, new folder, rename, edit, delete |
 | Drag the right edge | Change the sidebar's width |
+| Click the chevron | Collapse the sidebar to a rail, and back |
+
+A single click never starts anything. With a tree of any size, selecting an
+entry to look at it would otherwise leave a shell running behind every one you
+touched.
+
+Entries that are running show how many terminals they hold, on the right of the
+row. Sessions stay alive in the background once opened, so this is the only
+indication of what is still running behind the tree.
 
 Renaming happens in place: choosing *Rename* turns the row into an input field
 that takes the keyboard until you press <kbd>Enter</kbd> or <kbd>Esc</kbd>.
@@ -37,13 +46,18 @@ Renaming never disturbs terminals that are already running under the entry,
 because the workspace is keyed on the entry's identity rather than its name.
 
 The tree is stored as `sessions.json` in wezterm's data directory
-(`~/.local/share/wezterm` on unix, `%LOCALAPPDATA%\wezterm` on Windows) and is
+(`~/.local/share/wezterm` on unix, `%APPDATA%\wezterm` on Windows) and is
 written out whenever you change it. If that file can't be parsed it is preserved
 as `sessions.json.bad` and the sidebar starts empty rather than overwriting it.
 
 Removing an entry from the tree does not terminate anything running under it;
 the workspace survives and remains reachable from
 [ShowLauncher](../keyassignment/ShowLauncher.md).
+
+Closing the window asks first when sessions are running out of sight, naming
+them and their terminal counts, and closes them all on confirmation. Without
+that, closing the window would kill only the session on screen and leave the
+others running with nothing to reach them.
 
 The sidebar takes its colors from the
 [tab_bar](../../appearance.md#tab-bar-appearance-colors) color settings.

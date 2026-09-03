@@ -61,7 +61,7 @@ impl crate::TermWindow {
     /// Returns None when the sidebar does not own the keyboard, which is the
     /// signal to fall back to the terminal cursor.
     pub fn sidebar_text_cursor_rect(&self) -> Option<Rect> {
-        if !self.sidebar_is_visible() {
+        if !self.sidebar_is_expanded() {
             return None;
         }
 
@@ -113,7 +113,7 @@ impl crate::TermWindow {
     }
 
     pub fn paint_sidebar(&mut self, palette: &ColorPalette) -> anyhow::Result<()> {
-        if !self.sidebar_is_visible() {
+        if !self.sidebar_is_enabled() {
             return Ok(());
         }
 
@@ -160,6 +160,10 @@ impl crate::TermWindow {
         let colors = self.sidebar_colors();
         let pad = metrics.cell_size.width as f32 * 0.5;
         let capacity = self.sidebar_row_capacity();
+
+        if !self.sidebar_is_expanded() {
+            return Ok(vec![self.sidebar_rail(&font, &metrics, &colors, bounds)?]);
+        }
 
         let mut children = vec![self.sidebar_search_element(&font, &colors, bounds.width(), pad)];
 
@@ -267,10 +271,32 @@ impl crate::TermWindow {
             colors.inactive_tab()
         };
 
-        Element::new(font, ElementContent::Text(text))
+        let hover = colors.inactive_tab_hover();
+        let field_colors = ElementColors {
+            border: BorderColor::default(),
+            bg: style.bg_color.to_linear().into(),
+            text: style.fg_color.to_linear().into(),
+        };
+
+        let label = Element::new(font, ElementContent::Text(text))
+            .item_type(UIItemType::SidebarSearch)
+            .colors(field_colors.clone());
+
+        // The only always-visible way to collapse the sidebar; the key
+        // assignment deliberately has no default binding.
+        let chevron = Element::new(font, ElementContent::Text("\u{00ab}".to_string()))
+            .float(Float::Right)
+            .item_type(UIItemType::SidebarCollapseToggle)
+            .colors(field_colors.clone())
+            .hover_colors(Some(ElementColors {
+                border: BorderColor::default(),
+                bg: hover.bg_color.to_linear().into(),
+                text: hover.fg_color.to_linear().into(),
+            }));
+
+        Element::new(font, ElementContent::Children(vec![label, chevron]))
             .display(DisplayType::Block)
             .line_height(Some(SIDEBAR_LINE_HEIGHT))
-            .item_type(UIItemType::SidebarSearch)
             .padding(BoxDimension {
                 left: Dimension::Pixels(pad),
                 right: Dimension::Pixels(pad),
@@ -278,11 +304,60 @@ impl crate::TermWindow {
                 bottom: Dimension::Pixels(0.),
             })
             .min_width(Some(Dimension::Pixels((width - pad * 2.).max(0.))))
+            .colors(field_colors)
+    }
+
+    /// What is left when the sidebar is collapsed: a sliver carrying the
+    /// arrow that brings it back.
+    ///
+    /// Collapsing to zero width would strand the user with no way to reopen it
+    /// short of the command palette.
+    fn sidebar_rail(
+        &self,
+        font: &Rc<LoadedFont>,
+        metrics: &RenderMetrics,
+        colors: &TabBarColors,
+        bounds: RectF,
+    ) -> anyhow::Result<ComputedElement> {
+        let style = colors.inactive_tab();
+        let hover = colors.inactive_tab_hover();
+
+        let arrow = Element::new(font, ElementContent::Text("\u{00bb}".to_string()))
+            .display(DisplayType::Block)
+            .line_height(Some(SIDEBAR_LINE_HEIGHT))
+            .item_type(UIItemType::SidebarCollapseToggle)
+            .min_width(Some(Dimension::Pixels(bounds.width())))
+            .min_height(Some(Dimension::Pixels(bounds.height())))
             .colors(ElementColors {
                 border: BorderColor::default(),
-                bg: style.bg_color.to_linear().into(),
+                bg: colors.background().to_linear().into(),
                 text: style.fg_color.to_linear().into(),
             })
+            .hover_colors(Some(ElementColors {
+                border: BorderColor::default(),
+                bg: hover.bg_color.to_linear().into(),
+                text: hover.fg_color.to_linear().into(),
+            }));
+
+        self.compute_element(
+            &LayoutContext {
+                height: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: bounds.height(),
+                    pixel_cell: metrics.cell_size.height as f32,
+                },
+                width: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: bounds.max_x(),
+                    pixel_cell: metrics.cell_size.width as f32,
+                },
+                bounds,
+                metrics,
+                gl_state: self.render_state.as_ref().unwrap(),
+                zindex: 10,
+            },
+            &arrow,
+        )
     }
 
     /// A non-interactive line of explanatory text.
@@ -355,7 +430,31 @@ impl crate::TermWindow {
 
         let indent = row.depth as f32 * metrics.cell_size.width as f32 * INDENT_CELLS;
 
-        Element::new(font, ElementContent::Text(text))
+        let row_colors = ElementColors {
+            border: BorderColor::default(),
+            bg: style.bg_color.to_linear().into(),
+            text: text_color.to_linear().into(),
+        };
+
+        let mut parts =
+            vec![Element::new(font, ElementContent::Text(text)).colors(row_colors.clone())];
+
+        // How many terminals this session is holding. Sessions keep running in
+        // the background once opened, so without this there is no way to see
+        // what is still alive behind the tree.
+        let running = match row.kind {
+            RowKind::Session => self.session_terminal_count(row.id),
+            RowKind::Folder { .. } => 0,
+        };
+        if running > 0 {
+            parts.push(
+                Element::new(font, ElementContent::Text(format!("{running}")))
+                    .float(Float::Right)
+                    .colors(row_colors.clone()),
+            );
+        }
+
+        Element::new(font, ElementContent::Children(parts))
             .display(DisplayType::Block)
             .line_height(Some(SIDEBAR_LINE_HEIGHT))
             .item_type(UIItemType::SidebarNode(row.id))
@@ -366,11 +465,7 @@ impl crate::TermWindow {
                 bottom: Dimension::Pixels(0.),
             })
             .min_width(Some(Dimension::Pixels((width - pad * 2. - indent).max(0.))))
-            .colors(ElementColors {
-                border: BorderColor::default(),
-                bg: style.bg_color.to_linear().into(),
-                text: text_color.to_linear().into(),
-            })
+            .colors(row_colors)
             .hover_colors(Some(ElementColors {
                 border: BorderColor::default(),
                 bg: hover.bg_color.to_linear().into(),

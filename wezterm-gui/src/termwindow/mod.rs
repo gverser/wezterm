@@ -167,6 +167,8 @@ pub enum UIItemType {
     SidebarSearch,
     SidebarResizeHandle,
     SidebarMenuItem(crate::termwindow::sidebar::MenuAction),
+    /// The chevron that collapses the sidebar to a rail and back.
+    SidebarCollapseToggle,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -498,14 +500,70 @@ impl TermWindow {
         }
     }
 
+    /// Kill the mux windows that no GUI window is showing.
+    ///
+    /// The sidebar opens workspaces in the background, so closing the visible
+    /// window would otherwise leave their shells running with nothing on screen
+    /// to reach them and the process alive but invisible. Windows that another
+    /// GUI window *is* showing are left alone: those are ordinary extra windows
+    /// with close buttons of their own.
+    fn kill_unattended_windows(&self) {
+        let mux = Mux::get();
+        let front_end = front_end();
+        for window_id in mux.iter_windows() {
+            if window_id == self.mux_window_id {
+                // Killed by the caller.
+                continue;
+            }
+            if front_end.gui_window_for_mux_window(window_id).is_none() {
+                mux.kill_window(window_id);
+            }
+        }
+    }
+
     fn close_requested(&mut self, window: &Window) {
         let mux = Mux::get();
+
+        // The sidebar creates workspaces in the background, so "close this
+        // window" has to account for sessions the user can't currently see.
+        let unattended = self.unattended_workspaces();
+        let prompt = crate::sessions::close_prompt(&unattended);
+
         match self.config.window_close_confirmation {
             WindowCloseConfirmation::NeverPrompt => {
-                // Immediately kill the tabs and allow the window to close
+                // Immediately kill the tabs and allow the window to close.
+                // Background sessions go too: not prompting is a request to
+                // skip the question, not to leave a headless process behind.
+                self.kill_unattended_windows();
                 mux.kill_window(self.mux_window_id);
                 window.close();
                 front_end().forget_known_window(window);
+            }
+            WindowCloseConfirmation::AlwaysPrompt if prompt.is_some() => {
+                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                    Some(tab) => tab,
+                    None => {
+                        self.kill_unattended_windows();
+                        mux.kill_window(self.mux_window_id);
+                        window.close();
+                        front_end().forget_known_window(window);
+                        return;
+                    }
+                };
+                let message = prompt.expect("checked by the match guard");
+                let mux_window_id = self.mux_window_id;
+                let window = self.window.clone().unwrap();
+                let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
+                    crate::overlay::session_edit::confirm_close_sessions(
+                        term,
+                        message,
+                        mux_window_id,
+                        window,
+                        tab_id,
+                    )
+                });
+                self.assign_overlay(tab.tab_id(), overlay);
+                promise::spawn::spawn(future).detach();
             }
             WindowCloseConfirmation::AlwaysPrompt => {
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
@@ -1258,128 +1316,147 @@ impl TermWindow {
             TermWindowNotif::CancelOverlayForTab { tab_id, pane_id } => {
                 self.cancel_overlay_for_tab(tab_id, pane_id);
             }
-            TermWindowNotif::MuxNotification(n) => match n {
-                MuxNotification::Alert {
-                    alert: Alert::SetUserVar { name, value },
-                    pane_id,
-                } => {
-                    self.emit_user_var_event(pane_id, name, value);
+            TermWindowNotif::MuxNotification(n) => {
+                // The sidebar's per-node terminal counts are read from the mux,
+                // so they go stale on traffic that never touches the session
+                // store or any sidebar state. Deliberately selective: PaneOutput
+                // fires continuously while a terminal is producing output, and
+                // rebuilding the sidebar on each one would undo the render cache.
+                if matches!(
+                    n,
+                    MuxNotification::TabAddedToWindow { .. }
+                        | MuxNotification::WindowRemoved(_)
+                        | MuxNotification::PaneAdded(_)
+                        | MuxNotification::PaneRemoved(_)
+                        | MuxNotification::WindowWorkspaceChanged(_)
+                        | MuxNotification::ActiveWorkspaceChanged(_)
+                ) {
+                    self.invalidate_sidebar_cache();
                 }
-                MuxNotification::WindowTitleChanged { .. }
-                | MuxNotification::Alert {
-                    alert:
-                        Alert::OutputSinceFocusLost
-                        | Alert::CurrentWorkingDirectoryChanged
-                        | Alert::WindowTitleChanged(_)
-                        | Alert::TabTitleChanged(_)
-                        | Alert::IconTitleChanged(_)
-                        | Alert::Progress(_),
-                    ..
-                } => {
-                    self.update_title();
-                }
-                MuxNotification::Alert {
-                    alert: Alert::PaletteChanged,
-                    pane_id,
-                } => {
-                    // Shape cache includes color information, so
-                    // ensure that we invalidate that as part of
-                    // this overall invalidation for the palette
-                    self.dispatch_notif(TermWindowNotif::InvalidateShapeCache, window)?;
-                    self.mux_pane_output_event(pane_id);
-                }
-                MuxNotification::Alert {
-                    alert: Alert::Bell,
-                    pane_id,
-                } => {
-                    if !self.window_contains_pane(pane_id) {
-                        return Ok(());
-                    }
 
-                    match self.config.audible_bell {
-                        AudibleBell::SystemBeep => {
-                            Connection::get().expect("on main thread").beep();
+                match n {
+                    MuxNotification::Alert {
+                        alert: Alert::SetUserVar { name, value },
+                        pane_id,
+                    } => {
+                        self.emit_user_var_event(pane_id, name, value);
+                    }
+                    MuxNotification::WindowTitleChanged { .. }
+                    | MuxNotification::Alert {
+                        alert:
+                            Alert::OutputSinceFocusLost
+                            | Alert::CurrentWorkingDirectoryChanged
+                            | Alert::WindowTitleChanged(_)
+                            | Alert::TabTitleChanged(_)
+                            | Alert::IconTitleChanged(_)
+                            | Alert::Progress(_),
+                        ..
+                    } => {
+                        self.update_title();
+                    }
+                    MuxNotification::Alert {
+                        alert: Alert::PaletteChanged,
+                        pane_id,
+                    } => {
+                        // Shape cache includes color information, so
+                        // ensure that we invalidate that as part of
+                        // this overall invalidation for the palette
+                        self.dispatch_notif(TermWindowNotif::InvalidateShapeCache, window)?;
+                        self.mux_pane_output_event(pane_id);
+                    }
+                    MuxNotification::Alert {
+                        alert: Alert::Bell,
+                        pane_id,
+                    } => {
+                        if !self.window_contains_pane(pane_id) {
+                            return Ok(());
                         }
-                        AudibleBell::Disabled => {}
+
+                        match self.config.audible_bell {
+                            AudibleBell::SystemBeep => {
+                                Connection::get().expect("on main thread").beep();
+                            }
+                            AudibleBell::Disabled => {}
+                        }
+
+                        log::trace!("Ding! (this is the bell) in pane {}", pane_id);
+                        self.emit_window_event("bell", Some(pane_id));
+
+                        let mut per_pane = self.pane_state(pane_id);
+                        per_pane.bell_start.replace(Instant::now());
+                        window.invalidate();
                     }
+                    MuxNotification::Alert {
+                        alert: Alert::ToastNotification { .. },
+                        ..
+                    } => {}
+                    MuxNotification::TabAddedToWindow {
+                        window_id: _,
+                        tab_id,
+                    } => {
+                        let mux = Mux::get();
+                        let mut size = self.terminal_size;
+                        if let Some(tab) = mux.get_tab(tab_id) {
+                            // If we attached to a remote domain and loaded in
+                            // a tab async, we need to fixup its size, either
+                            // by resizing it or resizes ourselves.
+                            // The strategy here is to adjust both by taking
+                            // the maximal size in both horizontal and vertical
+                            // dimensions and applying that. In practice that
+                            // means that a new local client will resize larger
+                            // to adjust to the size of an existing client.
+                            let tab_size = tab.get_size();
+                            size.rows = size.rows.max(tab_size.rows);
+                            size.cols = size.cols.max(tab_size.cols);
 
-                    log::trace!("Ding! (this is the bell) in pane {}", pane_id);
-                    self.emit_window_event("bell", Some(pane_id));
-
-                    let mut per_pane = self.pane_state(pane_id);
-                    per_pane.bell_start.replace(Instant::now());
-                    window.invalidate();
-                }
-                MuxNotification::Alert {
-                    alert: Alert::ToastNotification { .. },
-                    ..
-                } => {}
-                MuxNotification::TabAddedToWindow {
-                    window_id: _,
-                    tab_id,
-                } => {
-                    let mux = Mux::get();
-                    let mut size = self.terminal_size;
-                    if let Some(tab) = mux.get_tab(tab_id) {
-                        // If we attached to a remote domain and loaded in
-                        // a tab async, we need to fixup its size, either
-                        // by resizing it or resizes ourselves.
-                        // The strategy here is to adjust both by taking
-                        // the maximal size in both horizontal and vertical
-                        // dimensions and applying that. In practice that
-                        // means that a new local client will resize larger
-                        // to adjust to the size of an existing client.
-                        let tab_size = tab.get_size();
-                        size.rows = size.rows.max(tab_size.rows);
-                        size.cols = size.cols.max(tab_size.cols);
-
-                        if size.rows != self.terminal_size.rows
-                            || size.cols != self.terminal_size.cols
-                            || size.pixel_width != self.terminal_size.pixel_width
-                            || size.pixel_height != self.terminal_size.pixel_height
-                        {
-                            self.set_window_size(size, window)?;
-                        } else if tab_size.dpi == 0 {
-                            log::debug!("fixup dpi in newly added tab");
-                            tab.resize(self.terminal_size);
+                            if size.rows != self.terminal_size.rows
+                                || size.cols != self.terminal_size.cols
+                                || size.pixel_width != self.terminal_size.pixel_width
+                                || size.pixel_height != self.terminal_size.pixel_height
+                            {
+                                self.set_window_size(size, window)?;
+                            } else if tab_size.dpi == 0 {
+                                log::debug!("fixup dpi in newly added tab");
+                                tab.resize(self.terminal_size);
+                            }
                         }
                     }
+                    MuxNotification::PaneOutput(pane_id) => {
+                        self.mux_pane_output_event(pane_id);
+                    }
+                    MuxNotification::WindowInvalidated(_) => {
+                        window.invalidate();
+                        self.update_title_post_status();
+                    }
+                    MuxNotification::WindowRemoved(_window_id) => {
+                        // Handled by frontend
+                    }
+                    MuxNotification::AssignClipboard { .. } => {
+                        // Handled by frontend
+                    }
+                    MuxNotification::SaveToDownloads { .. } => {
+                        // Handled by frontend
+                    }
+                    MuxNotification::PaneFocused(_) => {
+                        // Also handled by clientpane
+                        self.update_title_post_status();
+                    }
+                    MuxNotification::TabResized(_) => {
+                        // Also handled by wezterm-client
+                        self.update_title_post_status();
+                    }
+                    MuxNotification::TabTitleChanged { .. } => {
+                        self.update_title_post_status();
+                    }
+                    MuxNotification::PaneAdded(_)
+                    | MuxNotification::WorkspaceRenamed { .. }
+                    | MuxNotification::PaneRemoved(_)
+                    | MuxNotification::WindowWorkspaceChanged(_)
+                    | MuxNotification::ActiveWorkspaceChanged(_)
+                    | MuxNotification::Empty
+                    | MuxNotification::WindowCreated(_) => {}
                 }
-                MuxNotification::PaneOutput(pane_id) => {
-                    self.mux_pane_output_event(pane_id);
-                }
-                MuxNotification::WindowInvalidated(_) => {
-                    window.invalidate();
-                    self.update_title_post_status();
-                }
-                MuxNotification::WindowRemoved(_window_id) => {
-                    // Handled by frontend
-                }
-                MuxNotification::AssignClipboard { .. } => {
-                    // Handled by frontend
-                }
-                MuxNotification::SaveToDownloads { .. } => {
-                    // Handled by frontend
-                }
-                MuxNotification::PaneFocused(_) => {
-                    // Also handled by clientpane
-                    self.update_title_post_status();
-                }
-                MuxNotification::TabResized(_) => {
-                    // Also handled by wezterm-client
-                    self.update_title_post_status();
-                }
-                MuxNotification::TabTitleChanged { .. } => {
-                    self.update_title_post_status();
-                }
-                MuxNotification::PaneAdded(_)
-                | MuxNotification::WorkspaceRenamed { .. }
-                | MuxNotification::PaneRemoved(_)
-                | MuxNotification::WindowWorkspaceChanged(_)
-                | MuxNotification::ActiveWorkspaceChanged(_)
-                | MuxNotification::Empty
-                | MuxNotification::WindowCreated(_) => {}
-            },
+            }
             TermWindowNotif::EmitStatusUpdate => {
                 self.emit_status_event();
             }

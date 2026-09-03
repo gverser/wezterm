@@ -202,6 +202,40 @@ pub fn edit_session_node(
     Ok(())
 }
 
+/// Confirm closing a window that would take background sessions with it.
+///
+/// The plain "kill this window" prompt doesn't mention them, and killing only
+/// the current workspace leaves the process running with no window at all.
+pub fn confirm_close_sessions(
+    mut term: TermWizTerminal,
+    message: String,
+    mux_window_id: mux::window::WindowId,
+    window: ::window::Window,
+    tab_id: mux::tab::TabId,
+) -> anyhow::Result<()> {
+    if crate::overlay::confirm::run_confirmation(&message, &mut term)? {
+        promise::spawn::spawn_into_main_thread(async move {
+            let mux = mux::Mux::get();
+
+            // Same rule as `TermWindow::kill_unattended_windows`: anything no
+            // GUI window is showing only exists because the sidebar opened it.
+            let front_end = crate::frontend::front_end();
+            for window_id in mux.iter_windows() {
+                if window_id != mux_window_id
+                    && front_end.gui_window_for_mux_window(window_id).is_none()
+                {
+                    mux.kill_window(window_id);
+                }
+            }
+            mux.kill_window(mux_window_id);
+        })
+        .detach();
+    }
+
+    crate::TermWindow::schedule_cancel_overlay(window, tab_id, None);
+    Ok(())
+}
+
 /// Confirm, then drop a node from the tree.
 ///
 /// Removing the entry does not kill anything running under it: the workspace

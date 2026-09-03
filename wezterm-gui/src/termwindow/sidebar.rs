@@ -15,12 +15,18 @@ use ::window::{MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps};
 use config::keyassignment::{KeyAssignment, SpawnCommand};
 use config::{DimensionContext, TermConfig};
 use mux::Mux;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use wezterm_term::{KeyCode, KeyModifiers};
 
 /// Narrowest useful sidebar, in cells of the title font.
 pub const MIN_SIDEBAR_CELLS: f32 = 8.;
+
+/// Width of the rail left behind when the sidebar is collapsed.
+///
+/// Collapsing to nothing would leave no way to bring it back short of the
+/// command palette, so a sliver stays behind carrying the expand arrow.
+pub const COLLAPSED_RAIL_CELLS: f32 = 2.;
 
 /// Row height as a multiple of the title font's cell height.
 pub const SIDEBAR_LINE_HEIGHT: f64 = 1.25;
@@ -130,7 +136,8 @@ impl super::TermWindow {
         self.config.session_sidebar_enabled
     }
 
-    pub fn sidebar_is_visible(&self) -> bool {
+    /// Is the tree showing? False while collapsed to the rail.
+    pub fn sidebar_is_expanded(&self) -> bool {
         self.sidebar_is_enabled() && !self.sidebar.collapsed
     }
 
@@ -139,8 +146,10 @@ impl super::TermWindow {
     /// This is folded into `border.left`, which the rest of the GUI already
     /// treats as the left origin of the content area, so widening it shifts the
     /// panes, splits, tab bar and mouse coordinates all at once.
+    ///
+    /// Collapsed still returns a non-zero rail: see [`COLLAPSED_RAIL_CELLS`].
     pub fn sidebar_width(&self) -> f32 {
-        if !self.sidebar_is_visible() {
+        if !self.sidebar_is_enabled() {
             return 0.;
         }
 
@@ -149,6 +158,10 @@ impl super::TermWindow {
             pixel_max: self.dimensions.pixel_width as f32,
             pixel_cell: self.render_metrics.cell_size.width as f32,
         };
+
+        if self.sidebar.collapsed {
+            return context.pixel_cell * COLLAPSED_RAIL_CELLS;
+        }
 
         let configured = self
             .config
@@ -218,6 +231,66 @@ impl super::TermWindow {
         }
     }
 
+    /// How many terminals are running under `id`.
+    ///
+    /// A node owns one workspace, which may hold several mux windows; the
+    /// count the user cares about is tabs, not windows.
+    pub fn session_terminal_count(&self, id: NodeId) -> usize {
+        let mux = Mux::get();
+        mux.iter_windows_in_workspace(&id.workspace_name())
+            .into_iter()
+            .filter_map(|window_id| mux.get_window(window_id).map(|w| w.len()))
+            .sum()
+    }
+
+    /// Workspaces running with nothing on screen showing them, and how many
+    /// terminals each is holding.
+    ///
+    /// The question that matters when closing is not "which session nodes are
+    /// running" but "what would die that the user cannot see". That includes
+    /// the workspace wezterm started in, which becomes unattended as soon as
+    /// you switch to a session and is not a session node at all.
+    ///
+    /// Windows another GUI window *is* showing are excluded: those are ordinary
+    /// extra windows with close buttons of their own.
+    pub fn unattended_workspaces(&self) -> Vec<(String, usize)> {
+        let mux = Mux::get();
+        let front_end = crate::frontend::front_end();
+
+        // Workspace name -> the sidebar entry it belongs to, so the prompt can
+        // say "casb" rather than "session:2".
+        let labels: HashMap<String, String> = with_store(|store| {
+            store
+                .tree()
+                .sessions_with_names()
+                .into_iter()
+                .map(|(id, name)| (id.workspace_name(), name))
+                .collect()
+        });
+
+        let mut totals: BTreeMap<String, usize> = BTreeMap::new();
+        for window_id in mux.iter_windows() {
+            if window_id == self.mux_window_id {
+                // This is the one being closed; it is not a surprise.
+                continue;
+            }
+            if front_end.gui_window_for_mux_window(window_id).is_some() {
+                continue;
+            }
+            if let Some(window) = mux.get_window(window_id) {
+                let tabs = window.len();
+                if tabs == 0 {
+                    continue;
+                }
+                let workspace = window.get_workspace().to_string();
+                let label = labels.get(&workspace).cloned().unwrap_or(workspace);
+                *totals.entry(label).or_default() += tabs;
+            }
+        }
+
+        totals.into_iter().collect()
+    }
+
     /// How many rows of the tree fit in the sidebar right now.
     pub fn sidebar_row_capacity(&self) -> usize {
         let row_height = self.sidebar_row_height();
@@ -249,12 +322,56 @@ impl super::TermWindow {
         self.invalidate_sidebar();
     }
 
-    /// Open (or switch to) the workspace behind a node.
+    /// Single click: highlight the node, and switch to it if it is already
+    /// running. Never starts anything.
     ///
-    /// `want_new_tab` corresponds to a double-click: it only adds a tab when
-    /// the node's workspace is already up. On a node that isn't open yet the
-    /// first click has already started bringing one up, and asking for a second
-    /// would race it.
+    /// Browsing the tree must not spawn shells; with a few dozen nodes that
+    /// would leave a trail of processes behind every time you looked around.
+    pub fn select_session_node(&mut self, id: NodeId) {
+        let is_folder = with_store(|store| {
+            store
+                .tree()
+                .find(id)
+                .map(|node| node.is_folder())
+                .unwrap_or(false)
+        });
+
+        self.sidebar.selected = Some(id);
+
+        if is_folder {
+            with_store(|store| store.mutate(|tree| tree.toggle_expanded(id)));
+            self.invalidate_sidebar();
+            return;
+        }
+
+        // Switching to something already running is free, so a plain click
+        // still does the useful half of the job.
+        if self.session_terminal_count(id) > 0 {
+            let pane = match self.get_active_pane_or_overlay() {
+                Some(pane) => pane,
+                None => return,
+            };
+            if let Err(err) = self.perform_key_assignment(
+                &pane,
+                &KeyAssignment::SwitchToWorkspace {
+                    name: Some(id.workspace_name()),
+                    spawn: None,
+                },
+            ) {
+                log::error!("failed to switch to session {id}: {err:#}");
+            }
+        }
+
+        self.invalidate_sidebar();
+    }
+
+    /// Open (or switch to) the workspace behind a node. This is the
+    /// double-click path and the only one that starts a terminal.
+    ///
+    /// `want_new_tab` asks for an extra tab, which only applies when the node's
+    /// workspace is already up: on a node that isn't running yet the first
+    /// double-click has already started bringing one up, and asking for a
+    /// second would race it.
     pub fn activate_session_node(&mut self, id: NodeId, want_new_tab: bool) {
         enum Target {
             Folder,
@@ -297,19 +414,12 @@ impl super::TermWindow {
         if already_open {
             self.sidebar.pending_open = None;
             self.sidebar.failed.remove(&id);
-        } else if want_new_tab && self.sidebar.pending_open == Some(id) {
-            // The first click of this double-click is still bringing the
-            // workspace up; spawning again would give us two windows.
-            //
-            // Only the double-click path checks this. A plain click always
-            // retries, so a launch that failed can never wedge the node.
-            return;
         } else {
             if self.sidebar.pending_open == Some(id) {
-                // We asked for this workspace on an earlier click and it still
-                // hasn't appeared, so that launch failed. The spawn is async
-                // and its error only reaches the log, so this is the signal we
-                // have; mark the node and try again.
+                // We asked for this workspace on an earlier gesture and it
+                // still hasn't appeared, so that launch failed. The spawn is
+                // async and its error only reaches the log, so this is the
+                // signal we have; mark the node and try again.
                 self.sidebar.failed.insert(id);
             }
             self.sidebar.pending_open = Some(id);
@@ -695,6 +805,11 @@ impl super::TermWindow {
                     self.dragging.replace((item, event));
                 }
             }
+            UIItemType::SidebarCollapseToggle => {
+                if event.kind == WMEK::Press(MousePress::Left) {
+                    self.toggle_session_sidebar();
+                }
+            }
             UIItemType::SidebarBackground => {
                 if event.kind == WMEK::Press(MousePress::Right) {
                     let (x, y) = (event.coords.x as f32, event.coords.y as f32);
@@ -724,11 +839,20 @@ impl super::TermWindow {
 
                 // A folder's second click would just undo the first one's
                 // expand/collapse.
-                if is_folder && streak >= 2 {
+                if is_folder {
+                    if streak == 1 {
+                        self.select_session_node(id);
+                    }
                     return;
                 }
 
-                self.activate_session_node(id, streak >= 2);
+                match streak {
+                    1 => self.select_session_node(id),
+                    2 => self.activate_session_node(id, true),
+                    // A triple-click is still one gesture; opening again would
+                    // race the spawn the second click just started.
+                    _ => {}
+                }
             }
             WMEK::Press(MousePress::Right) => {
                 let (x, y) = (event.coords.x as f32, event.coords.y as f32);
