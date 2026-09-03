@@ -524,6 +524,22 @@ impl TermWindow {
     fn close_requested(&mut self, window: &Window) {
         let mux = Mux::get();
 
+        // A pane in a mux domain outlives this window: the server owns it, a
+        // remote client may be talking to it, and the user is coming back to
+        // it. Closing the window detaches, the way it does in tmux; ending
+        // the sessions is CloseAllSessions.
+        let detachable = mux
+            .get_active_tab_for_window(self.mux_window_id)
+            .and_then(|tab| tab.get_active_pane())
+            .and_then(|pane| mux.get_domain(pane.domain_id()))
+            .map_or(false, |domain| domain.detachable());
+
+        if detachable {
+            window.close();
+            front_end().forget_known_window(window);
+            return;
+        }
+
         // The sidebar creates workspaces in the background, so "close this
         // window" has to account for sessions the user can't currently see.
         let unattended = self.unattended_workspaces();
@@ -597,6 +613,20 @@ impl TermWindow {
                 // Don't close right now; let the close happen from
                 // the confirmation overlay
             }
+        }
+    }
+
+    /// End every session and quit.
+    ///
+    /// This is what closing the window used to do. Attached to a mux domain
+    /// the sessions outlive the window, so ending them has to be asked for.
+    fn close_all_sessions(&mut self) {
+        let mux = Mux::get();
+        self.kill_unattended_windows();
+        mux.kill_window(self.mux_window_id);
+        if let Some(window) = self.window.clone() {
+            window.close();
+            front_end().forget_known_window(&window);
         }
     }
 
@@ -3310,6 +3340,7 @@ impl TermWindow {
             Confirmation(args) => self.show_confirmation(args),
             ToggleSessionSidebar => self.toggle_session_sidebar(),
             FocusSessionSidebarSearch => self.focus_session_sidebar_search(),
+            CloseAllSessions => self.close_all_sessions(),
         };
         Ok(PerformAssignmentResult::Handled)
     }

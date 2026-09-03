@@ -2029,6 +2029,18 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["View"],
             icon: Some("md_magnify"),
         },
+        CloseAllSessions => CommandDef {
+            brief: "Close All Sessions".into(),
+            doc: "End every session, including the ones running in background \
+                  workspaces, and quit"
+                .into(),
+            // No default binding: this ends work that is deliberately still
+            // running, so it should take a moment to reach for.
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window"],
+            icon: Some("md_close_box_multiple"),
+        },
     })
 }
 
@@ -2084,6 +2096,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ToggleSessionSidebar,
         FocusSessionSidebarSearch,
         // ----------------- Window
+        CloseAllSessions,
         ToggleFullScreen,
         ToggleAlwaysOnTop,
         ToggleAlwaysOnBottom,
