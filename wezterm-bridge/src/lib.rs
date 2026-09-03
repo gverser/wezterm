@@ -6,7 +6,9 @@
 //! the client is away for a minute or for hours.
 
 pub mod proto;
+pub mod server;
 pub mod state;
+pub mod token;
 
 pub use proto::{Inbound, Outbound, PaneInfo};
 pub use state::{BridgeState, PaneAccess, PaneState};

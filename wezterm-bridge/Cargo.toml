@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 anyhow.workspace = true
 config.workspace = true
+getrandom.workspace = true
 log.workspace = true
 mux.workspace = true
 parking_lot.workspace = true
