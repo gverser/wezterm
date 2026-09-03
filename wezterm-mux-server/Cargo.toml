@@ -23,6 +23,7 @@ portable-pty = { workspace=true, features = ["serde_support"]}
 promise.workspace = true
 umask.workspace = true
 wezterm-blob-leases = {workspace=true, features=["simple_tempdir"]}
+wezterm-bridge.workspace = true
 wezterm-mux-server-impl.workspace = true
 wezterm-gui-subcommands.workspace = true
 wezterm-term.workspace = true

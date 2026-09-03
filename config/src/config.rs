@@ -186,6 +186,22 @@ pub struct Config {
     )]
     pub session_sidebar_width: Dimension,
 
+    /// Whether the mux server exposes the local bridge service, which lets an
+    /// external client watch and drive panes over a loopback socket
+    #[dynamic(default)]
+    pub bridge_enabled: bool,
+
+    /// The loopback port the bridge listens on. This is the IPC service that
+    /// the mux server runs, not any port the client itself may listen on.
+    #[dynamic(default = "default_bridge_port")]
+    pub bridge_port: u16,
+
+    /// Where the bridge keeps its IPC token. Defaults to
+    /// $DATA_DIR/bridge-token. The token is read from this file and is never
+    /// placed in the environment.
+    #[dynamic(default)]
+    pub bridge_token_path: Option<std::path::PathBuf>,
+
     /// Font to use for PaneSelect
     #[dynamic(default)]
     pub pane_select_font: Option<TextStyle>,
@@ -1681,6 +1697,10 @@ fn default_command_palette_bg_color() -> RgbaColor {
 
 fn default_session_sidebar_width() -> Dimension {
     Dimension::Cells(18.)
+}
+
+fn default_bridge_port() -> u16 {
+    8788
 }
 
 fn default_swallow_mouse_click_on_window_focus() -> bool {

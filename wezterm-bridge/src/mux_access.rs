@@ -16,6 +16,10 @@ impl PaneAccess for MuxPane {
         self.0.pane_id()
     }
 
+    fn title(&self) -> String {
+        self.0.get_title()
+    }
+
     fn current_seqno(&self) -> SequenceNo {
         self.0.get_current_seqno()
     }

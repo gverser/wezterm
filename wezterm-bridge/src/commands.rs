@@ -51,10 +51,10 @@ where
                 .pane_ids()
                 .into_iter()
                 .filter_map(|id| {
-                    lookup(id).map(|_| PaneInfo {
+                    lookup(id).map(|pane| PaneInfo {
                         pane: id,
                         workspace: String::new(),
-                        title: String::new(),
+                        title: pane.title(),
                         cwd: None,
                     })
                 })
@@ -103,6 +103,9 @@ mod test {
     impl PaneAccess for FakePane {
         fn pane_id(&self) -> PaneId {
             self.id
+        }
+        fn title(&self) -> String {
+            format!("fake-{}", self.id)
         }
         fn current_seqno(&self) -> SequenceNo {
             self.seqno
@@ -237,6 +240,10 @@ mod test {
                 assert_eq!(panes.len(), 2);
                 assert_eq!(panes[0].pane, 7);
                 assert_eq!(panes[1].pane, 9);
+                assert_eq!(
+                    panes[0].title, "fake-7",
+                    "list must describe a pane the same way pane_added did"
+                );
             }
             other => panic!("expected a Panes reply, got {other:?}"),
         }

@@ -9,6 +9,7 @@ use termwiz::surface::SequenceNo;
 /// state machine untestable. Production wraps a real `Pane`; tests use a fake.
 pub trait PaneAccess {
     fn pane_id(&self) -> PaneId;
+    fn title(&self) -> String;
     fn current_seqno(&self) -> SequenceNo;
     fn changed_since(&self, seqno: SequenceNo) -> bool;
     /// The last `max_lines` lines of the pane as plain text, together with the

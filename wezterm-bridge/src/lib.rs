@@ -9,6 +9,7 @@ pub mod commands;
 pub mod mux_access;
 pub mod proto;
 pub mod server;
+pub mod service;
 pub mod state;
 pub mod token;
 

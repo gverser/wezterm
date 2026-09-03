@@ -235,6 +235,22 @@ fn run() -> anyhow::Result<()> {
         e
     })?;
 
+    // After set_mux above: subscribing before there is a mux to subscribe to
+    // would silently observe nothing. A failure here is not fatal -- the mux
+    // server's own job is unaffected by the bridge being unavailable.
+    {
+        let cfg = configuration();
+        if cfg.bridge_enabled {
+            let token_path = cfg
+                .bridge_token_path
+                .clone()
+                .unwrap_or_else(|| config::DATA_DIR.join("bridge-token"));
+            if let Err(err) = wezterm_bridge::service::start(cfg.bridge_port, token_path) {
+                log::error!("failed to start the bridge: {err:#}");
+            }
+        }
+    }
+
     let activity = Activity::new();
 
     promise::spawn::spawn(async move {
