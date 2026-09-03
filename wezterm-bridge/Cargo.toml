@@ -17,6 +17,7 @@ serde = {workspace=true, features = ["derive"]}
 serde_json.workspace = true
 termwiz.workspace = true
 wezterm-sessions.workspace = true
+wezterm-term.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

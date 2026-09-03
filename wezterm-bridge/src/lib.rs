@@ -5,6 +5,8 @@
 //! flag and a seqno watermark are all that is kept. Memory is flat whether
 //! the client is away for a minute or for hours.
 
+pub mod commands;
+pub mod mux_access;
 pub mod proto;
 pub mod server;
 pub mod state;

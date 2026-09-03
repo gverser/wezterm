@@ -6937,6 +6937,7 @@ dependencies = [
  "tempfile",
  "termwiz",
  "wezterm-sessions",
+ "wezterm-term",
 ]
 
 [[package]]
