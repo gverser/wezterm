@@ -5,6 +5,8 @@
 //! flag and a seqno watermark are all that is kept. Memory is flat whether
 //! the client is away for a minute or for hours.
 
+pub mod proto;
 pub mod state;
 
+pub use proto::{Inbound, Outbound, PaneInfo};
 pub use state::{BridgeState, PaneAccess, PaneState};
