@@ -244,25 +244,31 @@ bridge 进程 → Rust 侧，四个动作，全部有现成 API：
 
 ### 7.1 消息格式
 
-Rust → Node：
+Rust → Node（`wezterm-bridge/src/proto.rs` 的 `Outbound`）：
 
 ```json
-{"t":"pane_added","pane":9,"workspace":"项目A","title":"claude","cwd":"D:\\dev\\foo"}
+{"t":"auth_ok"}
+{"t":"pane_added","pane":9,"workspace":"","title":"claude","cwd":null}
 {"t":"pane_removed","pane":9}
 {"t":"dirty","pane":7,"seqno":11820}
-{"t":"alert","pane":7,"kind":"bell"}
 {"t":"lines","pane":7,"first_row":3140,"lines":["...","..."],"seqno":11820}
+{"t":"alert","pane":7,"kind":"Bell"}
+{"t":"panes","panes":[{"pane":7,"workspace":"","title":"claude","cwd":null}]}
+{"t":"error","message":"no such pane: 99"}
 ```
 
-Node → Rust：
+Node → Rust（`Inbound`）：
 
 ```json
+{"t":"auth","token":"..."}
 {"t":"send","pane":7,"text":"继续，用方案 B","submit":true}
-{"t":"read","pane":7,"since_seqno":11020,"max_lines":200}
+{"t":"read","pane":7,"max_lines":200}
 {"t":"spawn","node_id":12}
 {"t":"kill","pane":7}
 {"t":"list"}
 ```
+
+`submit` 缺省为 `true`，`max_lines` 缺省为 200。`spawn` 与 `kill` 不产生直接回复：两者都是异步的，客户端从 `pane_added` / `pane_removed` 得知结果。
 
 ### 7.2 鉴权
 
@@ -275,6 +281,14 @@ Node → Rust：
 - 鉴权失败或首行不是 auth，立即断开
 
 **IPC token 绝不导出为环境变量。** 它等价于向 mux-server 下达任意指令的权限；一旦进入环境，任何被 AI 启动的子进程都能读到并绕过全部约束。
+
+### 7.3 单写者约束
+
+**Rust 侧只有一个线程写 socket。** mux 通知、flush 定时器与命令循环都把消息交给它，不各写各的。
+
+这不是风格问题：`TcpStream::try_clone` 给出的是独立句柄，多个线程并发 `writeln!` 会让两条消息在字节层交错，NDJSON 帧就此错位 —— 而这只在负载高时出现，平时测不出来。
+
+**Node 侧写回 Rust 时受同样约束**：那边同样有多个来源要发指令（用户消息、卡片回调、定时任务），同样需要串行化。
 
 ## 8. 飞书侧
 
