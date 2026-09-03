@@ -105,23 +105,21 @@ default_domain = 'main'
 
 但在 mux-server 模式下，pane 住在另一个进程里，"关窗口"与"结束 session"是两件不同的事，且两者都需要：关电脑前要全杀；出门前关 GUI 让 AI 继续跑要 detach。
 
-### 4.2 变更
+### 4.2 变更：关窗口默认 detach，杀 session 是显式动作
 
-复用已有的 `confirm_close_sessions` overlay，从两选扩为三选：
+采用终端复用器的标准心智模型：**关窗口 = detach；结束 session 是另一个动作**（tmux 的 `detach` 与 `kill-session`）。
 
-```
-3 terminals still running out of sight:
-    项目A-重构  (2)
-    项目B-测试  (1)
+| 场景 | 行为 |
+|---|---|
+| 连接 mux domain 时关窗口 | **直接 detach，不弹确认框**。session 继续在 mux-server 中运行 |
+| 连接本地 domain 时关窗口 | **现有行为完全不变**：`close_prompt` 提示 + `kill_unattended_windows()` |
+| 想真的结束全部 session | 新增 KeyAssignment `CloseAllSessions`，**无默认绑定**，从命令面板调用 |
 
-[ 保持后台运行 ]   [ 全部关闭 ]   [ 取消 ]
-```
+不弹框不会让后台 session 被遗忘：sidebar 已经在每个条目右侧显示 terminal count，重开 GUI 一眼可见。
 
-- **保持后台运行** = detach，GUI 退出，session 继续在 mux-server 中运行
-- **全部关闭** = 现有 `kill_unattended_windows()` 逻辑，原样保留
-- **取消** = 现有行为
+**曾考虑并否决的方案**：把 `confirm_close_sessions` 扩成「保持后台运行 / 全部关闭 / 取消」三选。否决原因是其底层 `overlay::confirm::run_confirmation` 硬编码两个按钮（按钮坐标、渲染、鼠标命中测试、键盘导航各一套），加第三个按钮需要把它泛化为 N 按钮；`overlay::selector` 也无法复用，它绑定了 lua `InputSelector` 的 KeyAssignment 与事件回调。这笔 TUI 改造的投入，换来的只是一个在标准心智模型下本就不必要的提示框。
 
-`WindowCloseConfirmation::NeverPrompt` 的语义随之调整：**连接到 mux domain 时默认 detach**，因为留下的不是孤儿进程而是有主的后台 session；连接本地 domain 时保持现有的全杀行为。
+`WindowCloseConfirmation::NeverPrompt` 在 mux domain 下同样是 detach —— 留下的不是孤儿进程，而是有主的后台 session。
 
 ## 5. 两条通道
 
@@ -208,7 +206,7 @@ bridge 进程 → Rust 侧，四个动作，全部有现成 API：
 | 发消息给 AI | `Pane::send_paste(text)` + `Pane::key_down(Enter)` |
 | 读增量 | `Pane::get_current_seqno()` + `get_changed_since(range, seqno)` + `get_lines(range)` |
 | 新建 session | mux spawn，参数取自 `SessionSpawn { domain, cwd, args, env }` |
-| 结束 session | `Mux::kill_pane` / `Mux::kill_window` |
+| 结束 session | `Mux::remove_pane` / `Mux::kill_window` |
 
 ### 6.3 挂载点与配置
 
@@ -222,9 +220,17 @@ bridge 进程 → Rust 侧，四个动作，全部有现成 API：
 
 ### 6.4 前置重构：提取 `wezterm-sessions`
 
-`wezterm-gui/src/sessions/` 需提取为独立 crate，供 GUI 和 bridge 共同依赖 —— mux-server 看不到 GUI crate 的模块。
+`wezterm-gui/src/sessions/` 的**数据模型与持久化**需提取为独立 crate，供 GUI 和 bridge 共同依赖 —— mux-server 看不到 GUI crate 的模块。
 
-**可行性已验证**：该模块仅依赖 `config::keyassignment::{SpawnCommand, SpawnTabDomain}` 与 serde/std，**零 GUI 依赖**。改动限于 import 路径。
+**提取边界**（不是整个模块）：
+
+| 文件 | 去向 | 理由 |
+|---|---|---|
+| `tree.rs` | → `wezterm-sessions` | 纯数据模型，仅依赖 `config::keyassignment` 与 serde/std |
+| `store.rs` | → `wezterm-sessions` | 纯文件 IO，仅依赖 `config::DATA_DIR` 与 serde_json |
+| `mod.rs` 的 `clamp_scroll` / `visible_range` / `clamp_width` / `close_prompt` | **留在 GUI** | 侧边栏布局与提示文案，属于渲染关注点，bridge 用不到 |
+
+`wezterm-gui/src/sessions/mod.rs` 保留上述 GUI 函数及其测试，并从新 crate re-export 数据类型，使 sidebar 现有 import 路径不变。
 
 不采用"bridge 只读 `sessions.json` 文件"的松耦合方案：格式仍是同一份，只是失去编译期保证；`SessionSpawn` 增加字段时 bridge 会静默读不到，要到运行时才暴露。
 
