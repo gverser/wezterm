@@ -67,3 +67,7 @@ dhat-heap.json
 /nix/result
 *.qcow2
 /docs/superpowers/
+
+# Local credentials, never commit
+/飞书ID.txt
+/.feishu-secrets.json
