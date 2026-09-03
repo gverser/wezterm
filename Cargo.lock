@@ -6932,6 +6932,8 @@ dependencies = [
  "log",
  "mux",
  "parking_lot",
+ "portable-pty",
+ "promise",
  "serde",
  "serde_json",
  "tempfile",

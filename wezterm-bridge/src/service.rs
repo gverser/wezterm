@@ -13,11 +13,14 @@ use crate::state::BridgeState;
 use anyhow::Context;
 use mux::{Mux, MuxNotification};
 use parking_lot::Mutex;
+use portable_pty::CommandBuilder;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
+use wezterm_sessions::{NodeId, NodeKind, SessionStore};
 
 /// How often pending output is reported to the client.
 ///
@@ -188,14 +191,89 @@ fn serve_client(
             }
         };
 
-        for reply in dispatch(msg, state, |id| {
-            Mux::try_get().and_then(|mux| mux.get_pane(id)).map(MuxPane)
-        }) {
+        let replies = match msg {
+            Inbound::Spawn { node_id } => handle_spawn(node_id),
+            Inbound::Kill { pane } => handle_kill(pane),
+            other => dispatch(other, state, |id| {
+                Mux::try_get().and_then(|mux| mux.get_pane(id)).map(MuxPane)
+            }),
+        };
+        for reply in replies {
             tx.send(reply).ok();
         }
     }
 
     Ok(())
+}
+
+/// Start the session named by a node in sessions.json.
+///
+/// Only entries already in the tree can be started, which is the line between
+/// this and a remote shell: the client picks a node, not a command.
+pub fn handle_spawn(node_id: u64) -> Vec<Outbound> {
+    let store = SessionStore::load();
+    let spawn = match store.tree().find(NodeId(node_id)) {
+        None => {
+            return vec![Outbound::Error {
+                message: format!("no such session node: {node_id}"),
+            }]
+        }
+        Some(node) => match &node.kind {
+            NodeKind::Session { spawn } => spawn.clone(),
+            NodeKind::Folder { .. } => {
+                return vec![Outbound::Error {
+                    message: format!("session node {node_id} is a folder, not a session"),
+                }]
+            }
+        },
+    };
+
+    // NodeId::workspace_name is what the gui sidebar uses too, so a session
+    // started from here and one started by double-clicking the sidebar are
+    // the same session rather than two that happen to share a name.
+    let workspace = NodeId(node_id).workspace_name();
+
+    // Two hops. Domain is #[async_trait(?Send)], so its spawn future cannot
+    // cross a thread boundary; what crosses is this closure, which is plain
+    // data. Once on the main thread the !Send future can be run there.
+    promise::spawn::spawn_into_main_thread(async move {
+        promise::spawn::spawn(async move {
+            let mux = Mux::get();
+            let size = config::configuration().initial_size(0, None);
+
+            let mut cmd = match &spawn.args {
+                Some(args) if !args.is_empty() => CommandBuilder::from_argv(
+                    args.iter().map(|a| OsString::from(a.as_str())).collect(),
+                ),
+                _ => CommandBuilder::new_default_prog(),
+            };
+            for (name, value) in &spawn.env {
+                cmd.env(name, value);
+            }
+            let cwd = spawn.cwd.as_ref().map(|p| p.to_string_lossy().to_string());
+
+            let window_id = mux.new_empty_window(Some(workspace), None);
+            let domain = mux.default_domain();
+            if let Err(err) = domain.spawn(size, Some(cmd), cwd, *window_id).await {
+                log::error!("bridge could not spawn session node {node_id}: {err:#}");
+            }
+        })
+        .detach();
+    })
+    .detach();
+
+    // Spawning is async, so there is nothing to reply with: the client learns
+    // the new pane id from pane_added.
+    vec![]
+}
+
+/// End one pane.
+pub fn handle_kill(pane: mux::pane::PaneId) -> Vec<Outbound> {
+    promise::spawn::spawn_into_main_thread(async move {
+        Mux::get().remove_pane(pane);
+    })
+    .detach();
+    vec![]
 }
 
 fn json(msg: &Outbound) -> String {
