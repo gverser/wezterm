@@ -73,6 +73,15 @@ pub enum Inbound {
         #[serde(default = "default_max_lines")]
         max_lines: usize,
     },
+    /// Press a key. Text alone cannot answer a selection list or a
+    /// confirmation box, and those are what a CLI puts up when it most needs
+    /// an answer.
+    Key {
+        pane: PaneId,
+        key: String,
+        #[serde(default)]
+        modifiers: Vec<String>,
+    },
     Spawn {
         node_id: u64,
     },

@@ -44,6 +44,15 @@ impl PaneAccess for MuxPane {
         )
     }
 
+    fn send_key(&self, key: &str, modifiers: &[String]) -> anyhow::Result<()> {
+        let code = crate::keys::parse_key(key)
+            .ok_or_else(|| anyhow::anyhow!("unknown key: {key}"))?;
+        let mods = crate::keys::parse_modifiers(modifiers);
+        self.0.key_down(code, mods)?;
+        self.0.key_up(code, mods)?;
+        Ok(())
+    }
+
     fn send_text(&self, text: &str, submit: bool) -> anyhow::Result<()> {
         // send_paste rather than writing to the pty directly: it honours
         // bracketed paste, which is what a TUI prompt expects from text that

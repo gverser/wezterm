@@ -46,6 +46,20 @@ where
             },
         },
 
+        Inbound::Key {
+            pane,
+            key,
+            modifiers,
+        } => match lookup(pane) {
+            None => vec![no_such_pane(pane)],
+            Some(p) => match p.send_key(&key, &modifiers) {
+                Ok(()) => vec![],
+                Err(err) => vec![Outbound::Error {
+                    message: format!("key {key} to pane {pane} failed: {err:#}"),
+                }],
+            },
+        },
+
         Inbound::List => {
             let panes = state
                 .pane_ids()
@@ -87,6 +101,7 @@ mod test {
         seqno: SequenceNo,
         lines: Vec<String>,
         sent: Arc<Mutex<Vec<(String, bool)>>>,
+        keys: Arc<Mutex<Vec<(String, Vec<String>)>>>,
     }
 
     impl FakePane {
@@ -96,6 +111,7 @@ mod test {
                 seqno: 100,
                 lines: vec!["first".to_string(), "second".to_string()],
                 sent: Arc::new(Mutex::new(vec![])),
+                keys: Arc::new(Mutex::new(vec![])),
             }
         }
     }
@@ -119,6 +135,13 @@ mod test {
         }
         fn send_text(&self, text: &str, submit: bool) -> anyhow::Result<()> {
             self.sent.lock().push((text.to_string(), submit));
+            Ok(())
+        }
+        fn send_key(&self, key: &str, modifiers: &[String]) -> anyhow::Result<()> {
+            if crate::keys::parse_key(key).is_none() {
+                anyhow::bail!("unknown key: {key}");
+            }
+            self.keys.lock().push((key.to_string(), modifiers.to_vec()));
             Ok(())
         }
     }
@@ -226,6 +249,71 @@ mod test {
                 message: "no such pane: 99".to_string()
             }],
             "a stale pane id from the client must not take the service down"
+        );
+    }
+
+    #[test]
+    fn a_key_reaches_the_pane() {
+        let state = BridgeState::new();
+        state.add_pane(7);
+        let pane = FakePane::new(7);
+        let keys = pane.keys.clone();
+        let out = dispatch(
+            Inbound::Key {
+                pane: 7,
+                key: "down".to_string(),
+                modifiers: vec![],
+            },
+            &state,
+            |_| Some(pane.clone()),
+        );
+        assert!(out.is_empty(), "a key that landed needs no reply");
+        assert_eq!(*keys.lock(), vec![("down".to_string(), vec![])]);
+    }
+
+    #[test]
+    fn a_key_carries_its_modifiers() {
+        let state = BridgeState::new();
+        state.add_pane(7);
+        let pane = FakePane::new(7);
+        let keys = pane.keys.clone();
+        dispatch(
+            Inbound::Key {
+                pane: 7,
+                key: "c".to_string(),
+                modifiers: vec!["ctrl".to_string()],
+            },
+            &state,
+            |_| Some(pane.clone()),
+        );
+        assert_eq!(
+            *keys.lock(),
+            vec![("c".to_string(), vec!["ctrl".to_string()])],
+            "ctrl-c is the whole point of being able to send modifiers"
+        );
+    }
+
+    #[test]
+    fn a_key_nobody_recognises_is_an_error_rather_than_a_guess() {
+        let state = BridgeState::new();
+        state.add_pane(7);
+        let pane = FakePane::new(7);
+        let out = dispatch(
+            Inbound::Key {
+                pane: 7,
+                key: "banana".to_string(),
+                modifiers: vec![],
+            },
+            &state,
+            |_| Some(pane.clone()),
+        );
+        match &out[0] {
+            Outbound::Error { message } => assert!(message.contains("banana"), "{message}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(
+            pane.keys.lock().is_empty(),
+            "sending some other key into a confirmation dialog answers a question nobody read"
         );
     }
 

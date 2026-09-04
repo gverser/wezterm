@@ -6,6 +6,7 @@
 //! the client is away for a minute or for hours.
 
 pub mod commands;
+pub mod keys;
 pub mod mux_access;
 pub mod proto;
 pub mod server;

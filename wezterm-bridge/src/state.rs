@@ -16,6 +16,9 @@ pub trait PaneAccess {
     /// stable row index of the first line returned.
     fn read_lines(&self, max_lines: usize) -> (isize, Vec<String>);
     fn send_text(&self, text: &str, submit: bool) -> anyhow::Result<()>;
+    /// Press a named key, with optional modifiers. Refuses a name it does not
+    /// recognise rather than guessing.
+    fn send_key(&self, key: &str, modifiers: &[String]) -> anyhow::Result<()>;
 }
 
 /// What the bridge remembers about one pane: about 60 bytes, however much
