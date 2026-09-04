@@ -155,6 +155,22 @@ HTTP hook 默认超时 600 秒（`UserPromptSubmit`、`PreModelSwitch`、`PostMo
 
 **超时是安全的**：hook 超时后回落到 Claude Code 默认权限流程（终端内正常弹窗），不会误批准，也不会卡死。
 
+#### 请求的配对 id 由 bridge 自己生成
+
+实测的 `PermissionRequest` 载荷字段（真实 Claude Code 发出，非文档）：
+
+```
+session_id, transcript_path, cwd, scratchpad_dir, prompt_id,
+permission_mode, effort, hook_event_name, tool_name, tool_input,
+permission_suggestions
+```
+
+**其中没有 `tool_use_id`** —— 官方文档列出了它，实际不存在。若以它为 key 登记挂起的请求，每条请求的 key 都是 `undefined`：只有一条在等时恰好能配上（第一次端到端验证就是这么蒙混过关的），**两条并发就会互相覆盖，一次点击会结掉不确定的那一条**。而多 session 并行正是本项目的前提，这个碰撞必然发生。
+
+因此配对 id **由 bridge 自己生成**（uuid），不依赖载荷里的任何字段。它只用于把卡片上的点击和挂起的 HTTP 请求配对，本来就是 bridge 内部的事。
+
+`permission_suggestions` 是文档未提及的字段，尚未利用。
+
 ### 5.3 pane 关联
 
 hook 的 JSON 载荷中没有 WezTerm 的 pane id。通过 HTTP header 传环境变量解决。此处的 `$BRIDGE_TOKEN` 是 **Hook token**（见 §3.3），不是 IPC token：
