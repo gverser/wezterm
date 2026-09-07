@@ -1394,12 +1394,13 @@ impl Mux {
             let window = self
                 .get_window_mut(window_id)
                 .ok_or_else(|| anyhow!("window_id {} not found on this server", window_id))?;
-            let tab = window
-                .get_active()
-                .ok_or_else(|| anyhow!("window {} has no tabs", window_id))?;
-            let size = tab.get_size();
-
-            (window_id, size)
+            match window.get_active() {
+                // A window kept deliberately empty is a legitimate destination;
+                // it just has no tab to take a size from, so the pane keeps the
+                // one it already had.
+                None => (window_id, src_tab.get_size()),
+                Some(tab) => (window_id, tab.get_size()),
+            }
         } else {
             window_builder = self.new_empty_window(workspace_for_new_window, None);
             (*window_builder, src_tab.get_size())

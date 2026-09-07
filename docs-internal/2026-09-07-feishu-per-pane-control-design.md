@@ -112,13 +112,30 @@ pub enum FeishuState {
 `dispatch.rs` 里加两个 `Item::Notif(...)` 分支；GUI 侧收到后更新本地 `Mux` 的
 `feishu_panes` 和服务状态缓存，并 `invalidate` 让标签栏图标重画。
 
-### 4.3 版本不兼容是有意的
+### 4.3 pane id 是两个编号空间
+
+推送 PDU 里的 `pane_id` 是**服务端的**编号。客户端直接拿它写进本地 `Mux` 会把标记
+落在另一个 pane 上——或者落空，然后图标一动不动，看着像状态同步坏了，其实是写对了
+地方的错误编号。
+
+必须经由 `ClientDomain` 翻译：
+
+```rust
+if let Some(local) = inner.remote_to_local_pane_id(remote_pane_id) {
+    Mux::get().set_pane_feishu(local, enabled);
+}
+```
+
+这是实现时踩到的第一个坑，`Pdu::TabTitleChanged` 早就是这么处理的
+（`domain.rs:494` 的 `process_remote_tab_title_change`），照着做就对。
+
+### 4.4 版本不兼容是有意的
 
 升版本意味着旧 mux-server 和新 GUI 互相拒绝连接（`verify_version_compat`）。这不是
 副作用而是要的效果：旧 server 不认识这个 PDU，连上了也只会让订阅静默失效，还不如
 明着报错。部署时两个二进制一起换、mux-server 重启一次即可。
 
-### 4.3 服务端处理
+### 4.5 服务端处理
 
 `wezterm-mux-server-impl/src/sessionhandler.rs`，照 `Pdu::SetPaneZoomed`（`:546`）：
 
@@ -141,7 +158,7 @@ Pdu::SetPaneFeishu(SetPaneFeishu { pane_id, enabled }) => {
 }
 ```
 
-### 4.4 客户端
+### 4.6 客户端
 
 `wezterm-client/src/client.rs`，在 rpc 列表里加一行（`:1355` 附近）：
 
@@ -287,7 +304,31 @@ pub struct FeishuService {
 这也意味着 bridge 需要往外暴露一个"当前有几个客户端"的读法，`service.rs` 里加个
 计数即可。
 
-### 7.4 spawn 的细节
+### 7.4 千万不要在通知回调里再发通知
+
+`Mux::notify` 在跑订阅者回调的**整个过程中持有 `subscribers` 的写锁**，而
+`RwLock` 不可重入。服务管理器是从这些回调里被叫醒的，所以它**不能同步地**再发一条
+通知：
+
+```
+set_pane_feishu → notify(PaneFeishuChanged)   ← 拿写锁
+                   └─ bridge 回调 → ensure_running → publish()
+                        └─ set_feishu_service_state → notify(...)  ← 再拿同一把锁，死锁
+```
+
+症状极具迷惑性：**服务确实起来了**（spawn 发生在死锁之前），但状态推不出去，图标不
+动；而且从那一刻起整个 mux 线程再不应答任何请求，下一条命令连日志都不打。看起来像
+"点了没反应"，实际是服务端已经死了。
+
+所以 `publish()` 必须把通知推到主线程：
+
+```rust
+promise::spawn::spawn_into_main_thread(async move {
+    mux.set_feishu_service_state(state, crashed);
+}).detach();
+```
+
+### 7.5 spawn 的细节
 
 ```rust
 let mut cmd = std::process::Command::new(&config.feishu_command[0]);
@@ -300,10 +341,14 @@ cmd.stderr(log_file);   // 服务自己的日志，出问题要能查
 
 **Windows 上要加 `CREATE_NO_WINDOW`**，否则每次起服务都会闪一个控制台窗口。
 
-### 7.5 收尸
+### 7.6 收尸
 
 - 正常路径：订阅归零 → `child.kill()` → `child.wait()`
-- mux-server 退出：`Drop` 里再 kill 一次，避免留下孤儿进程
+- mux-server 正常退出：`Drop` 里再 kill 一次
+- **mux-server 被强杀**：`Drop` 根本不会运行，上面两条都指望不上。Windows 上必须用
+  **job object**（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）把子进程绑到本进程的生命
+  周期上——job 句柄随进程消亡而关闭，不管进程是怎么死的，成员进程一起走。实测连
+  孙进程都能带走，比 `kill()` 更彻底（后者只管直接子进程）
 - **服务自己崩了**：`try_wait()` 发现进程没了，把状态标成"已停止"并让 GUI 看到；
   不自动重启——反复崩溃时自动重启只会刷屏
 
@@ -357,6 +402,33 @@ cmd.stderr(log_file);   // 服务自己的日志，出问题要能查
 
 Modal 的 `key_down` 里：`Esc` 关闭面板，`Space`/`Enter` 切换当前 pane 的订阅。
 不给默认快捷键——这不是高频操作。
+
+### 8.4 命令行入口
+
+```
+wezterm cli set-pane-feishu --pane-id N        # 开
+wezterm cli set-pane-feishu --pane-id N --off  # 关
+```
+
+`wezterm/src/cli/set_pane_feishu.rs`，照 `zoom_pane.rs` 的样子。不只是方便：**图形
+界面的点击无法用脚本模拟**（合成的 `WM_LBUTTONDOWN` 到不了 wezterm 的事件循环，
+`SendInput` 又要抢前台焦点），有了命令行入口，整条链路才能在没有人坐在鼠标前的情况
+下验证。上面那三个 bug 都是靠它定位的。
+
+## 附：让空窗口能存活的连锁反应
+
+`spawn_initial_tab = false` 让"没有 tab 的窗口"第一次成为常态，而代码里多处假设它
+不会出现。这些假设过去是对的（空窗口会被 `prune_dead_windows` 立刻清掉），现在不是了：
+
+| 位置 | 原来的假设 | 撞上时的样子 |
+|---|---|---|
+| `Mux::spawn_tab_or_window` | 目标窗口一定有 active tab | `window N has no tabs`，而那正是"在空窗口里选第一个 session"的场景 |
+| `Mux::move_pane_to_new_tab` | 同上 | 把 pane 拖进空窗口时报错 |
+| `TermWindow::mouse_event_impl` | 一定有 active pane | 整个窗口的鼠标事件在入口被丢弃，sidebar、标签栏、按钮全都点不动 |
+| `TermWindow::update_title_impl` | `num_tabs == 0` 时直接返回 | 窗口标题停在最后一次设置的值——通常是 attach 时的 "Connecting..."，看着像卡死 |
+| `keyevent.rs` 的按键入口 | 一定有 active pane | 空窗口下快捷键全失效（sidebar 拿到焦点时不受影响，它的处理在这道关卡之前）|
+
+最后一条**尚未修复**：开出第一个 session 之后就正常了，所以不挡路。
 
 ## 9. 配置
 

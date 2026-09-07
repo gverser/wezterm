@@ -26,6 +26,73 @@ fn derive_state(running: bool, client_attached: bool, exited_on_its_own: bool) -
     }
 }
 
+/// Ties spawned processes to this one's lifetime.
+///
+/// `Drop` handles the ordinary exit, but a mux server that is force-killed
+/// never runs it, and the Feishu service then survives as an orphan holding a
+/// connection nobody can see or stop. A job object closes with the process
+/// whatever way it dies, and takes its members with it.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct Job(HANDLE);
+
+    // The handle is only ever used to add processes and to close, both of
+    // which the OS serialises for us.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        pub fn new() -> Option<Self> {
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    log::warn!("could not create a job object; a force-killed mux server will leave the Feishu service behind");
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    log::warn!("could not set kill-on-close on the job object");
+                    CloseHandle(handle);
+                    return None;
+                }
+                Some(Self(handle))
+            }
+        }
+
+        pub fn adopt(&self, child: &Child) {
+            unsafe {
+                if AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) == 0 {
+                    log::warn!("could not put the Feishu service in the job object");
+                }
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 pub struct FeishuService {
     command: Vec<String>,
     child: Mutex<Option<Child>>,
@@ -35,6 +102,8 @@ pub struct FeishuService {
     client_attached: Mutex<bool>,
     /// Set when the process went away without being asked to.
     crashed: Mutex<Option<String>>,
+    #[cfg(windows)]
+    job: Option<job::Job>,
 }
 
 impl FeishuService {
@@ -44,6 +113,8 @@ impl FeishuService {
             child: Mutex::new(None),
             client_attached: Mutex::new(false),
             crashed: Mutex::new(None),
+            #[cfg(windows)]
+            job: job::Job::new(),
         })
     }
 
@@ -97,6 +168,10 @@ impl FeishuService {
         match cmd.spawn() {
             Ok(child) => {
                 log::info!("started the Feishu service: {:?}", self.command);
+                #[cfg(windows)]
+                if let Some(job) = &self.job {
+                    job.adopt(&child);
+                }
                 *self.crashed.lock() = None;
                 *self.child.lock() = Some(child);
                 self.watch();
