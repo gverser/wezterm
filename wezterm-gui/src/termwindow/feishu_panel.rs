@@ -16,7 +16,9 @@ use crate::utilsprites::RenderMetrics;
 use crate::TermWindow;
 use config::keyassignment::KeyAssignment;
 use config::Dimension;
+use crate::sessions::store::with_store;
 use mux::pane::PaneId;
+use std::collections::HashMap;
 use mux::{FeishuState, Mux};
 use std::cell::{Ref, RefCell};
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
@@ -52,10 +54,39 @@ impl FeishuPanel {
         }
     }
 
-    fn pane_caption(mux: &Mux, pane_id: PaneId) -> String {
-        match mux.get_pane(pane_id) {
-            Some(pane) => format!("#{pane_id}  {}", pane.get_title()),
-            None => format!("#{pane_id}"),
+    /// Workspace name -> the sidebar entry it belongs to, so a row can say
+    /// "casb" rather than "session:2".
+    fn session_labels() -> HashMap<String, String> {
+        with_store(|store| {
+            store
+                .tree()
+                .sessions_with_names()
+                .into_iter()
+                .map(|(id, name)| (id.workspace_name(), name))
+                .collect()
+        })
+    }
+
+    /// Which session a pane belongs to, if it belongs to one the sidebar knows.
+    fn session_of(mux: &Mux, labels: &HashMap<String, String>, pane_id: PaneId) -> Option<String> {
+        let (_domain, window_id, _tab) = mux.resolve_pane_id(pane_id)?;
+        let workspace = mux.get_window(window_id)?.get_workspace().to_string();
+        labels.get(&workspace).cloned()
+    }
+
+    /// A pane, named the way the user thinks of it.
+    ///
+    /// The title alone is useless here: half a dozen mirrored panes are all
+    /// called cmd.exe, which is exactly the situation this panel exists to
+    /// untangle. The session name is what tells them apart.
+    fn pane_caption(mux: &Mux, labels: &HashMap<String, String>, pane_id: PaneId) -> String {
+        let title = mux
+            .get_pane(pane_id)
+            .map(|p| p.get_title())
+            .unwrap_or_default();
+        match Self::session_of(mux, labels, pane_id) {
+            Some(session) => format!("{session}  ·  #{pane_id}  {title}"),
+            None => format!("#{pane_id}  {title}"),
         }
     }
 
@@ -69,6 +100,7 @@ impl FeishuPanel {
             .get_active_pane_or_overlay()
             .map(|p| p.pane_id());
         let subscribed = mux.feishu_panes();
+        let labels = Self::session_labels();
 
         // Borrowed from the command palette rather than given their own config
         // keys: it is the same kind of surface, and one setting that moves both
@@ -115,7 +147,7 @@ impl FeishuPanel {
                 let on = mux.pane_has_feishu(pane_id);
                 elements.push(row(format!(
                     "  当前  {}",
-                    Self::pane_caption(&mux, pane_id)
+                    Self::pane_caption(&mux, &labels, pane_id)
                 )));
                 elements.push(row(format!(
                     "  [空格] {}",
@@ -138,7 +170,7 @@ impl FeishuPanel {
             elements.push(row(String::new()));
             elements.push(row("  其他镜像中的 pane".to_string()));
             for id in others {
-                elements.push(row(format!("    {}", Self::pane_caption(&mux, id))));
+                elements.push(row(format!("    {}", Self::pane_caption(&mux, &labels, id))));
             }
         }
 
