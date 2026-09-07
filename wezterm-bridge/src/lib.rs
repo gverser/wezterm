@@ -8,6 +8,7 @@
 pub mod commands;
 pub mod feishu;
 pub mod keys;
+pub mod labels;
 pub mod mux_access;
 pub mod proto;
 pub mod server;
@@ -15,6 +16,6 @@ pub mod service;
 pub mod state;
 pub mod token;
 
-pub use proto::{Inbound, Outbound, PaneInfo};
 pub use feishu::FeishuService;
+pub use proto::{Inbound, Outbound, PaneInfo};
 pub use state::{BridgeState, PaneAccess, PaneState};

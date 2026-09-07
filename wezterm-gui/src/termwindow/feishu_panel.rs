@@ -5,6 +5,7 @@
 //! than a small glyph can carry. This is where those two are spelled out, along
 //! with the panes the user turned on earlier and may have forgotten.
 
+use crate::sessions::store::with_store;
 use crate::termwindow::box_model::*;
 use crate::termwindow::modal::Modal;
 use crate::termwindow::render::corners::{
@@ -16,11 +17,10 @@ use crate::utilsprites::RenderMetrics;
 use crate::TermWindow;
 use config::keyassignment::KeyAssignment;
 use config::Dimension;
-use crate::sessions::store::with_store;
 use mux::pane::PaneId;
-use std::collections::HashMap;
 use mux::{FeishuState, Mux};
 use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
 
 /// The things this panel can do, named so the key handler and the row that
@@ -79,14 +79,18 @@ impl FeishuPanel {
     /// The title alone is useless here: half a dozen mirrored panes are all
     /// called cmd.exe, which is exactly the situation this panel exists to
     /// untangle. The session name is what tells them apart.
+    ///
+    /// The number is `feishu_pane_id`, not `pane_id`. This panel sits next to a
+    /// phone showing the same sessions, and the number on the phone comes from
+    /// the mux server; printing the client's own id here put two different
+    /// numbers on one window.
     fn pane_caption(mux: &Mux, labels: &HashMap<String, String>, pane_id: PaneId) -> String {
-        let title = mux
-            .get_pane(pane_id)
-            .map(|p| p.get_title())
-            .unwrap_or_default();
+        let pane = mux.get_pane(pane_id);
+        let title = pane.as_ref().map(|p| p.get_title()).unwrap_or_default();
+        let shown = pane.map_or(pane_id, |p| p.feishu_pane_id());
         match Self::session_of(mux, labels, pane_id) {
-            Some(session) => format!("{session}  ·  #{pane_id}  {title}"),
-            None => format!("#{pane_id}  {title}"),
+            Some(session) => format!("{session}  ·  #{shown}  {title}"),
+            None => format!("#{shown}  {title}"),
         }
     }
 
@@ -106,8 +110,11 @@ impl FeishuPanel {
         // keys: it is the same kind of surface, and one setting that moves both
         // beats two that can disagree.
         let panel_bg_linear = term_window.config.command_palette_bg_color.to_linear();
-        let text_color: InheritableColor =
-            term_window.config.command_palette_fg_color.to_linear().into();
+        let text_color: InheritableColor = term_window
+            .config
+            .command_palette_fg_color
+            .to_linear()
+            .into();
         let panel_bg: InheritableColor = panel_bg_linear.into();
 
         let mut elements = vec![];
@@ -151,7 +158,11 @@ impl FeishuPanel {
                 )));
                 elements.push(row(format!(
                     "  [空格] {}",
-                    if on { "停止镜像这个 pane" } else { "开始镜像这个 pane" }
+                    if on {
+                        "停止镜像这个 pane"
+                    } else {
+                        "开始镜像这个 pane"
+                    }
                 )));
             }
             None => {
@@ -170,7 +181,10 @@ impl FeishuPanel {
             elements.push(row(String::new()));
             elements.push(row("  其他镜像中的 pane".to_string()));
             for id in others {
-                elements.push(row(format!("    {}", Self::pane_caption(&mux, &labels, id))));
+                elements.push(row(format!(
+                    "    {}",
+                    Self::pane_caption(&mux, &labels, id)
+                )));
             }
         }
 
@@ -327,7 +341,9 @@ impl Modal for FeishuPanel {
         term_window: &mut TermWindow,
     ) -> anyhow::Result<Ref<'_, [ComputedElement]>> {
         if self.element.borrow().is_none() {
-            self.element.borrow_mut().replace(Self::compute(term_window)?);
+            self.element
+                .borrow_mut()
+                .replace(Self::compute(term_window)?);
         }
         Ok(Ref::map(self.element.borrow(), |v| {
             v.as_ref().unwrap().as_slice()

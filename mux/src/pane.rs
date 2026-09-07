@@ -1,7 +1,6 @@
 use crate::domain::DomainId;
 use crate::renderable::*;
-use crate::ExitBehavior;
-use crate::Mux;
+use crate::{ExitBehavior, Mux};
 use async_trait::async_trait;
 use config::keyassignment::{KeyAssignment, ScrollbackEraseMode};
 use downcast_rs::{impl_downcast, Downcast};
@@ -278,6 +277,20 @@ pub trait Pane: Downcast + Send + Sync {
         if let Some(mux) = Mux::try_get() {
             mux.set_pane_feishu(self.pane_id(), enabled);
         }
+    }
+
+    /// The id this pane is known by on the Feishu side.
+    ///
+    /// The bridge runs inside the mux server and reports the ids it sees there,
+    /// while `pane_id()` on a pane owned by a client is allocated locally and
+    /// bears no relation to them. Everything the user reads -- the chat
+    /// messages, the cards, `$WEZTERM_PANE` in the hooks -- speaks the server's
+    /// numbering, so anything shown next to it has to as well.
+    ///
+    /// For a pane this process owns the two are the same number, which is why
+    /// the default is right for every domain but the mux client.
+    fn feishu_pane_id(&self) -> PaneId {
+        self.pane_id()
     }
 
     fn copy_user_vars(&self) -> HashMap<String, String> {
@@ -576,7 +589,7 @@ mod test {
 
     impl Pane for FakePane {
         fn pane_id(&self) -> PaneId {
-            unimplemented!()
+            42
         }
         fn get_cursor_position(&self) -> StableCursorPosition {
             unimplemented!()
@@ -712,6 +725,18 @@ mod test {
             .iter()
             .map(|l| (l.first_row, l.logical.as_str()))
             .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn a_locally_owned_pane_is_known_by_one_id() {
+        // The Feishu panel labels rows with feishu_pane_id so that the number
+        // it shows is the number the chat and the hooks use. For every domain
+        // but the mux client there is only one number, and this is the promise
+        // that lets the panel call it unconditionally.
+        let pane = FakePane {
+            lines: Mutex::new(vec![]),
+        };
+        assert_eq!(pane.feishu_pane_id(), pane.pane_id());
     }
 
     #[test]

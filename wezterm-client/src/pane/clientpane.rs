@@ -383,6 +383,13 @@ impl Pane for ClientPane {
         .detach();
     }
 
+    fn feishu_pane_id(&self) -> PaneId {
+        // The bridge lives in the server and has never heard of local_pane_id.
+        // Showing that number beside a session the user is also seeing in
+        // Feishu is how the panel came to disagree with the chat.
+        self.remote_pane_id
+    }
+
     fn set_zoomed(&self, zoomed: bool) {
         let render = self.renderable.lock();
         let mut inner = render.inner.borrow_mut();

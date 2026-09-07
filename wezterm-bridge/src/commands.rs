@@ -64,14 +64,7 @@ where
             let panes = state
                 .pane_ids()
                 .into_iter()
-                .filter_map(|id| {
-                    lookup(id).map(|pane| PaneInfo {
-                        pane: id,
-                        workspace: String::new(),
-                        title: pane.title(),
-                        cwd: None,
-                    })
-                })
+                .filter_map(|id| lookup(id).map(|pane| describe(&pane, state)))
                 .collect();
             vec![Outbound::Panes { panes }]
         }
@@ -79,6 +72,23 @@ where
         Inbound::Spawn { .. } | Inbound::Kill { .. } => vec![Outbound::Error {
             message: "spawn and kill are handled by the mux layer".to_string(),
         }],
+    }
+}
+
+/// Describe one pane, the single way the client is ever told about one.
+///
+/// A pane arriving and a pane being listed are the same pane. Building the
+/// description in two places is how the list ends up saying something the
+/// notification did not.
+pub fn describe<P: PaneAccess>(pane: &P, state: &BridgeState) -> PaneInfo {
+    let id = pane.pane_id();
+    PaneInfo {
+        pane: id,
+        workspace: pane.workspace(),
+        title: pane.title(),
+        cwd: pane.cwd(),
+        session: pane.session(),
+        subscribed: state.is_subscribed(id),
     }
 }
 
@@ -122,6 +132,15 @@ mod test {
         }
         fn title(&self) -> String {
             format!("fake-{}", self.id)
+        }
+        fn workspace(&self) -> String {
+            format!("session:{}", self.id)
+        }
+        fn cwd(&self) -> Option<String> {
+            Some(format!("D:\\fake\\{}", self.id))
+        }
+        fn session(&self) -> Option<String> {
+            Some(format!("session-{}", self.id))
         }
         fn current_seqno(&self) -> SequenceNo {
             self.seqno
@@ -326,12 +345,41 @@ mod test {
         match &out[0] {
             Outbound::Panes { panes } => {
                 assert_eq!(panes.len(), 2);
-                assert_eq!(panes[0].pane, 7);
                 assert_eq!(panes[1].pane, 9);
                 assert_eq!(
-                    panes[0].title, "fake-7",
+                    panes[0],
+                    describe(&FakePane::new(7), &state),
                     "list must describe a pane the same way pane_added did"
                 );
+            }
+            other => panic!("expected a Panes reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_described_pane_says_where_it_is() {
+        // A bare id is unreadable on a phone. These three fields are the whole
+        // reason the client can say "casb - cdeb-svc" instead of "#2".
+        let info = describe(&FakePane::new(7), &BridgeState::new());
+        assert_eq!(info.workspace, "session:7");
+        assert_eq!(info.cwd, Some("D:\\fake\\7".to_string()));
+        assert_eq!(info.session, Some("session-7".to_string()));
+    }
+
+    #[test]
+    fn list_carries_the_subscription_state() {
+        // The client reconnects to panes that were already being mirrored.
+        // PaneMirror only fires on change, so without this the client comes
+        // back believing nothing is being watched.
+        let state = BridgeState::new();
+        state.add_pane(7);
+        state.add_pane(9);
+        state.set_subscribed(9, true);
+        let out = dispatch(Inbound::List, &state, |id| Some(FakePane::new(id)));
+        match &out[0] {
+            Outbound::Panes { panes } => {
+                assert!(!panes[0].subscribed, "pane 7 was never turned on");
+                assert!(panes[1].subscribed, "pane 9 was");
             }
             other => panic!("expected a Panes reply, got {other:?}"),
         }

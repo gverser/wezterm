@@ -6,7 +6,7 @@
 //! line -- which would break NDJSON framing in a way that only shows up under
 //! load.
 
-use crate::commands::dispatch;
+use crate::commands::{describe, dispatch};
 use crate::mux_access::MuxPane;
 use crate::proto::{Inbound, Outbound};
 use crate::state::BridgeState;
@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use wezterm_sessions::{NodeId, NodeKind, SessionStore};
+use wezterm_term::Alert;
 
 /// How often pending output is reported to the client.
 ///
@@ -73,7 +74,9 @@ fn subscribe(state: Arc<BridgeState>, outbox: Outbox, feishu: Arc<crate::feishu:
         match notif {
             MuxNotification::PaneAdded(pane_id) => {
                 state.add_pane(pane_id);
-                post(&outbox, describe_pane(pane_id));
+                if let Some(added) = describe_pane(&state, pane_id) {
+                    post(&outbox, added);
+                }
             }
             MuxNotification::PaneRemoved(pane_id) => {
                 state.remove_pane(pane_id);
@@ -88,38 +91,67 @@ fn subscribe(state: Arc<BridgeState>, outbox: Outbox, feishu: Arc<crate::feishu:
                 // The mux is the authority on this; the bridge just mirrors it
                 // so that the flush timer can skip panes nobody is watching.
                 state.set_subscribed(pane_id, enabled);
+                // The client announces a session going up off this, not off
+                // pane_added: opening a shell to run one command in is not an
+                // event anyone wants on their phone. The first subscription of
+                // all is what starts the service, so there is nobody connected
+                // to hear it -- that one the client picks up from `list`.
+                post(
+                    &outbox,
+                    Outbound::PaneMirror {
+                        pane: pane_id,
+                        enabled,
+                    },
+                );
                 // Read the count back from the mux rather than tracking it here:
                 // the mux already de-duplicates, and a pane disappearing also
                 // changes this without any notification the bridge would see.
                 let count = Mux::try_get().map_or(0, |mux| mux.feishu_pane_count());
                 feishu.on_subscription_count(count);
             }
-            MuxNotification::Alert { pane_id, alert } => {
-                post(
-                    &outbox,
-                    Outbound::Alert {
-                        pane: pane_id,
-                        kind: format!("{alert:?}"),
-                    },
-                );
-            }
+            MuxNotification::Alert { pane_id, alert } => match alert {
+                Alert::WindowTitleChanged(_) | Alert::TabTitleChanged(_) => {
+                    // Re-ask the pane rather than forwarding the title on the
+                    // alert. get_title() is assembled from more than the escape
+                    // sequence that just arrived, and it is the answer the pane
+                    // was first described with -- two spellings of the same
+                    // title would look to the client like two different panes.
+                    if let Some(title) = Mux::try_get()
+                        .and_then(|mux| mux.get_pane(pane_id))
+                        .map(|pane| pane.get_title())
+                    {
+                        post(
+                            &outbox,
+                            Outbound::PaneTitle {
+                                pane: pane_id,
+                                title,
+                            },
+                        );
+                    }
+                }
+                other => {
+                    post(
+                        &outbox,
+                        Outbound::Alert {
+                            pane: pane_id,
+                            kind: format!("{other:?}"),
+                        },
+                    );
+                }
+            },
             _ => {}
         }
         true
     });
 }
 
-fn describe_pane(pane_id: mux::pane::PaneId) -> Outbound {
-    let title = Mux::try_get()
-        .and_then(|mux| mux.get_pane(pane_id))
-        .map(|pane| pane.get_title())
-        .unwrap_or_default();
-    Outbound::PaneAdded {
-        pane: pane_id,
-        workspace: String::new(),
-        title,
-        cwd: None,
-    }
+/// The `pane_added` for a pane, or None if the mux has already lost it.
+///
+/// Goes through `commands::describe` so that a pane arriving and a pane being
+/// listed are described by the same code rather than by two that agree today.
+fn describe_pane(state: &BridgeState, pane_id: mux::pane::PaneId) -> Option<Outbound> {
+    let pane = Mux::try_get()?.get_pane(pane_id)?;
+    Some(Outbound::PaneAdded(describe(&MuxPane(pane), state)))
 }
 
 fn post(outbox: &Outbox, msg: Outbound) {
@@ -166,9 +198,13 @@ fn serve_client(
     });
 
     tx.send(Outbound::AuthOk).ok();
+    // Register the panes that already exist, but do not announce them. A
+    // pane_added for a pane that has been open for hours is a lie the client
+    // cannot see through -- it reads as a session starting, with whatever
+    // title that pane happened to have when the socket came up. The standing
+    // list is what `list` is for, and the client asks for it on connect.
     for pane_id in Mux::get().iter_panes().iter().map(|p| p.pane_id()) {
         state.add_pane(pane_id);
-        tx.send(describe_pane(pane_id)).ok();
     }
     *outbox.lock() = Some(tx.clone());
 

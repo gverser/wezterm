@@ -10,6 +10,13 @@ use termwiz::surface::SequenceNo;
 pub trait PaneAccess {
     fn pane_id(&self) -> PaneId;
     fn title(&self) -> String;
+    /// The mux workspace this pane lives in, or "" if it cannot be resolved.
+    fn workspace(&self) -> String;
+    /// The directory the pane is sitting in, as a plain path.
+    fn cwd(&self) -> Option<String>;
+    /// The name the sidebar gives this pane's session, for panes started from
+    /// it. A pane opened by hand belongs to no session and has none.
+    fn session(&self) -> Option<String>;
     fn current_seqno(&self) -> SequenceNo;
     fn changed_since(&self, seqno: SequenceNo) -> bool;
     /// The last `max_lines` lines of the pane as plain text, together with the

@@ -264,14 +264,37 @@ Rust → Node（`wezterm-bridge/src/proto.rs` 的 `Outbound`）：
 
 ```json
 {"t":"auth_ok"}
-{"t":"pane_added","pane":9,"workspace":"","title":"claude","cwd":null}
+{"t":"pane_added","pane":9,"workspace":"session:6","title":"claude","cwd":"D:\\dev\\x","session":"casb","subscribed":false}
 {"t":"pane_removed","pane":9}
+{"t":"pane_title","pane":9,"title":"◑ Claude Code 修复编号"}
+{"t":"pane_mirror","pane":9,"enabled":true}
 {"t":"dirty","pane":7,"seqno":11820}
 {"t":"lines","pane":7,"first_row":3140,"lines":["...","..."],"seqno":11820}
 {"t":"alert","pane":7,"kind":"Bell"}
-{"t":"panes","panes":[{"pane":7,"workspace":"","title":"claude","cwd":null}]}
+{"t":"panes","panes":[{"pane":7,"workspace":"session:6","title":"claude","cwd":"D:\\dev\\x","session":"casb","subscribed":true}]}
 {"t":"error","message":"no such pane: 99"}
 ```
+
+`pane_added` 和 `panes` 里的每一项是同一个 `PaneInfo`（`Outbound::PaneAdded` 是
+newtype，serde 的内部 tag 把它摊平，所以线上格式仍是一层）。字段的意思：
+
+| 字段 | 含义 |
+|---|---|
+| `workspace` | mux 工作区名，sidebar 起的 session 是 `session:<node_id>` |
+| `session` | sidebar 里这个 session 的名字（"casb"），手开的 pane 为 `null` |
+| `cwd` | pane 所在目录，本地路径写法 |
+| `subscribed` | 用户是否要求镜像这个 pane |
+
+**pane_added 不代表"有个 session 起来了"**。bridge 把**每个** pane 都报给客户端，
+因为客户端要能把它们列成可选目标；值得播报的是 `pane_mirror`，那才是用户说"这个
+我要看"。两者的区别是 §8 里那条"开一个 shell 敲条命令"不该惊动手机的由来。
+
+第一个被订阅的 pane 是**服务启动的原因**，那条 `pane_mirror` 发出时还没有客户端连
+上。客户端从连接后的 `list` 里按 `subscribed` 补上，并自己记住播报过谁 —— 断线重连
+时 `list` 会把同样的状态再报一遍，那不是新消息。
+
+`pane_title` 是标题变化。Claude Code 把当前在做的事写进终端标题，`/rename` 也改它；
+只在 pane 创建那一刻取一次标题，得到的永远是 `cmd.exe`。
 
 Node → Rust（`Inbound`）：
 
@@ -285,6 +308,10 @@ Node → Rust（`Inbound`）：
 ```
 
 `submit` 缺省为 `true`，`max_lines` 缺省为 200。`spawn` 与 `kill` 不产生直接回复：两者都是异步的，客户端从 `pane_added` / `pane_removed` 得知结果。
+
+`dirty` 目前客户端不再理会：pane 里跑的是 TUI，屏幕上大半是分隔线、输入框和状态栏，
+把它们转发到飞书没有意义。任务的结果由 Claude Code 的 Stop hook 给出，`read` 只剩
+`!screen` 一个用途 —— 想看屏幕当下长什么样。
 
 ### 7.2 鉴权
 
