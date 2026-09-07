@@ -210,19 +210,23 @@ impl super::TermWindow {
 
     fn lookup_key(
         &mut self,
-        pane: &Arc<dyn Pane>,
+        pane: Option<&Arc<dyn Pane>>,
         keycode: &KeyCode,
         mods: Modifiers,
         only_key_bindings: OnlyKeyBindings,
     ) -> Option<(KeyTableEntry, Option<String>)> {
-        if let Some(overlay) = self.pane_state(pane.pane_id()).overlay.as_mut() {
-            if let Some((entry, table_name)) = overlay.key_table_state.lookup_key(
-                &self.input_map,
-                keycode,
-                mods,
-                only_key_bindings,
-            ) {
-                return Some((entry, table_name.map(|s| s.to_string())));
+        // An overlay belongs to a pane, so a window with no panes has none to
+        // consult and falls straight through to the ordinary key tables.
+        if let Some(pane_id) = pane.map(|p| p.pane_id()) {
+            if let Some(overlay) = self.pane_state(pane_id).overlay.as_mut() {
+                if let Some((entry, table_name)) = overlay.key_table_state.lookup_key(
+                    &self.input_map,
+                    keycode,
+                    mods,
+                    only_key_bindings,
+                ) {
+                    return Some((entry, table_name.map(|s| s.to_string())));
+                }
             }
         }
         if let Some((entry, table_name)) =
@@ -236,9 +240,59 @@ impl super::TermWindow {
             .map(|entry| (entry, None))
     }
 
+    /// Carry out the few assignments that still mean something in a window
+    /// with no panes.
+    ///
+    /// A list rather than teaching perform_key_assignment to take an Option:
+    /// that function has several hundred arms and nearly all of them reach for
+    /// the pane, so the honest answer for almost every action here is "do
+    /// nothing". Spelling out the exceptions keeps that decision visible --
+    /// and an action added later stays silent until someone decides it belongs.
+    fn perform_assignment_without_pane(&mut self, action: &KeyAssignment) -> bool {
+        use KeyAssignment::*;
+        match action {
+            ShowFeishuPanel => {
+                self.show_feishu_panel();
+                true
+            }
+            FocusSessionSidebarSearch => {
+                self.focus_session_sidebar_search();
+                true
+            }
+            CloseAllSessions => {
+                self.close_all_sessions();
+                true
+            }
+            ShowLauncher => {
+                self.show_launcher();
+                true
+            }
+            ActivateCommandPalette => {
+                let modal = crate::termwindow::palette::CommandPalette::new(self);
+                self.set_modal(std::rc::Rc::new(modal));
+                true
+            }
+            SpawnWindow => {
+                self.spawn_command(
+                    &config::keyassignment::SpawnCommand::default(),
+                    crate::termwindow::SpawnWhere::NewWindow,
+                );
+                true
+            }
+            ReloadConfiguration => {
+                config::reload();
+                true
+            }
+            // QuitApplication is deliberately absent: it has to reason about
+            // every other window and ask for confirmation, and the title bar
+            // close button is right there.
+            _ => false,
+        }
+    }
+
     fn process_key(
         &mut self,
-        pane: &Arc<dyn Pane>,
+        pane: Option<&Arc<dyn Pane>>,
         context: &dyn WindowOps,
         keycode: &KeyCode,
         raw_modifiers: Modifiers,
@@ -317,10 +371,13 @@ impl super::TermWindow {
                 }
 
                 self.key_table_state.did_process_key();
-                let handled = match self.perform_key_assignment(&pane, &entry.action) {
-                    Ok(PerformAssignmentResult::Handled) => true,
-                    Err(_) => true,
-                    Ok(_) => false,
+                let handled = match pane {
+                    Some(pane) => match self.perform_key_assignment(pane, &entry.action) {
+                        Ok(PerformAssignmentResult::Handled) => true,
+                        Err(_) => true,
+                        Ok(_) => false,
+                    },
+                    None => self.perform_assignment_without_pane(&entry.action),
                 };
 
                 if handled {
@@ -336,6 +393,13 @@ impl super::TermWindow {
                 }
             }
         }
+
+        // Everything past here is about handing the key to a terminal, which a
+        // window with no panes does not have. In that state a key press can
+        // only ever have been a key assignment, and that has been dealt with.
+        let Some(pane) = pane else {
+            return false;
+        };
 
         // While the leader modifier is active, only registered
         // keybindings are recognized.
@@ -418,7 +482,7 @@ impl super::TermWindow {
                             && !keycode.is_modifier()
                             && self.pane_state(pane.pane_id()).overlay.is_none()
                         {
-                            self.maybe_scroll_to_bottom_for_input(&pane);
+                            self.maybe_scroll_to_bottom_for_input(pane);
                         }
                         if is_down
                             && self.config.hide_mouse_cursor_when_typing
@@ -470,10 +534,10 @@ impl super::TermWindow {
             self.schedule_next_status_update();
         }
 
-        let pane = match self.get_active_pane_or_overlay() {
-            Some(pane) => pane,
-            None => return,
-        };
+        // A window with no panes still has key assignments worth honouring;
+        // process_key sorts out which ones.
+        let pane = self.get_active_pane_or_overlay();
+        let pane = pane.as_ref();
 
         // First, try to match raw physical key
         let phys_key = match &key.key {
@@ -483,7 +547,7 @@ impl super::TermWindow {
 
         if let Some(phys_key) = &phys_key {
             if self.process_key(
-                &pane,
+                pane,
                 context,
                 &phys_key,
                 key.modifiers,
@@ -504,7 +568,7 @@ impl super::TermWindow {
             _ => KeyCode::RawCode(key.raw_code),
         };
         if self.process_key(
-            &pane,
+            pane,
             context,
             &raw_key,
             key.modifiers,
@@ -525,7 +589,7 @@ impl super::TermWindow {
         }
 
         if self.process_key(
-            &pane,
+            pane,
             context,
             &key.key,
             key.modifiers,
@@ -609,10 +673,9 @@ impl super::TermWindow {
     }
 
     pub fn key_event_impl(&mut self, window_key: KeyEvent, context: &dyn WindowOps) {
-        let pane = match self.get_active_pane_or_overlay() {
-            Some(pane) => pane,
-            None => return,
-        };
+        // As above: an empty window can still act on its key assignments.
+        let pane = self.get_active_pane_or_overlay();
+        let pane = pane.as_ref();
 
         // The leader key is a kind of modal modifier key.
         // It is allowed to be active for up to the leader timeout duration,
@@ -641,7 +704,7 @@ impl super::TermWindow {
         let modifiers = window_key.modifiers;
 
         if self.process_key(
-            &pane,
+            pane,
             context,
             &window_key.key,
             window_key.modifiers,
@@ -689,14 +752,22 @@ impl super::TermWindow {
                     return;
                 }
 
-                let res = if let Some(encoded) = self.encode_win32_input(&pane, &window_key) {
+                // Past this point the key is handed to a terminal, and an empty
+                // window has none. Note what already ran above without one: the
+                // sidebar and any open modal, both of which are exactly what a
+                // user in an empty window needs to reach.
+                let Some(pane) = pane else {
+                    return;
+                };
+
+                let res = if let Some(encoded) = self.encode_win32_input(pane, &window_key) {
                     if self.config.debug_key_events {
                         log::info!("win32: Encoded input as {:?}", encoded);
                     }
                     pane.writer()
                         .write_all(encoded.as_bytes())
                         .context("sending win32-input-mode encoded data")
-                } else if let Some(encoded) = self.encode_kitty_input(&pane, &window_key) {
+                } else if let Some(encoded) = self.encode_kitty_input(pane, &window_key) {
                     if self.config.debug_key_events {
                         log::info!("kitty: Encoded input as {:?}", encoded);
                     }
@@ -766,6 +837,11 @@ impl super::TermWindow {
                 if self.config.debug_key_events {
                     log::info!("send to pane string={:?}", s);
                 }
+                // Composed text is text for a terminal; without one there is
+                // nowhere for it to go.
+                let Some(pane) = pane else {
+                    return;
+                };
                 if let Err(err) = pane.send_composed_text(&s) {
                     log::error!("failed to send composed text to pane: {err:#}");
                 }

@@ -426,9 +426,25 @@ wezterm cli set-pane-feishu --pane-id N --off  # 关
 | `Mux::move_pane_to_new_tab` | 同上 | 把 pane 拖进空窗口时报错 |
 | `TermWindow::mouse_event_impl` | 一定有 active pane | 整个窗口的鼠标事件在入口被丢弃，sidebar、标签栏、按钮全都点不动 |
 | `TermWindow::update_title_impl` | `num_tabs == 0` 时直接返回 | 窗口标题停在最后一次设置的值——通常是 attach 时的 "Connecting..."，看着像卡死 |
-| `keyevent.rs` 的按键入口 | 一定有 active pane | 空窗口下快捷键全失效（sidebar 拿到焦点时不受影响，它的处理在这道关卡之前）|
+| `keyevent.rs` 的按键入口 | 一定有 active pane | 空窗口下快捷键全失效 |
 
-最后一条**尚未修复**：开出第一个 session 之后就正常了，所以不挡路。
+按键那条的修法值得单说，因为它和其余几条不同：`perform_key_assignment` 有几百个
+match 分支，绝大多数确实要用 pane，让它接受 `Option` 意味着教每一个分支处理"没有
+pane"，而其中几乎所有的答案都是"什么也不做"。所以改成：
+
+- `lookup_key` 和 `process_key` 收 `Option<&Arc<dyn Pane>>`（前者对 pane 的依赖只有
+  一行——查这个 pane 的 overlay 有没有自己的 key table）
+- **执行**动作时分叉：有 pane 走原路，没有则走 `perform_assignment_without_pane`，
+  一份短白名单，只放行本就不需要 pane 的那几个（面板、启动器、命令面板、sidebar
+  搜索、开新窗口、重载配置、关闭所有 session）
+- 送键给终端的部分提前返回——空窗口没有终端可送，按键只可能是快捷键
+
+`QuitApplication` 特意不在白名单里：它要盘算其他窗口并弹确认，而标题栏的关闭按钮
+就在那儿。
+
+顺带解决了一件事：sidebar 焦点和 modal 的按键处理本来就排在送键之前，把入口的
+`None => return` 去掉之后，**它们在空窗口下自动就能用了**——面板的键盘操作不再要求
+先开一个 session。
 
 ## 9. 配置
 
