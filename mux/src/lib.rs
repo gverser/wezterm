@@ -783,6 +783,14 @@ impl Mux {
         self.feishu_panes.read().len()
     }
 
+    /// Every mirrored pane, in id order so the panel does not reshuffle itself
+    /// between repaints.
+    pub fn feishu_panes(&self) -> Vec<PaneId> {
+        let mut ids: Vec<PaneId> = self.feishu_panes.read().iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// Record the service state and tell anyone watching.
     ///
     /// Notifies unconditionally, unlike set_pane_feishu: a repeated Failed with

@@ -523,7 +523,11 @@ impl super::TermWindow {
                     self.do_new_tab_button_click(MousePress::Left);
                 }
                 TabBarItem::FeishuButton => {
-                    self.toggle_feishu_for_active_pane();
+                    // The icon has to say two things at once -- service state and
+                    // whether this pane is mirrored -- so clicking it opens the
+                    // place where both are spelled out, rather than guessing
+                    // which one the user meant to change.
+                    self.show_feishu_panel();
                 }
                 TabBarItem::None | TabBarItem::LeftStatus | TabBarItem::RightStatus => {
                     let maximized = self

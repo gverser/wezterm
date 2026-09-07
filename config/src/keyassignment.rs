@@ -650,6 +650,7 @@ pub enum KeyAssignment {
     Confirmation(Confirmation),
     ToggleSessionSidebar,
     FocusSessionSidebarSearch,
+    ShowFeishuPanel,
     CloseAllSessions,
 }
 impl_lua_conversion_dynamic!(KeyAssignment);

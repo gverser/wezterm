@@ -73,7 +73,8 @@ pub mod box_model;
 pub mod charselect;
 pub mod clipboard;
 pub mod keyevent;
-pub mod modal;
+pub mod feishu_panel;
+mod modal;
 mod mouseevent;
 pub mod palette;
 pub mod paneselect;
@@ -3238,6 +3239,9 @@ impl TermWindow {
                     front_end().switch_workspace(w);
                 }
             }
+            ShowFeishuPanel => {
+                self.show_feishu_panel();
+            }
             SwitchToWorkspace { name, spawn } => {
                 self.switch_to_workspace(name, spawn);
             }
@@ -3582,6 +3586,28 @@ impl TermWindow {
     /// and the session sidebar has to be able to do it from a window that has no
     /// panes at all -- which is exactly the state a deliberately empty window is
     /// in when the user picks their first session.
+    /// Show the Feishu panel.
+    pub fn show_feishu_panel(&mut self) {
+        let panel = crate::termwindow::feishu_panel::FeishuPanel::new();
+        self.set_modal(std::rc::Rc::new(panel));
+    }
+
+    /// Stop the Feishu service by taking away its reason to run.
+    ///
+    /// There is no "kill the service" request in the protocol on purpose: the
+    /// service exists to serve subscriptions, so dropping them all is both what
+    /// the user means and the only state the server can be left in that stays
+    /// consistent. A stop button that killed the process while panes still
+    /// claimed to be mirrored would just restart it on the next notification.
+    pub fn stop_feishu_service(&mut self) {
+        let mux = Mux::get();
+        for pane_id in mux.feishu_panes() {
+            if let Some(pane) = mux.get_pane(pane_id) {
+                pane.set_feishu(false);
+            }
+        }
+    }
+
     /// Flip Feishu mirroring for the pane the user is looking at.
     ///
     /// Goes through Pane::set_feishu rather than the mux directly: for a pane

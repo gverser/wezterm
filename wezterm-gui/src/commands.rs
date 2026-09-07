@@ -2021,6 +2021,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["View"],
             icon: Some("cod_layout_sidebar_left"),
         },
+        ShowFeishuPanel => CommandDef {
+            brief: "Feishu Panel".into(),
+            doc: "Show what the Feishu service is doing and which panes it mirrors".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["View"],
+            icon: Some("md_cellphone_link"),
+        },
         FocusSessionSidebarSearch => CommandDef {
             brief: "Search Sessions".into(),
             doc: "Focus the session sidebar's search box".into(),
@@ -2095,6 +2103,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ScrollToBottom,
         ToggleSessionSidebar,
         FocusSessionSidebarSearch,
+        ShowFeishuPanel,
         // ----------------- Window
         CloseAllSessions,
         ToggleFullScreen,
