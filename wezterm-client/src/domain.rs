@@ -501,6 +501,20 @@ impl ClientDomain {
         }
     }
 
+    /// Apply a subscription change the server told us about.
+    ///
+    /// The id has to be translated: the server's pane ids and this process's
+    /// pane ids are different numbering spaces, and writing the remote one
+    /// into the local mux would flip the flag on some unrelated pane -- or on
+    /// nothing at all, which is what made the tab bar icon sit there unchanged.
+    pub fn process_remote_feishu_change(&self, remote_pane_id: PaneId, enabled: bool) {
+        if let Some(inner) = self.inner() {
+            if let Some(local_pane_id) = inner.remote_to_local_pane_id(remote_pane_id) {
+                Mux::get().set_pane_feishu(local_pane_id, enabled);
+            }
+        }
+    }
+
     fn process_pane_list(
         inner: Arc<ClientInner>,
         panes: ListPanesResponse,

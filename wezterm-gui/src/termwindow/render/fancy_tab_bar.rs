@@ -117,6 +117,26 @@ impl crate::TermWindow {
             let active_tab = colors.active_tab();
 
             match item.item {
+                // Same shape as the status areas, but it must keep its own
+                // item_type -- borrowing TabBarItem::None here would make the
+                // icon unclickable.
+                TabBarItem::FeishuButton => element
+                    .item_type(UIItemType::TabBar(TabBarItem::FeishuButton))
+                    .line_height(Some(1.75))
+                    .margin(BoxDimension {
+                        left: Dimension::Cells(0.),
+                        right: Dimension::Cells(0.),
+                        top: Dimension::Cells(0.0),
+                        bottom: Dimension::Cells(0.),
+                    })
+                    .padding(BoxDimension {
+                        left: Dimension::Cells(0.25),
+                        right: Dimension::Cells(0.25),
+                        top: Dimension::Cells(0.),
+                        bottom: Dimension::Cells(0.),
+                    })
+                    .border(BoxDimension::new(Dimension::Pixels(0.)))
+                    .colors(bar_colors.clone()),
                 TabBarItem::RightStatus | TabBarItem::LeftStatus | TabBarItem::None => element
                     .item_type(UIItemType::TabBar(TabBarItem::None))
                     .line_height(Some(1.75))

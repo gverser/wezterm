@@ -72,10 +72,12 @@ impl super::TermWindow {
 
     pub fn mouse_event_impl(&mut self, event: MouseEvent, context: &dyn WindowOps) {
         log::trace!("{:?}", event);
-        let pane = match self.get_active_pane_or_overlay() {
-            Some(pane) => pane,
-            None => return,
-        };
+        // A window can legitimately have no panes: that is exactly what a
+        // deliberately empty window looks like while the user picks their first
+        // session out of the sidebar. Returning here made the entire window
+        // inert -- not just the terminal area, but the sidebar, the tab bar and
+        // every button on them.
+        let pane = self.get_active_pane_or_overlay();
 
         self.current_mouse_event.replace(event.clone());
 
@@ -103,7 +105,7 @@ impl super::TermWindow {
             .sub((padding_left + border.left.get() as f32) as isize)
             .max(0) as f32)
             / self.render_metrics.cell_size.width as f32;
-        let x = if !pane.is_mouse_grabbed() {
+        let x = if !pane.as_ref().map_or(false, |p| p.is_mouse_grabbed()) {
             // Round the x coordinate so that we're a bit more forgiving of
             // the horizontal position when selecting cells
             x.round()
@@ -255,18 +257,22 @@ impl super::TermWindow {
             self.current_mouse_capture,
             None | Some(MouseCapture::TerminalPane(_))
         ) {
-            self.mouse_event_terminal(
-                pane,
-                ClickPosition {
-                    column: x,
-                    row: y,
-                    x_pixel_offset,
-                    y_pixel_offset,
-                },
-                event,
-                context,
-                capture_mouse,
-            );
+            // Only this half genuinely needs a pane. With none, a click in the
+            // empty area simply has nothing to land on.
+            if let Some(pane) = pane {
+                self.mouse_event_terminal(
+                    pane,
+                    ClickPosition {
+                        column: x,
+                        row: y,
+                        x_pixel_offset,
+                        y_pixel_offset,
+                    },
+                    event,
+                    context,
+                    capture_mouse,
+                );
+            }
         }
 
         if prior_ui_item != ui_item {
@@ -390,7 +396,7 @@ impl super::TermWindow {
     fn mouse_event_ui_item(
         &mut self,
         item: UIItem,
-        pane: Arc<dyn Pane>,
+        pane: Option<Arc<dyn Pane>>,
         _y: i64,
         event: MouseEvent,
         context: &dyn WindowOps,
@@ -400,14 +406,22 @@ impl super::TermWindow {
             UIItemType::TabBar(item) => {
                 self.mouse_event_tab_bar(item, event, context);
             }
+            // The scrollbar scrolls a pane, so without one there is nothing for
+            // these to act on -- and nothing draws them in that state either.
             UIItemType::AboveScrollThumb => {
-                self.mouse_event_above_scroll_thumb(item, pane, event, context);
+                if let Some(pane) = pane {
+                    self.mouse_event_above_scroll_thumb(item, pane, event, context);
+                }
             }
             UIItemType::ScrollThumb => {
-                self.mouse_event_scroll_thumb(item, pane, event, context);
+                if let Some(pane) = pane {
+                    self.mouse_event_scroll_thumb(item, pane, event, context);
+                }
             }
             UIItemType::BelowScrollThumb => {
-                self.mouse_event_below_scroll_thumb(item, pane, event, context);
+                if let Some(pane) = pane {
+                    self.mouse_event_below_scroll_thumb(item, pane, event, context);
+                }
             }
             UIItemType::Split(split) => {
                 self.mouse_event_split(item, split, event, context);
@@ -508,6 +522,9 @@ impl super::TermWindow {
                 TabBarItem::NewTabButton { .. } => {
                     self.do_new_tab_button_click(MousePress::Left);
                 }
+                TabBarItem::FeishuButton => {
+                    self.toggle_feishu_for_active_pane();
+                }
                 TabBarItem::None | TabBarItem::LeftStatus | TabBarItem::RightStatus => {
                     let maximized = self
                         .window_state
@@ -561,6 +578,7 @@ impl super::TermWindow {
                 TabBarItem::None
                 | TabBarItem::LeftStatus
                 | TabBarItem::RightStatus
+                | TabBarItem::FeishuButton
                 | TabBarItem::WindowButton(_) => {}
             },
             WMEK::Press(MousePress::Right) => match item {
@@ -573,9 +591,12 @@ impl super::TermWindow {
                 TabBarItem::None
                 | TabBarItem::LeftStatus
                 | TabBarItem::RightStatus
+                | TabBarItem::FeishuButton
                 | TabBarItem::WindowButton(_) => {}
             },
             WMEK::Move => match item {
+                // Not a draggable part of the title bar.
+                TabBarItem::FeishuButton => {}
                 TabBarItem::None | TabBarItem::LeftStatus | TabBarItem::RightStatus => {
                     context.set_window_drag_position(event.screen_coords);
                 }

@@ -1,6 +1,7 @@
 use crate::domain::DomainId;
 use crate::renderable::*;
 use crate::ExitBehavior;
+use crate::Mux;
 use async_trait::async_trait;
 use config::keyassignment::{KeyAssignment, ScrollbackEraseMode};
 use downcast_rs::{impl_downcast, Downcast};
@@ -265,6 +266,18 @@ pub trait Pane: Downcast + Send + Sync {
 
     fn get_keyboard_encoding(&self) -> KeyboardEncoding {
         KeyboardEncoding::Xterm
+    }
+
+    /// Ask for this pane's output to be mirrored to Feishu.
+    ///
+    /// The default records it in the local mux, which is right for a pane this
+    /// process owns. A pane living on a mux server overrides this to forward
+    /// the request there -- the server is the authority, and every other client
+    /// learns about it from the server's notification rather than from here.
+    fn set_feishu(&self, enabled: bool) {
+        if let Some(mux) = Mux::try_get() {
+            mux.set_pane_feishu(self.pane_id(), enabled);
+        }
     }
 
     fn copy_user_vars(&self) -> HashMap<String, String> {

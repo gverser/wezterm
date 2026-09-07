@@ -31,7 +31,37 @@ pub enum TabBarItem {
     RightStatus,
     Tab { tab_idx: usize, active: bool },
     NewTabButton,
+    FeishuButton,
     WindowButton(IntegratedTitleButton),
+}
+
+/// What the Feishu icon should say. Absent where the feature is unconfigured,
+/// in which case no icon is drawn at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeishuIndicator {
+    /// Whether the pane the user is looking at right now is mirrored.
+    pub current_pane_on: bool,
+    pub service: mux::FeishuState,
+}
+
+impl FeishuIndicator {
+    /// The glyph and colour to draw, as a status string.
+    ///
+    /// A filled diamond means "this pane is going to Feishu"; hollow means it
+    /// is not. Colour carries the service's own health, which is a separate
+    /// question from whether this particular pane opted in -- the service can
+    /// be running happily while the pane in front of you is not mirrored.
+    fn status_text(&self) -> String {
+        use mux::FeishuState::*;
+        let glyph = if self.current_pane_on { "\u{25c6}" } else { "\u{25c7}" };
+        let colour = match self.service {
+            Stopped => "8",   // grey: nothing running
+            Starting => "3",  // yellow: on its way up
+            Connected => "4", // blue: carrying messages
+            Failed => "1",    // red: it left on its own
+        };
+        format!("\u{1b}[38;5;{colour}m {glyph} \u{1b}[0m")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -429,6 +459,7 @@ impl TabBarState {
         config: &ConfigHandle,
         left_status: &str,
         right_status: &str,
+        feishu: Option<FeishuIndicator>,
     ) -> Self {
         let colors = colors.cloned().unwrap_or_else(TabBarColors::default);
 
@@ -617,6 +648,23 @@ impl TabBarState {
                 width,
             });
 
+            x += width;
+        }
+
+        // Feishu indicator, immediately right of the new-tab button. Drawn only
+        // when the feature is configured: an icon nobody can explain is worse
+        // than no icon at all.
+        if let Some(feishu) = feishu {
+            let text = parse_status_text(&feishu.status_text(), CellAttributes::default());
+            let button_start = x;
+            let width = text.len();
+            line.append_line(text.clone(), SEQ_ZERO);
+            items.push(TabEntry {
+                item: TabBarItem::FeishuButton,
+                title: text,
+                x: button_start,
+                width,
+            });
             x += width;
         }
 

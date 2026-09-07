@@ -6,6 +6,7 @@
 //! the client is away for a minute or for hours.
 
 pub mod commands;
+pub mod feishu;
 pub mod keys;
 pub mod mux_access;
 pub mod proto;
@@ -15,4 +16,5 @@ pub mod state;
 pub mod token;
 
 pub use proto::{Inbound, Outbound, PaneInfo};
+pub use feishu::FeishuService;
 pub use state::{BridgeState, PaneAccess, PaneState};

@@ -425,22 +425,28 @@ impl super::TermWindow {
             self.sidebar.pending_open = Some(id);
         }
 
-        let pane = match self.get_active_pane_or_overlay() {
-            Some(pane) => pane,
-            None => return,
-        };
-
-        if let Err(err) = self.perform_key_assignment(
-            &pane,
-            &KeyAssignment::SwitchToWorkspace {
-                name: Some(workspace.clone()),
-                spawn: Some(command.clone()),
-            },
-        ) {
-            log::error!("failed to open session {id}: {err:#}");
-            self.sidebar.failed.insert(id);
-            self.sidebar.pending_open = None;
-            return;
+        // A window with no panes is exactly the state the user is in when picking
+        // their very first session, so returning early here would make the
+        // sidebar look dead on a fresh start. Switching workspaces never needed
+        // a pane -- only perform_key_assignment's signature did.
+        match self.get_active_pane_or_overlay() {
+            Some(pane) => {
+                if let Err(err) = self.perform_key_assignment(
+                    &pane,
+                    &KeyAssignment::SwitchToWorkspace {
+                        name: Some(workspace.clone()),
+                        spawn: Some(command.clone()),
+                    },
+                ) {
+                    log::error!("failed to open session {id}: {err:#}");
+                    self.sidebar.failed.insert(id);
+                    self.sidebar.pending_open = None;
+                    return;
+                }
+            }
+            None => {
+                self.switch_to_workspace(&Some(workspace.clone()), &Some(command.clone()));
+            }
         }
 
         if want_new_tab && already_open {

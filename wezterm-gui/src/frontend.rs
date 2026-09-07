@@ -51,6 +51,10 @@ impl GuiFrontEnd {
 
         mux.subscribe(move |n| {
             match n {
+                // Feishu state is mux-wide and only the tab bar draws it; each
+                // window hears about it through its own subscription.
+                MuxNotification::PaneFeishuChanged { .. }
+                | MuxNotification::FeishuServiceStatusChanged { .. } => {}
                 MuxNotification::WorkspaceRenamed {
                     old_workspace,
                     new_workspace,

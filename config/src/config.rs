@@ -186,6 +186,22 @@ pub struct Config {
     )]
     pub session_sidebar_width: Dimension,
 
+    /// Whether to open a tab when the GUI starts and there is nothing running
+    /// yet. Turning this off leaves an empty window showing only the session
+    /// sidebar, so starting fresh does not put a shell in front of you that you
+    /// did not ask for. Has no effect when panes are already running: the GUI
+    /// attaches to those instead of spawning anything.
+    #[dynamic(default = "default_true")]
+    pub spawn_initial_tab: bool,
+
+    /// How to start the Feishu service. Empty (the default) turns the whole
+    /// feature off: no tab bar icon, and nothing is ever spawned.
+    ///
+    /// Example:
+    ///   config.feishu_command = { 'node', 'D:/dev/remote-controll/src/main.js' }
+    #[dynamic(default)]
+    pub feishu_command: Vec<String>,
+
     /// Whether the mux server exposes the local bridge service, which lets an
     /// external client watch and drive panes over a loopback socket
     #[dynamic(default)]

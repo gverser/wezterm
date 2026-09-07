@@ -17,6 +17,7 @@ use parking_lot::{
 };
 use percent_encoding::percent_decode_str;
 use portable_pty::{CommandBuilder, ExitStatus, PtySize};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::{Read, Write};
@@ -53,6 +54,24 @@ use crate::activity::Activity;
 
 pub const DEFAULT_WORKSPACE: &str = "default";
 
+/// What the Feishu service process is doing.
+///
+/// Defined here rather than in codec because MuxNotification carries it, and
+/// mux cannot depend on codec -- the dependency runs the other way.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum FeishuState {
+    /// No process running.
+    Stopped,
+    /// Started, but it has not connected to the bridge yet.
+    Starting,
+    /// Connected to the bridge. This says nothing about whether the service
+    /// reached Feishu itself -- that happens beyond our sight, and its own log
+    /// is where to look for it.
+    Connected,
+    /// The process exited on its own.
+    Failed,
+}
+
 #[derive(Clone, Debug)]
 pub enum MuxNotification {
     PaneOutput(PaneId),
@@ -82,6 +101,19 @@ pub enum MuxNotification {
         window_id: WindowId,
     },
     PaneFocused(PaneId),
+    /// A pane's Feishu subscription was turned on or off. Carried across the
+    /// wire as Pdu::PaneFeishuChanged so that every GUI sees it, not just the
+    /// one whose user flipped the switch.
+    PaneFeishuChanged {
+        pane_id: PaneId,
+        enabled: bool,
+    },
+    /// The Feishu service process changed state. Reaches every GUI as
+    /// Pdu::FeishuServiceStatus so their panels agree on what is running.
+    FeishuServiceStatusChanged {
+        state: FeishuState,
+        detail: Option<String>,
+    },
     TabResized(TabId),
     TabTitleChanged {
         tab_id: TabId,
@@ -111,6 +143,14 @@ pub struct Mux {
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
     identity: RwLock<Option<Arc<ClientId>>>,
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
+    /// Panes the user asked to mirror to Feishu. Deliberately not persisted: a
+    /// pane that goes away takes its subscription with it, and the next pane to
+    /// be handed that id is a different pane entirely.
+    feishu_panes: RwLock<HashSet<PaneId>>,
+    /// Last known state of the Feishu service. On the server this is set by the
+    /// process manager; on a GUI client it is whatever the server last told us.
+    /// Kept here rather than per-window so several windows cannot disagree.
+    feishu_service: RwLock<(FeishuState, Option<String>)>,
     main_thread_id: std::thread::ThreadId,
     agent: Option<AgentProxy>,
 }
@@ -454,6 +494,8 @@ impl Mux {
             clients: RwLock::new(HashMap::new()),
             identity: RwLock::new(None),
             num_panes_by_workspace: RwLock::new(HashMap::new()),
+            feishu_panes: RwLock::new(HashSet::new()),
+            feishu_service: RwLock::new((FeishuState::Stopped, None)),
             main_thread_id: std::thread::current().id(),
             agent,
         }
@@ -712,6 +754,48 @@ impl Mux {
         subscribers.retain(|_, notify| notify(notification.clone()));
     }
 
+    /// Turn a pane's Feishu mirroring on or off.
+    ///
+    /// Only reports a change when one actually happened. That matters: the
+    /// service manager starts and stops the Feishu process on these
+    /// notifications, and a repeated "on" would otherwise make it thrash.
+    pub fn set_pane_feishu(&self, pane_id: PaneId, enabled: bool) {
+        let changed = {
+            let mut set = self.feishu_panes.write();
+            if enabled {
+                set.insert(pane_id)
+            } else {
+                set.remove(&pane_id)
+            }
+        };
+        if changed {
+            self.notify(MuxNotification::PaneFeishuChanged { pane_id, enabled });
+        }
+    }
+
+    pub fn pane_has_feishu(&self, pane_id: PaneId) -> bool {
+        self.feishu_panes.read().contains(&pane_id)
+    }
+
+    /// How many panes are currently mirrored. The service manager watches this
+    /// crossing zero in either direction.
+    pub fn feishu_pane_count(&self) -> usize {
+        self.feishu_panes.read().len()
+    }
+
+    /// Record the service state and tell anyone watching.
+    ///
+    /// Notifies unconditionally, unlike set_pane_feishu: a repeated Failed with
+    /// a different reason is still news worth showing.
+    pub fn set_feishu_service_state(&self, state: FeishuState, detail: Option<String>) {
+        *self.feishu_service.write() = (state, detail.clone());
+        self.notify(MuxNotification::FeishuServiceStatusChanged { state, detail });
+    }
+
+    pub fn feishu_service_state(&self) -> (FeishuState, Option<String>) {
+        self.feishu_service.read().clone()
+    }
+
     pub fn notify_from_any_thread(notification: MuxNotification) {
         if let Some(mux) = Mux::try_get() {
             if mux.is_main_thread() {
@@ -824,6 +908,16 @@ impl Mux {
             log::debug!("killing pane {}", pane_id);
             pane.kill();
             self.notify(MuxNotification::PaneRemoved(pane_id));
+            // A subscription cannot outlive its pane. Saying so explicitly is
+            // what lets the service manager notice that the last mirrored pane
+            // just went away -- nothing else would tell it, and it would sit
+            // there holding a Feishu connection nobody is watching.
+            if self.feishu_panes.write().remove(&pane_id) {
+                self.notify(MuxNotification::PaneFeishuChanged {
+                    pane_id,
+                    enabled: false,
+                });
+            }
             changed = true;
         }
 
@@ -910,6 +1004,10 @@ impl Mux {
         let live_tab_ids: Vec<TabId> = self.tabs.read().keys().cloned().collect();
         let mut dead_windows = vec![];
         let dead_tab_ids: Vec<TabId>;
+        // A window that is empty on purpose keeps the mux from declaring itself
+        // empty further down: there is still something on screen waiting for the
+        // user, even though no pane exists yet.
+        let mut retained_empty_window = false;
 
         {
             let mut windows = match self.windows.try_write() {
@@ -923,8 +1021,17 @@ impl Mux {
             for (window_id, win) in windows.iter_mut() {
                 win.prune_dead_tabs(&live_tab_ids);
                 if win.is_empty() {
-                    log::trace!("prune_dead_windows: window is now empty");
-                    dead_windows.push(*window_id);
+                    if win.retain_when_empty() {
+                        // The GUI opened this one with no tab in it and is
+                        // showing the session sidebar. Pruning it here would
+                        // take the window off the screen and, by way of the
+                        // Empty notification below, quit the GUI outright.
+                        log::trace!("prune_dead_windows: window {window_id} is empty by request");
+                        retained_empty_window = true;
+                    } else {
+                        log::trace!("prune_dead_windows: window is now empty");
+                        dead_windows.push(*window_id);
+                    }
                 }
             }
 
@@ -946,7 +1053,9 @@ impl Mux {
             self.remove_window_internal(window_id);
         }
 
-        if self.is_empty() {
+        // is_empty() counts panes, so a deliberately empty window would otherwise
+        // still look like nothing at all is going on.
+        if self.is_empty() && !retained_empty_window {
             log::trace!("prune_dead_windows: is_empty, send MuxNotification::Empty");
             self.notify(MuxNotification::Empty);
         } else {
@@ -1335,17 +1444,27 @@ impl Mux {
             let window = self
                 .get_window_mut(window_id)
                 .ok_or_else(|| anyhow!("window_id {} not found on this server", window_id))?;
-            let tab = window
-                .get_active()
-                .ok_or_else(|| anyhow!("window {} has no tabs", window_id))?;
-            let pane = tab
-                .get_active_pane()
-                .ok_or_else(|| anyhow!("active tab in window {} has no panes", window_id))?;
-            term_config = pane.get_config();
-
-            let size = tab.get_size();
-
-            (window_id, size)
+            match window.get_active() {
+                Some(tab) => {
+                    let pane = tab.get_active_pane().ok_or_else(|| {
+                        anyhow!("active tab in window {} has no panes", window_id)
+                    })?;
+                    term_config = pane.get_config();
+                    (window_id, tab.get_size())
+                }
+                None => {
+                    // A window kept deliberately empty is a legitimate target:
+                    // it is exactly what the user is looking at when they pick
+                    // their first session out of the sidebar. Before empty
+                    // windows could survive, reaching here meant something was
+                    // wrong; now it is the ordinary way in.
+                    //
+                    // There is no tab to inherit a size or a config from, so
+                    // take the size the caller worked out from the window.
+                    term_config = None;
+                    (window_id, size)
+                }
+            }
         } else {
             term_config = None;
             window_builder = self.new_empty_window(Some(workspace_for_new_window), window_position);
@@ -1471,5 +1590,77 @@ impl wezterm_term::DownloadHandler for MuxDownloader {
                 data: Arc::new(data),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod feishu_test {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A Mux plus a count of the PaneFeishuChanged notifications it has emitted.
+    fn counting_mux() -> (Mux, Arc<AtomicUsize>) {
+        let mux = Mux::new(None);
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        mux.subscribe(move |n| {
+            if matches!(n, MuxNotification::PaneFeishuChanged { .. }) {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+            true
+        });
+        (mux, count)
+    }
+
+    #[test]
+    fn panes_start_unsubscribed() {
+        let mux = Mux::new(None);
+        assert!(!mux.pane_has_feishu(1));
+        assert_eq!(mux.feishu_pane_count(), 0);
+    }
+
+    #[test]
+    fn a_repeated_subscription_is_reported_once() {
+        let (mux, count) = counting_mux();
+        mux.set_pane_feishu(1, true);
+        mux.set_pane_feishu(1, true);
+        assert!(mux.pane_has_feishu(1));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "the service manager starts and stops the Feishu process on these;              reporting an unchanged state would make it thrash"
+        );
+    }
+
+    #[test]
+    fn unsubscribing_what_was_never_subscribed_says_nothing() {
+        let (mux, count) = counting_mux();
+        mux.set_pane_feishu(7, false);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(mux.feishu_pane_count(), 0);
+    }
+
+    #[test]
+    fn the_count_follows_distinct_panes() {
+        let mux = Mux::new(None);
+        mux.set_pane_feishu(1, true);
+        mux.set_pane_feishu(2, true);
+        mux.set_pane_feishu(1, true);
+        assert_eq!(
+            mux.feishu_pane_count(),
+            2,
+            "the same pane asked for twice is still one pane"
+        );
+        mux.set_pane_feishu(1, false);
+        assert_eq!(mux.feishu_pane_count(), 1);
+    }
+
+    #[test]
+    fn turning_it_off_is_reported_too() {
+        let (mux, count) = counting_mux();
+        mux.set_pane_feishu(3, true);
+        mux.set_pane_feishu(3, false);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert!(!mux.pane_has_feishu(3));
     }
 }

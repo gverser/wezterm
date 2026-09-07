@@ -14,6 +14,12 @@ pub struct Window {
     workspace: String,
     title: String,
     initial_position: Option<GuiPosition>,
+    /// Set when this window is deliberately being kept with no tabs in it, so
+    /// that the GUI can show just the session sidebar and wait for the user to
+    /// pick what to open. Without it, prune_dead_windows clears the window away
+    /// the moment the startup Activity guard is dropped, and the mux then
+    /// reports itself empty and the GUI exits.
+    retain_when_empty: bool,
 }
 
 impl Window {
@@ -26,7 +32,19 @@ impl Window {
             title: String::new(),
             workspace: workspace.unwrap_or_else(|| Mux::get().active_workspace()),
             initial_position,
+            retain_when_empty: false,
         }
+    }
+
+    /// Whether this window should survive having no tabs. Only the empty
+    /// window the GUI opens at startup sets this; every other window is dead
+    /// once its last tab goes away.
+    pub fn retain_when_empty(&self) -> bool {
+        self.retain_when_empty
+    }
+
+    pub fn set_retain_when_empty(&mut self, retain: bool) {
+        self.retain_when_empty = retain;
     }
 
     pub fn get_initial_position(&self) -> &Option<GuiPosition> {
@@ -264,5 +282,35 @@ impl Window {
         if invalidated {
             self.invalidate();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Passing an explicit workspace keeps Window::new from reaching for the
+    // global Mux, which does not exist in a unit test.
+    fn a_window() -> Window {
+        Window::new(Some("default".to_string()), None)
+    }
+
+    #[test]
+    fn windows_are_not_retained_by_default() {
+        assert!(
+            !a_window().retain_when_empty(),
+            "only the startup window opts in; every other empty window is dead"
+        );
+    }
+
+    #[test]
+    fn retention_is_independent_of_emptiness() {
+        let mut w = a_window();
+        w.set_retain_when_empty(true);
+        assert!(w.retain_when_empty());
+        assert!(
+            w.is_empty(),
+            "retention says do not prune me, not I have tabs -- prune_dead_windows needs both facts and must not confuse them"
+        );
     }
 }

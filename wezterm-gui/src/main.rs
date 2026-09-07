@@ -314,9 +314,39 @@ async fn spawn_tab_in_domain_if_mux_is_empty(
     let config = config::configuration();
     config.update_ulimit()?;
 
-    domain.attach(Some(window_id)).await?;
+    // Mark the window before attaching, not after. Attaching puts a
+    // "Connecting..." overlay in the window and takes it away again when it
+    // finishes; for the instant between the two the window has no tabs at all,
+    // and prune_dead_windows removes it right there -- well before the code
+    // below could ask for it to be kept. The window then no longer exists, the
+    // request to keep it is silently dropped, and the GUI is left showing a
+    // window that the mux has already forgotten.
+    if !config.spawn_initial_tab {
+        if let Some(mut window) = mux.get_window_mut(window_id) {
+            window.set_retain_when_empty(true);
+        }
+    }
+
+    if let Err(err) = domain.attach(Some(window_id)).await {
+        // The mark above says "keep this window even though it is empty". With
+        // the attach failed there is nothing coming to fill it, and leaving the
+        // mark on strands an unusable window on screen while also suppressing
+        // the Empty notification that would otherwise let the GUI shut down.
+        if let Some(mut window) = mux.get_window_mut(window_id) {
+            window.set_retain_when_empty(false);
+        }
+        return Err(err);
+    }
 
     if have_panes_in_domain_and_ws(&domain, &workspace) {
+        trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
+        return Ok(());
+    }
+
+    // Nothing is running, and the user would rather look at an empty window than
+    // a shell they did not ask for. The window was marked to survive being empty
+    // before the attach above.
+    if !config.spawn_initial_tab {
         trigger_and_log_gui_attached(MuxDomain(domain.domain_id())).await;
         return Ok(());
     }

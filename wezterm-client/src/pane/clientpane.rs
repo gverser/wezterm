@@ -364,6 +364,25 @@ impl Pane for ClientPane {
         })
     }
 
+    fn set_feishu(&self, enabled: bool) {
+        let client = Arc::clone(&self.client);
+        let remote_pane_id = self.remote_pane_id;
+        // Deliberately does not touch the local mux: the server decides, and
+        // tells every client -- including this one -- through
+        // Pdu::PaneFeishuChanged. Setting it here too would mean this window
+        // showed a state the server might yet refuse.
+        promise::spawn::spawn(async move {
+            client
+                .client
+                .set_pane_feishu(SetPaneFeishu {
+                    pane_id: remote_pane_id,
+                    enabled,
+                })
+                .await
+        })
+        .detach();
+    }
+
     fn set_zoomed(&self, zoomed: bool) {
         let render = self.renderable.lock();
         let mut inner = render.inner.borrow_mut();

@@ -21,6 +21,7 @@ mod set_window_title;
 mod spawn_command;
 mod split_pane;
 mod tls_creds;
+mod set_pane_feishu;
 mod zoom_pane;
 
 #[derive(Debug, Parser, Clone, Copy)]
@@ -160,6 +161,10 @@ Outputs the pane-id for the newly created pane on success"
     #[command(name = "rename-workspace", rename_all = "kebab")]
     RenameWorkspace(rename_workspace::RenameWorkspace),
 
+    /// Turn Feishu mirroring on or off for a pane
+    #[command(name = "set-pane-feishu", rename_all = "kebab")]
+    SetPaneFeishu(set_pane_feishu::SetPaneFeishuCommand),
+
     /// Zoom, unzoom, or toggle zoom state
     #[command(name = "zoom-pane", rename_all = "kebab")]
     ZoomPane(zoom_pane::ZoomPane),
@@ -198,6 +203,7 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
         CliSubCommand::SetTabTitle(cmd) => cmd.run(client).await,
         CliSubCommand::SetWindowTitle(cmd) => cmd.run(client).await,
         CliSubCommand::RenameWorkspace(cmd) => cmd.run(client).await,
+        CliSubCommand::SetPaneFeishu(cmd) => cmd.run(client).await,
         CliSubCommand::ZoomPane(cmd) => cmd.run(client).await,
     }
 }

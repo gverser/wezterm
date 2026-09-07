@@ -28,6 +28,11 @@ pub struct PaneState {
     pub pane_id: PaneId,
     pub last_seqno: SequenceNo,
     pub dirty: bool,
+    /// Whether the user asked for this pane to be mirrored. Panes are tracked
+    /// whether or not they are subscribed -- the client wants to know they
+    /// exist, so it can offer them -- but only subscribed ones have their
+    /// output read and sent.
+    pub subscribed: bool,
 }
 
 impl PaneState {
@@ -35,6 +40,7 @@ impl PaneState {
         Self {
             pane_id,
             last_seqno: 0,
+            subscribed: false,
             dirty: false,
         }
     }
@@ -72,17 +78,40 @@ impl BridgeState {
         }
     }
 
-    /// The panes with pending output, clearing their flags.
+    /// The subscribed panes with pending output, clearing every pane's flag.
+    ///
+    /// Flags are cleared for unsubscribed panes too, on purpose: turning a pane
+    /// on should start mirroring from that moment, not replay whatever it
+    /// happened to print while nobody was listening.
     pub fn take_dirty(&self) -> Vec<PaneId> {
         let mut panes = self.panes.lock();
         let mut out = vec![];
         for (id, entry) in panes.iter_mut() {
             if entry.dirty {
                 entry.dirty = false;
-                out.push(*id);
+                if entry.subscribed {
+                    out.push(*id);
+                }
             }
         }
         out
+    }
+
+    /// Turn mirroring on or off for one pane.
+    ///
+    /// Silently does nothing for a pane the bridge does not know about: the
+    /// notification can arrive after the pane is gone.
+    pub fn set_subscribed(&self, pane_id: PaneId, subscribed: bool) {
+        if let Some(entry) = self.panes.lock().get_mut(&pane_id) {
+            entry.subscribed = subscribed;
+        }
+    }
+
+    pub fn is_subscribed(&self, pane_id: PaneId) -> bool {
+        self.panes
+            .lock()
+            .get(&pane_id)
+            .map_or(false, |e| e.subscribed)
     }
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
@@ -104,25 +133,75 @@ impl BridgeState {
 mod test {
     use super::*;
 
-    #[test]
-    fn a_new_pane_starts_clean() {
+    /// Pane 7, present and mirrored -- the ordinary case most of these tests
+    /// are about.
+    fn subscribed_state() -> BridgeState {
         let state = BridgeState::new();
         state.add_pane(7);
+        state.set_subscribed(7, true);
+        state
+    }
+
+    #[test]
+    fn a_new_pane_starts_clean() {
+        let state = subscribed_state();
         assert_eq!(state.take_dirty(), Vec::<PaneId>::new());
     }
 
     #[test]
-    fn output_marks_the_pane_dirty() {
+    fn a_new_pane_starts_unsubscribed() {
         let state = BridgeState::new();
         state.add_pane(7);
+        assert!(
+            !state.is_subscribed(7),
+            "mirroring is opt-in; a pane the user never asked for must not be sent"
+        );
+    }
+
+    #[test]
+    fn output_marks_the_pane_dirty() {
+        let state = subscribed_state();
         state.mark_dirty(7);
         assert_eq!(state.take_dirty(), vec![7]);
     }
 
     #[test]
-    fn taking_dirty_clears_the_flag() {
+    fn an_unsubscribed_pane_is_never_handed_over() {
         let state = BridgeState::new();
         state.add_pane(7);
+        state.mark_dirty(7);
+        assert_eq!(
+            state.take_dirty(),
+            Vec::<PaneId>::new(),
+            "its output is nobody's business until the user asks for it"
+        );
+    }
+
+    #[test]
+    fn output_from_before_subscribing_is_not_replayed() {
+        let state = BridgeState::new();
+        state.add_pane(7);
+        state.mark_dirty(7);
+        state.take_dirty(); // the flush that happened while nobody was listening
+        state.set_subscribed(7, true);
+        assert_eq!(
+            state.take_dirty(),
+            Vec::<PaneId>::new(),
+            "turning a pane on starts mirroring from that moment, not from its history"
+        );
+    }
+
+    #[test]
+    fn unsubscribing_stops_the_flow() {
+        let state = subscribed_state();
+        state.set_subscribed(7, false);
+        state.mark_dirty(7);
+        assert_eq!(state.take_dirty(), Vec::<PaneId>::new());
+    }
+
+    #[test]
+    fn taking_dirty_clears_the_flag() {
+        let state = subscribed_state();
         state.mark_dirty(7);
         state.take_dirty();
         assert_eq!(
@@ -134,8 +213,7 @@ mod test {
 
     #[test]
     fn repeated_output_does_not_accumulate() {
-        let state = BridgeState::new();
-        state.add_pane(7);
+        let state = subscribed_state();
         for _ in 0..10_000 {
             state.mark_dirty(7);
         }

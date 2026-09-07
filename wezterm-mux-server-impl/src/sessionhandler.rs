@@ -584,6 +584,26 @@ impl SessionHandler {
                 .detach();
             }
 
+            Pdu::SetPaneFeishu(SetPaneFeishu { pane_id, enabled }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            // The pane can go away between the client deciding
+                            // to ask and the request arriving; saying so is
+                            // better than quietly recording a subscription for
+                            // a pane that no longer exists.
+                            mux.get_pane(pane_id)
+                                .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
+                            mux.set_pane_feishu(pane_id, enabled);
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+
             Pdu::GetPaneDirection(GetPaneDirection { pane_id, direction }) => {
                 spawn_into_main_thread(async move {
                     catch(
@@ -1005,6 +1025,8 @@ impl SessionHandler {
             | Pdu::GetClientListResponse { .. }
             | Pdu::PaneRemoved { .. }
             | Pdu::PaneFocused { .. }
+            | Pdu::PaneFeishuChanged { .. }
+            | Pdu::FeishuServiceStatus { .. }
             | Pdu::TabResized { .. }
             | Pdu::GetImageCellResponse { .. }
             | Pdu::MovePaneToNewTabResponse { .. }

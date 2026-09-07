@@ -1,0 +1,242 @@
+//! The Feishu service process.
+//!
+//! Started when the first pane asks to be mirrored, stopped when the last one
+//! stops. Nobody has to remember to launch it, and nothing is left running
+//! when nobody is watching.
+
+use mux::{FeishuState, Mux};
+use parking_lot::Mutex;
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+
+/// Work out what to report, given what we can observe.
+///
+/// Split out from the process handling because it is the part worth testing:
+/// "running" and "usable" are different questions, and only combining both
+/// answers gives something a user can act on.
+fn derive_state(running: bool, client_attached: bool, exited_on_its_own: bool) -> FeishuState {
+    if exited_on_its_own {
+        FeishuState::Failed
+    } else if !running {
+        FeishuState::Stopped
+    } else if client_attached {
+        FeishuState::Connected
+    } else {
+        FeishuState::Starting
+    }
+}
+
+pub struct FeishuService {
+    command: Vec<String>,
+    child: Mutex<Option<Child>>,
+    /// Whether a client is attached to the bridge. The service *running* and
+    /// the service being *usable* are different things, and only the bridge
+    /// knows the second one.
+    client_attached: Mutex<bool>,
+    /// Set when the process went away without being asked to.
+    crashed: Mutex<Option<String>>,
+}
+
+impl FeishuService {
+    pub fn new(command: Vec<String>) -> Arc<Self> {
+        Arc::new(Self {
+            command,
+            child: Mutex::new(None),
+            client_attached: Mutex::new(false),
+            crashed: Mutex::new(None),
+        })
+    }
+
+    /// Whether this service is configured at all. With no command there is
+    /// nothing to start, and the GUI hides the whole feature.
+    pub fn is_configured(&self) -> bool {
+        !self.command.is_empty()
+    }
+
+    /// React to the number of mirrored panes changing.
+    pub fn on_subscription_count(self: &Arc<Self>, count: usize) {
+        if count > 0 {
+            self.ensure_running();
+        } else {
+            self.stop();
+        }
+    }
+
+    /// The bridge calls this when a client attaches or detaches.
+    pub fn on_client(&self, attached: bool) {
+        *self.client_attached.lock() = attached;
+        self.publish();
+    }
+
+    fn ensure_running(self: &Arc<Self>) {
+        if !self.is_configured() {
+            log::warn!("a pane asked for Feishu but feishu_command is not configured");
+            return;
+        }
+        if self.child.lock().is_some() {
+            return;
+        }
+
+        let mut cmd = Command::new(&self.command[0]);
+        cmd.args(&self.command[1..]);
+        // The service's own output is its business; we only care that it runs.
+        // Its log tells the story when something goes wrong there.
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        cmd.stdin(Stdio::null());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Without this every start flashes a console window across whatever
+            // the user is doing.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                log::info!("started the Feishu service: {:?}", self.command);
+                *self.crashed.lock() = None;
+                *self.child.lock() = Some(child);
+                self.watch();
+            }
+            Err(err) => {
+                let detail = format!("{err:#}");
+                log::error!("could not start the Feishu service: {detail}");
+                *self.crashed.lock() = Some(detail);
+            }
+        }
+        self.publish();
+    }
+
+    fn stop(&self) {
+        let mut child = self.child.lock();
+        if let Some(mut c) = child.take() {
+            log::info!("stopping the Feishu service");
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        // Asked to stop, so an exit is not news.
+        *self.crashed.lock() = None;
+        drop(child);
+        self.publish();
+    }
+
+    /// Notice when the process goes away without being asked to.
+    ///
+    /// Polled rather than waited on: `wait()` needs to own the child, and kill
+    /// needs it too. A couple of seconds late is fine for something whose only
+    /// consumer is a status line.
+    fn watch(self: &Arc<Self>) {
+        let me = Arc::clone(self);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let status = {
+                let mut child = me.child.lock();
+                match child.as_mut() {
+                    // Someone called stop(); nothing to watch any more.
+                    None => return,
+                    Some(c) => c.try_wait(),
+                }
+            };
+            match status {
+                Ok(Some(status)) => {
+                    let detail = format!("the service exited with {status}");
+                    log::warn!("{detail}");
+                    me.child.lock().take();
+                    *me.crashed.lock() = Some(detail);
+                    // Deliberately not restarting: a service that crashes on
+                    // startup would spin here forever.
+                    me.publish();
+                    return;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    log::warn!("could not check on the Feishu service: {err:#}");
+                    return;
+                }
+            }
+        });
+    }
+
+    fn publish(&self) {
+        let crashed = self.crashed.lock().clone();
+        let state = derive_state(
+            self.child.lock().is_some(),
+            *self.client_attached.lock(),
+            crashed.is_some(),
+        );
+        // Deferred on purpose. publish() is reached from inside a mux
+        // notification callback, and Mux::notify holds the subscriber lock
+        // while it runs them -- a lock that is not reentrant. Notifying inline
+        // deadlocks the mux thread, which stops it answering anything at all:
+        // the pane subscribes, the service starts, and then the whole server
+        // goes quiet.
+        promise::spawn::spawn_into_main_thread(async move {
+            if let Some(mux) = Mux::try_get() {
+                mux.set_feishu_service_state(state, crashed);
+            }
+        })
+        .detach();
+    }
+}
+
+impl Drop for FeishuService {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.child.lock().take() {
+            // The mux server is going away; leaving an orphan behind would mean
+            // a Feishu connection nobody can see or stop.
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn nothing_running_is_stopped() {
+        assert_eq!(derive_state(false, false, false), FeishuState::Stopped);
+    }
+
+    #[test]
+    fn running_without_a_client_is_still_starting() {
+        assert_eq!(
+            derive_state(true, false, false),
+            FeishuState::Starting,
+            "the process being up says nothing about it being ready to carry messages"
+        );
+    }
+
+    #[test]
+    fn running_with_a_client_is_connected() {
+        assert_eq!(derive_state(true, true, false), FeishuState::Connected);
+    }
+
+    #[test]
+    fn an_unasked_for_exit_is_a_failure() {
+        assert_eq!(
+            derive_state(false, false, true),
+            FeishuState::Failed,
+            "a service that left on its own is different from one we shut down"
+        );
+    }
+
+    #[test]
+    fn a_crash_outranks_a_stale_client_flag() {
+        assert_eq!(
+            derive_state(false, true, true),
+            FeishuState::Failed,
+            "the client flag can lag behind the process dying; the death wins"
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_service_knows_it() {
+        let svc = FeishuService::new(vec![]);
+        assert!(!svc.is_configured());
+    }
+}

@@ -15,6 +15,7 @@ use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use mux::client::{ClientId, ClientInfo};
 use mux::pane::PaneId;
+use mux::FeishuState;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::{PaneNode, SerdeUrl, SplitRequest, TabId};
 use mux::window::WindowId;
@@ -441,7 +442,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 45;
+pub const CODEC_VERSION: usize = 46;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -502,6 +503,9 @@ pdu! {
     GetPaneDirection: 60,
     GetPaneDirectionResponse: 61,
     AdjustPaneSize: 62,
+    SetPaneFeishu: 63,
+    PaneFeishuChanged: 64,
+    FeishuServiceStatus: 65,
 }
 
 impl Pdu {
@@ -854,6 +858,31 @@ pub struct Resize {
     pub containing_tab_id: TabId,
     pub pane_id: PaneId,
     pub size: TerminalSize,
+}
+
+/// Client -> server: turn Feishu mirroring on or off for one pane.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SetPaneFeishu {
+    pub pane_id: PaneId,
+    pub enabled: bool,
+}
+
+/// Server -> client: a pane's Feishu subscription changed.
+///
+/// Every GUI attached to this mux needs to hear it, not just the one whose user
+/// flipped the switch -- they all draw the same state in their tab bars.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct PaneFeishuChanged {
+    pub pane_id: PaneId,
+    pub enabled: bool,
+}
+
+/// Server -> client: the state of the Feishu service process.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct FeishuServiceStatus {
+    pub state: FeishuState,
+    /// Why it failed, when it did: the last line the process wrote to stderr.
+    pub detail: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]

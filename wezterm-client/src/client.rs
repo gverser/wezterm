@@ -297,6 +297,40 @@ fn process_unilateral(
             .detach();
             return Ok(());
         }
+        Pdu::PaneFeishuChanged(PaneFeishuChanged { pane_id, enabled }) => {
+            let remote_pane_id = *pane_id;
+            let enabled = *enabled;
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                let client_domain = mux
+                    .get_domain(local_domain_id)
+                    .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                let client_domain =
+                    client_domain
+                        .downcast_ref::<ClientDomain>()
+                        .ok_or_else(|| {
+                            anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
+                        })?;
+                // Goes through the domain so the remote pane id is translated;
+                // writing it straight into the local mux flips the flag on the
+                // wrong pane, and the icon never changes.
+                client_domain.process_remote_feishu_change(remote_pane_id, enabled);
+                anyhow::Result::<()>::Ok(())
+            })
+            .detach();
+            return Ok(());
+        }
+        Pdu::FeishuServiceStatus(FeishuServiceStatus { state, detail }) => {
+            let state = *state;
+            let detail = detail.clone();
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                mux.set_feishu_service_state(state, detail);
+                anyhow::Result::<()>::Ok(())
+            })
+            .detach();
+            return Ok(());
+        }
         Pdu::TabResized(_) | Pdu::TabAddedToWindow(_) => {
             log::trace!("resync due to {:?}", decoded.pdu);
             promise::spawn::spawn_into_main_thread(async move {
@@ -1353,6 +1387,7 @@ impl Client {
     rpc!(mouse_event, SendMouseEvent, UnitResponse);
     rpc!(resize, Resize, UnitResponse);
     rpc!(set_zoomed, SetPaneZoomed, UnitResponse);
+    rpc!(set_pane_feishu, SetPaneFeishu, UnitResponse);
     rpc!(activate_pane_direction, ActivatePaneDirection, UnitResponse);
     rpc!(
         get_pane_render_changes,

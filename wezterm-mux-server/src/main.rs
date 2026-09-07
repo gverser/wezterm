@@ -245,7 +245,7 @@ fn run() -> anyhow::Result<()> {
                 .bridge_token_path
                 .clone()
                 .unwrap_or_else(|| config::DATA_DIR.join("bridge-token"));
-            if let Err(err) = wezterm_bridge::service::start(cfg.bridge_port, token_path) {
+            if let Err(err) = wezterm_bridge::service::start(cfg.bridge_port, token_path, cfg.feishu_command.clone()) {
                 log::error!("failed to start the bridge: {err:#}");
             }
         }
@@ -302,7 +302,11 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
         .iter()
         .any(|p| p.domain_id() == domain.domain_id());
 
-    if !have_panes_in_domain {
+    // spawn_initial_tab is the same promise the GUI makes, and the server has to
+    // keep it too: a GUI that starts empty on purpose still finds a shell
+    // waiting for it if the server spawned one first, and its own check for an
+    // already-populated domain then quietly succeeds.
+    if !have_panes_in_domain && config.spawn_initial_tab {
         let workspace = None;
         let position = None;
         let window_id = mux.new_empty_window(workspace, position);

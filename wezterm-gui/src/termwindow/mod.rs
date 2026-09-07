@@ -1478,9 +1478,23 @@ impl TermWindow {
                     MuxNotification::TabTitleChanged { .. } => {
                         self.update_title_post_status();
                     }
+                    MuxNotification::PaneFeishuChanged { .. }
+                    | MuxNotification::FeishuServiceStatusChanged { .. } => {
+                        // The tab bar icon draws both of these, so it has to be
+                        // rebuilt rather than merely repainted.
+                        self.invalidate_fancy_tab_bar();
+                        self.update_title_post_status();
+                    }
+                    MuxNotification::PaneRemoved(_) => {
+                        // Losing the last pane changes what the title should
+                        // say, and in a window that is deliberately left empty
+                        // nothing else ever comes along to correct it -- the
+                        // "Connecting..." put up during the attach just stays
+                        // there, making a working window look hung.
+                        self.update_title_post_status();
+                    }
                     MuxNotification::PaneAdded(_)
                     | MuxNotification::WorkspaceRenamed { .. }
-                    | MuxNotification::PaneRemoved(_)
                     | MuxNotification::WindowWorkspaceChanged(_)
                     | MuxNotification::ActiveWorkspaceChanged(_)
                     | MuxNotification::Empty
@@ -1681,6 +1695,10 @@ impl TermWindow {
                     return true;
                 }
             }
+            // Deliberately falls through to window.notify below: the icon in
+            // every window reflects this, and it is not tied to one window.
+            MuxNotification::PaneFeishuChanged { .. }
+            | MuxNotification::FeishuServiceStatusChanged { .. } => {}
             MuxNotification::Alert {
                 alert: Alert::ToastNotification { .. },
                 ..
@@ -2155,6 +2173,19 @@ impl TermWindow {
             None => false,
         };
 
+        // Absent when unconfigured, which keeps the icon out of the tab bar for
+        // everyone who has never heard of this feature.
+        let feishu = if self.config.feishu_command.is_empty() {
+            None
+        } else {
+            Some(crate::tabbar::FeishuIndicator {
+                current_pane_on: active_pane
+                    .as_ref()
+                    .map_or(false, |p| mux.pane_has_feishu(p.pane_id)),
+                service: mux.feishu_service_state().0,
+            })
+        };
+
         let new_tab_bar = TabBarState::new(
             self.dimensions.pixel_width / self.render_metrics.cell_size.width as usize,
             if hovering_in_tab_bar {
@@ -2168,6 +2199,7 @@ impl TermWindow {
             &self.config,
             &self.left_status,
             &self.right_status,
+            feishu,
         );
         if new_tab_bar != self.tab_bar {
             self.tab_bar = new_tab_bar;
@@ -2180,6 +2212,14 @@ impl TermWindow {
 
         let num_tabs = window.len();
         if num_tabs == 0 {
+            drop(window);
+            // A window with no tabs still has a title bar, and whatever was put
+            // there last stays until something replaces it. For a window that is
+            // deliberately empty that is the "Connecting..." the attach left
+            // behind, which makes a perfectly working window look hung.
+            if let Some(window) = self.window.as_ref() {
+                window.set_title("wezterm");
+            }
             return;
         }
         drop(window);
@@ -2233,7 +2273,11 @@ impl TermWindow {
                         )
                     }
                 } else {
-                    "".to_string()
+                    // A window with no panes still needs a name. An empty string
+                    // leaves whatever was there before in place, which on a fresh
+                    // start is the "Connecting..." the attach put up -- making a
+                    // perfectly working window look hung.
+                    "wezterm".to_string()
                 }
             }
         };
@@ -3195,40 +3239,7 @@ impl TermWindow {
                 }
             }
             SwitchToWorkspace { name, spawn } => {
-                let activity = crate::Activity::new();
-                let mux = Mux::get();
-                let name = name
-                    .as_ref()
-                    .map(|name| name.to_string())
-                    .unwrap_or_else(|| mux.generate_workspace_name());
-                let switcher = crate::frontend::WorkspaceSwitcher::new(&name);
-                mux.set_active_workspace(&name);
-
-                if mux.iter_windows_in_workspace(&name).is_empty() {
-                    let spawn = spawn.as_ref().map(|s| s.clone()).unwrap_or_default();
-                    let size = self.terminal_size;
-                    let term_config = Arc::new(TermConfig::with_config(self.config.clone()));
-                    let src_window_id = self.mux_window_id;
-
-                    promise::spawn::spawn(async move {
-                        if let Err(err) = crate::spawn::spawn_command_internal(
-                            spawn,
-                            SpawnWhere::NewWindow,
-                            size,
-                            Some(src_window_id),
-                            term_config,
-                        )
-                        .await
-                        {
-                            log::error!("Failed to spawn: {:#}", err);
-                        }
-                        switcher.do_switch();
-                        drop(activity);
-                    })
-                    .detach();
-                } else {
-                    switcher.do_switch();
-                }
+                self.switch_to_workspace(name, spawn);
             }
             DetachDomain(domain) => {
                 let domain = Mux::get().resolve_spawn_tab_domain(Some(pane.pane_id()), domain)?;
@@ -3563,6 +3574,67 @@ impl TermWindow {
         let mux = Mux::get();
         mux.get_active_tab_for_window(self.mux_window_id)
             .and_then(|tab| tab.get_active_pane())
+    }
+
+    /// Switch to a workspace, spawning into it if nothing is open there yet.
+    ///
+    /// Deliberately takes no pane: switching workspaces is a window-level act,
+    /// and the session sidebar has to be able to do it from a window that has no
+    /// panes at all -- which is exactly the state a deliberately empty window is
+    /// in when the user picks their first session.
+    /// Flip Feishu mirroring for the pane the user is looking at.
+    ///
+    /// Goes through Pane::set_feishu rather than the mux directly: for a pane
+    /// living on a mux server the request has to travel there, and the state
+    /// comes back as a notification. Nothing is updated locally here, so the
+    /// icon only changes once the server has agreed.
+    pub fn toggle_feishu_for_active_pane(&mut self) {
+        let Some(pane) = self.get_active_pane_or_overlay() else {
+            return;
+        };
+        let now_on = Mux::get().pane_has_feishu(pane.pane_id());
+        pane.set_feishu(!now_on);
+    }
+
+    pub fn switch_to_workspace(
+        &mut self,
+        name: &Option<String>,
+        spawn: &Option<config::keyassignment::SpawnCommand>,
+    ) {
+        let activity = crate::Activity::new();
+        let mux = Mux::get();
+        let name = name
+            .as_ref()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| mux.generate_workspace_name());
+        let switcher = crate::frontend::WorkspaceSwitcher::new(&name);
+        mux.set_active_workspace(&name);
+
+        if mux.iter_windows_in_workspace(&name).is_empty() {
+            let spawn = spawn.as_ref().map(|s| s.clone()).unwrap_or_default();
+            let size = self.terminal_size;
+            let term_config = Arc::new(TermConfig::with_config(self.config.clone()));
+            let src_window_id = self.mux_window_id;
+
+            promise::spawn::spawn(async move {
+                if let Err(err) = crate::spawn::spawn_command_internal(
+                    spawn,
+                    SpawnWhere::NewWindow,
+                    size,
+                    Some(src_window_id),
+                    term_config,
+                )
+                .await
+                {
+                    log::error!("Failed to spawn: {:#}", err);
+                }
+                switcher.do_switch();
+                drop(activity);
+            })
+            .detach();
+        } else {
+            switcher.do_switch();
+        }
     }
 
     /// Returns a Pane that we can interact with; this will typically be

@@ -31,14 +31,15 @@ const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200
 /// The sender for whichever client is connected, if any.
 type Outbox = Arc<Mutex<Option<Sender<Outbound>>>>;
 
-pub fn start(port: u16, token_path: PathBuf) -> anyhow::Result<()> {
+pub fn start(port: u16, token_path: PathBuf, feishu_command: Vec<String>) -> anyhow::Result<()> {
     let token = crate::token::load_or_create(&token_path)
         .with_context(|| format!("loading the bridge token from {}", token_path.display()))?;
 
     let state = Arc::new(BridgeState::new());
     let outbox: Outbox = Arc::new(Mutex::new(None));
+    let feishu = crate::feishu::FeishuService::new(feishu_command);
 
-    subscribe(state.clone(), outbox.clone());
+    subscribe(state.clone(), outbox.clone(), Arc::clone(&feishu));
 
     let listener = TcpListener::bind(("127.0.0.1", port))
         .with_context(|| format!("binding the bridge to 127.0.0.1:{port}"))?;
@@ -50,10 +51,14 @@ pub fn start(port: u16, token_path: PathBuf) -> anyhow::Result<()> {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    // The service being reachable is what "connected" means to
+                    // the user, and only this loop knows it.
+                    feishu.on_client(true);
                     if let Err(err) = serve_client(stream, &token, &state, &outbox) {
                         log::warn!("bridge client ended: {err:#}");
                     }
                     outbox.lock().take();
+                    feishu.on_client(false);
                 }
                 Err(err) => log::warn!("bridge accept failed: {err:#}"),
             }
@@ -63,7 +68,7 @@ pub fn start(port: u16, token_path: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn subscribe(state: Arc<BridgeState>, outbox: Outbox) {
+fn subscribe(state: Arc<BridgeState>, outbox: Outbox, feishu: Arc<crate::feishu::FeishuService>) {
     Mux::get().subscribe(move |notif| {
         match notif {
             MuxNotification::PaneAdded(pane_id) => {
@@ -78,6 +83,16 @@ fn subscribe(state: Arc<BridgeState>, outbox: Outbox) {
                 // Just a bit. What was printed is read later, off the flush
                 // timer, straight out of the scrollback.
                 state.mark_dirty(pane_id);
+            }
+            MuxNotification::PaneFeishuChanged { pane_id, enabled } => {
+                // The mux is the authority on this; the bridge just mirrors it
+                // so that the flush timer can skip panes nobody is watching.
+                state.set_subscribed(pane_id, enabled);
+                // Read the count back from the mux rather than tracking it here:
+                // the mux already de-duplicates, and a pane disappearing also
+                // changes this without any notification the bridge would see.
+                let count = Mux::try_get().map_or(0, |mux| mux.feishu_pane_count());
+                feishu.on_subscription_count(count);
             }
             MuxNotification::Alert { pane_id, alert } => {
                 post(
