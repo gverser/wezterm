@@ -391,6 +391,18 @@ impl GuiFrontEnd {
         let mut mux_windows = mux_windows.into_iter();
 
         for (window, old_id) in unused.into_iter() {
+            // Whatever happens below, this gui window stops showing old_id.
+            //
+            // retain_when_empty is a claim that a window with no panes is
+            // nonetheless on screen -- it is how the empty session-sidebar
+            // window survives startup. Once nothing is showing it the claim is
+            // false, and leaving it set keeps the mux from ever calling itself
+            // empty, so the gui process outlives its last window and sits there
+            // with nothing on screen.
+            if let Some(mut old) = mux.get_window_mut(old_id) {
+                old.set_retain_when_empty(false);
+            }
+
             if let Some(mux_window_id) = mux_windows.next() {
                 window.notify(TermWindowNotif::SwitchToMuxWindow(mux_window_id));
                 windows.insert(window, mux_window_id);

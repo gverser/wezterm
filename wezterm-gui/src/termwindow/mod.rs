@@ -529,6 +529,22 @@ impl TermWindow {
         // remote client may be talking to it, and the user is coming back to
         // it. Closing the window detaches, the way it does in tmux; ending
         // the sessions is CloseAllSessions.
+        //
+        // kill_window is what does the detaching, despite the name. It goes to
+        // remove_window_internal, which detaches every detachable domain the
+        // window touches *before* it drops the panes (mux/src/lib.rs), and
+        // ClientPane::kill then sees a detached domain and does not forward the
+        // kill to the server. So the local mirror of the window goes and the
+        // work carries on running there.
+        //
+        // Dropping the mux window is not optional. Closing only the OS window
+        // leaves the mux one behind, and reconcile_workspace exists to give
+        // every mux window in the active workspace a GUI window -- so the one
+        // just closed was immediately built again, which is why closing took
+        // two goes and left a windowless process behind on the second.
+        //
+        // The prompt below is skipped rather than answered: it asks whether to
+        // end sessions that are still running, and nothing here ends any.
         let detachable = mux
             .get_active_tab_for_window(self.mux_window_id)
             .and_then(|tab| tab.get_active_pane())
@@ -536,6 +552,7 @@ impl TermWindow {
             .map_or(false, |domain| domain.detachable());
 
         if detachable {
+            mux.kill_window(self.mux_window_id);
             window.close();
             front_end().forget_known_window(window);
             return;
