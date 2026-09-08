@@ -347,18 +347,31 @@ impl super::TermWindow {
         // Switching to something already running is free, so a plain click
         // still does the useful half of the job.
         if self.session_terminal_count(id) > 0 {
-            let pane = match self.get_active_pane_or_overlay() {
-                Some(pane) => pane,
-                None => return,
-            };
-            if let Err(err) = self.perform_key_assignment(
-                &pane,
-                &KeyAssignment::SwitchToWorkspace {
-                    name: Some(id.workspace_name()),
-                    spawn: None,
-                },
-            ) {
-                log::error!("failed to switch to session {id}: {err:#}");
+            // Restarting with sessions already running puts the user in front
+            // of the empty window the sidebar lives in: the sessions are in the
+            // mux, but nothing is showing them yet and so there is no pane.
+            // Returning here left a single click doing nothing in exactly the
+            // state where switching is the only thing anyone wants -- and the
+            // double click that did work opens a tab nobody asked for on the
+            // way past. Switching never needed a pane; only
+            // perform_key_assignment's signature did.
+            //
+            // Neither arm spawns. A single click starting something is the
+            // behaviour this gesture was split away from, and this branch is
+            // only reached for a workspace that is already up.
+            match self.get_active_pane_or_overlay() {
+                Some(pane) => {
+                    if let Err(err) = self.perform_key_assignment(
+                        &pane,
+                        &KeyAssignment::SwitchToWorkspace {
+                            name: Some(id.workspace_name()),
+                            spawn: None,
+                        },
+                    ) {
+                        log::error!("failed to switch to session {id}: {err:#}");
+                    }
+                }
+                None => self.switch_to_workspace(&Some(id.workspace_name()), &None),
             }
         }
 
