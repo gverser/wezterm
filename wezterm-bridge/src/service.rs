@@ -82,6 +82,30 @@ fn subscribe(state: Arc<BridgeState>, outbox: Outbox, feishu: Arc<crate::feishu:
                 state.remove_pane(pane_id);
                 post(&outbox, Outbound::PaneRemoved { pane: pane_id });
             }
+            MuxNotification::TabAddedToWindow { tab_id, .. } => {
+                // Describe the panes again, now that the description can be
+                // finished. A pane is announced by add_pane, which runs before
+                // the tab it is in reaches a window, so at that point
+                // resolve_pane_id finds nothing and the workspace -- and with
+                // it the session name -- comes out empty. Everything else about
+                // the pane is already right, which is what made this look like
+                // a missing session name rather than a missing window.
+                //
+                // The client merges a second description over the first, so
+                // repeating one costs nothing. It is not an announcement: the
+                // client says a session is up on pane_mirror, never on this.
+                let Some(mux) = Mux::try_get() else {
+                    return true;
+                };
+                let Some(tab) = mux.get_tab(tab_id) else {
+                    return true;
+                };
+                for p in tab.iter_panes_ignoring_zoom() {
+                    if let Some(added) = describe_pane(&state, p.pane.pane_id()) {
+                        post(&outbox, added);
+                    }
+                }
+            }
             MuxNotification::PaneOutput(pane_id) => {
                 // Just a bit. What was printed is read later, off the flush
                 // timer, straight out of the scrollback.
