@@ -22,6 +22,61 @@
 
 ---
 
+## 2026-09-17
+
+- **`bbbe8dda0` gui/mux: 关闭最后一扇窗口时可以顺手停掉 mux server**
+  `wezterm cli kill-server` 发一条 `KillServer` PDU，mux-server 答完
+  `UnitResponse` 就退出；GUI 实例收到会直接拒绝，得带 `--prefer-mux` 才连得到
+  真正的 mux-server。新配置项 `mux_server_close_confirmation`
+  （默认 `"AlwaysPrompt"`）：关闭一个 mux 会话的最后一扇 GUI 窗口时问一句
+  "要不要把 server 也停了"，`y` 才停，`n` 还是老样子只 detach、server 继续跑；
+  设成 `"NeverPrompt"` 恢复旧的静默 detach，不问。
+  文档见 `docs/config/lua/config/mux_server_close_confirmation.md`。
+  升级注意：`CODEC_VERSION` 从 46 涨到 47，新版 GUI 连不上还在跑的旧版
+  mux-server，旧的那个进程得先用 `Stop-Process` 手动杀掉一次；这次没有重新生成
+  shell 补全文件。
+
+## 2026-09-15
+
+- **`03db00a06` bridge: 告诉飞书服务共享文件在哪**
+  启动飞书服务时注入 `BRIDGE_TOKEN_PATH`、`BRIDGE_PORT`、`HOOK_TOKEN_PATH`，
+  以及 `data\feishu-credentials.txt` 存在时的 `FEISHU_CREDENTIALS`；环境里
+  已有的同名变量优先。hook token 只在不会让已配置的 hooks 失效时才换到
+  `data\`。`remote-controll` 不用改。
+- **`b23cf9efe` config: 便携安装的数据放在安装目录**
+  exe 旁边有 `wezterm.lua` 时（上游的 thumb drive 模式），`DATA_DIR` 改为
+  `<安装目录>\data\`：`sessions.json`、`bridge-token`、`recent-*.json`、
+  `repl-history` 都跟着安装目录走。首次使用时从 `%APPDATA%\wezterm` 和
+  `~\.wezterm-bridge-hook-token` 复制一份（`data\.migrated` 标记只做一次，
+  旧文件不删）；落位用硬链接而不是覆盖，GUI 和 mux-server 同时启动也读不到
+  写了一半的 `sessions.json`。`data\` 建不出来或写不进去时照旧用 `%APPDATA%`。
+  从便携安装的 pane 里启动的程序（比如 `cargo run` 的开发版 GUI）继承了
+  `WEZTERM_CONFIG_FILE`，只要它指向的目录里有 wezterm 的 exe，就用同一个
+  `data\`——否则开发版 GUI 和部署版 mux-server 会各读写一份 `sessions.json`。
+  有文件复制失败时不写 `.migrated`，下次启动重试。
+
+## 2026-09-14
+
+- **`3e24b2eb3` wsl: WSL 服务卡死时，窗口和新标签页都不能跟着卡**
+  发行版列表来自 `wsl -l -v`，启动、每次重载配置、每次在本地 domain 里新建
+  pane 都要跑一遍；WSL 服务卡住时 wsl.exe 永远不返回，wezterm-gui 连第一扇
+  窗口都开不出来，新标签页也跟着卡。现在列表缓存起来：只有第一次要等，之后
+  超过 30 秒的旧列表先直接用，后台单线程去刷新；刷新失败就保留上一份好的
+  列表 —— 丢掉的话 WSL 标签会悄悄变成本地 shell。`wsl -l -v` 限时 3 秒，
+  超时连整棵进程树一起杀（job object）：wsl.exe 有三层进程，只杀自己起的
+  那个，另外两个会一直挂在卡住的服务上。
+
+## 2026-09-10
+
+- **`5be353dd1` mux: `mux_env_remove` 支持前缀匹配，默认再去掉颜色和 agent 变量**
+  mux-server 是常驻进程，启动时的环境变量会一直传给它之后建的 pane。从设了
+  `NO_COLOR` 的工具里启动，同一个窗口里有的 pane 黑白、有的彩色；从
+  Claude Code 里启动，之后每个 pane 都带着一个早已结束的会话的
+  `CLAUDECODE` / `CLAUDE_CODE_*` 标记。默认列表加上 `NO_COLOR`、
+  `FORCE_COLOR`、`CLICOLOR`、`CLICOLOR_FORCE`、`CLAUDECODE`、`CLAUDE_CODE_*`、
+  `CLAUDE_PID`；以 `*` 结尾的条目按前缀匹配（Windows 上不分大小写）。
+  `CLAUDE_CONFIG_DIR` 这类用户自己设的变量不动。
+
 ## 2026-09-08
 
 - **`cbfeebf31` gui: 关闭 mux 窗口时，mux 里那个窗口也得关掉**
