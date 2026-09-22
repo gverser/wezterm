@@ -1,0 +1,6 @@
+Stop the mux server
+
+Usage: wezterm cli kill-server
+
+Options:
+  -h, --help  Print help

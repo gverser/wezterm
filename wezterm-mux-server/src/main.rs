@@ -237,6 +237,7 @@ fn run() -> anyhow::Result<()> {
 
     let executor = promise::spawn::SimpleExecutor::new();
 
+    wezterm_mux_server_impl::set_is_mux_server();
     spawn_listener().map_err(|e| {
         log::error!("problem spawning listeners: {:?}", e);
         e

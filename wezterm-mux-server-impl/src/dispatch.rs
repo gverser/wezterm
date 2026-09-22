@@ -1,7 +1,7 @@
 use crate::sessionhandler::{PduSender, SessionHandler};
 use anyhow::Context;
 use async_ossl::AsyncSslStream;
-use codec::{DecodedPdu, Pdu};
+use codec::{DecodedPdu, Pdu, UnitResponse};
 use futures::FutureExt;
 use mux::{Mux, MuxNotification};
 use smol::prelude::*;
@@ -82,6 +82,18 @@ where
                         return Err(err).context("reading Pdu from client");
                     }
                 };
+                // Answering here rather than in the session handler is what
+                // makes the reply deterministic: the handler only queues a
+                // response for this same loop to write later, and the process
+                // would be gone before that happened.
+                if matches!(decoded.pdu, Pdu::KillServer(_)) && crate::is_mux_server() {
+                    Pdu::UnitResponse(UnitResponse {})
+                        .encode_async(&mut stream, decoded.serial)
+                        .await?;
+                    stream.flush().await?;
+                    log::info!("a client asked the mux server to exit");
+                    std::process::exit(0);
+                }
                 handler.process_one(decoded);
             }
             Ok(Item::WritePdu(decoded)) => {

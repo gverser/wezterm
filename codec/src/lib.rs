@@ -15,10 +15,10 @@ use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use mux::client::{ClientId, ClientInfo};
 use mux::pane::PaneId;
-use mux::FeishuState;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::{PaneNode, SerdeUrl, SplitRequest, TabId};
 use mux::window::WindowId;
+use mux::FeishuState;
 use portable_pty::CommandBuilder;
 use rangeset::*;
 use serde::{Deserialize, Serialize};
@@ -442,7 +442,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 46;
+pub const CODEC_VERSION: usize = 47;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -506,6 +506,7 @@ pdu! {
     SetPaneFeishu: 63,
     PaneFeishuChanged: 64,
     FeishuServiceStatus: 65,
+    KillServer: 66,
 }
 
 impl Pdu {
@@ -698,6 +699,12 @@ pub struct PaneRemoved {
 pub struct KillPane {
     pub pane_id: PaneId,
 }
+
+/// Ask the server process to exit. Only a real mux server honours this; a
+/// GUI's own listener answers with an error, because killing it would take
+/// the user's local panes with it.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct KillServer {}
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct SpawnResponse {
@@ -1213,6 +1220,29 @@ mod test {
                 pdu: Pdu::Ping(Ping {})
             },
             Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn kill_server_round_trip() {
+        let mut encoded = Vec::new();
+        Pdu::KillServer(KillServer {})
+            .encode(&mut encoded, 0x40)
+            .unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x40,
+                pdu: Pdu::KillServer(KillServer {})
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn kill_server_is_not_user_input() {
+        assert!(
+            !Pdu::KillServer(KillServer {}).is_user_input(),
+            "asking the server to exit is not typing; it must not count as activity"
         );
     }
 

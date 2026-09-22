@@ -5,9 +5,9 @@ use crate::colorease::ColorEase;
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
-    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program, launcher,
-    start_overlay, start_overlay_pane, CopyModeParams, CopyOverlay, LauncherArgs, LauncherFlags,
-    QuickSelectOverlay,
+    confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program,
+    confirm_stop_mux_server, launcher, start_overlay, start_overlay_pane, CopyModeParams,
+    CopyOverlay, LauncherArgs, LauncherFlags, QuickSelectOverlay,
 };
 use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::scripting::guiwin::GuiWin;
@@ -72,8 +72,8 @@ pub mod background;
 pub mod box_model;
 pub mod charselect;
 pub mod clipboard;
-pub mod keyevent;
 pub mod feishu_panel;
+pub mod keyevent;
 mod modal;
 mod mouseevent;
 pub mod palette;
@@ -545,14 +545,59 @@ impl TermWindow {
         //
         // The prompt below is skipped rather than answered: it asks whether to
         // end sessions that are still running, and nothing here ends any.
-        let detachable = mux
+        let domain = mux
             .get_active_tab_for_window(self.mux_window_id)
             .and_then(|tab| tab.get_active_pane())
-            .and_then(|pane| mux.get_domain(pane.domain_id()))
-            .map_or(false, |domain| domain.detachable());
+            .and_then(|pane| mux.get_domain(pane.domain_id()));
+        let detachable = domain.as_ref().map_or(false, |domain| domain.detachable());
 
         if detachable {
-            mux.kill_window(self.mux_window_id);
+            let mux_window_id = self.mux_window_id;
+
+            // Closing the last GUI window of a mux session leaves the server
+            // running headless with nobody left to reattach from this
+            // process; offer to stop it too, unless this is a plain local
+            // domain (nothing else could be depending on it) or another GUI
+            // window still has it in view.
+            let is_last_window = front_end().gui_windows().len() <= 1;
+            let is_client_domain = domain.as_ref().map_or(false, |domain| {
+                domain
+                    .downcast_ref::<wezterm_client::domain::ClientDomain>()
+                    .is_some()
+            });
+
+            if crate::sessions::should_confirm_stop_server(
+                is_last_window,
+                is_client_domain,
+                self.config.mux_server_close_confirmation,
+            ) {
+                if let (Some(tab), Some(domain_id)) = (
+                    mux.get_active_tab_for_window(mux_window_id),
+                    domain.as_ref().map(|domain| domain.domain_id()),
+                ) {
+                    let other_sessions = self.unattended_workspaces().len();
+                    let window = window.clone();
+                    let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
+                        confirm_stop_mux_server(
+                            term,
+                            mux_window_id,
+                            window,
+                            tab_id,
+                            domain_id,
+                            other_sessions,
+                        )
+                    });
+                    self.assign_overlay(tab.tab_id(), overlay);
+                    promise::spawn::spawn(future).detach();
+                    // Don't close right now; the overlay callback closes the
+                    // window whichever way the user answers.
+                    return;
+                }
+                // No active tab to show the prompt in: fall through to the
+                // existing silent-detach behaviour below.
+            }
+
+            mux.kill_window(mux_window_id);
             window.close();
             front_end().forget_known_window(window);
             return;

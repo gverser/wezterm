@@ -111,3 +111,16 @@ fn update_mux_domains_impl(config: &ConfigHandle, is_standalone_mux: bool) -> an
 lazy_static::lazy_static! {
     pub static ref PKI: pki::Pki = pki::Pki::init().expect("failed to initialize PKI");
 }
+
+/// Whether this process is a real mux server, rather than a GUI that happens
+/// to run the same listener. Only the former may be asked to exit: a GUI's
+/// panes are local and would die with it.
+static IS_MUX_SERVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_is_mux_server() {
+    IS_MUX_SERVER.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_mux_server() -> bool {
+    IS_MUX_SERVER.load(std::sync::atomic::Ordering::Relaxed)
+}

@@ -276,6 +276,14 @@ impl SessionHandler {
 
         match decoded.pdu {
             Pdu::Ping(Ping {}) => send_response(Ok(Pdu::Pong(Pong {}))),
+            Pdu::KillServer(_) => {
+                send_response(Err(anyhow!(
+                    "this is a GUI instance, not a mux server; run \
+                     `wezterm cli --prefer-mux kill-server` from outside wezterm, \
+                     or unset $WEZTERM_UNIX_SOCKET first \u{2014} that variable takes \
+                     precedence over --prefer-mux"
+                )));
+            }
             Pdu::SetWindowWorkspace(SetWindowWorkspace {
                 window_id,
                 workspace,

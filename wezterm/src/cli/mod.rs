@@ -10,18 +10,19 @@ mod adjust_pane_size;
 mod get_pane_direction;
 mod get_text;
 mod kill_pane;
+mod kill_server;
 mod list;
 mod list_clients;
 mod move_pane_to_new_tab;
 mod proxy;
 mod rename_workspace;
 mod send_text;
+mod set_pane_feishu;
 mod set_tab_title;
 mod set_window_title;
 mod spawn_command;
 mod split_pane;
 mod tls_creds;
-mod set_pane_feishu;
 mod zoom_pane;
 
 #[derive(Debug, Parser, Clone, Copy)]
@@ -137,6 +138,10 @@ Outputs the pane-id for the newly created pane on success"
     #[command(name = "kill-pane", rename_all = "kebab")]
     KillPane(kill_pane::KillPane),
 
+    /// Stop the mux server
+    #[command(name = "kill-server", rename_all = "kebab")]
+    KillServer(kill_server::KillServer),
+
     /// Activate (focus) a pane
     #[command(name = "activate-pane", rename_all = "kebab")]
     ActivatePane(activate_pane::ActivatePane),
@@ -174,15 +179,31 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
     let mut ui = mux::connui::ConnectionUI::new_headless();
     let initial = true;
 
-    let client = Client::new_default_unix_domain(
+    // `CliCommand` has no per-subcommand client options, just the shared
+    // `--no-auto-start`/`--prefer-mux`/`--class` flags applied once before
+    // dispatch, so there's nowhere to hang a `kill-server`-specific default.
+    // Force it here instead: starting a server just so `kill-server` can
+    // kill it is never what the user wants.
+    let is_kill_server = matches!(&cli.sub, CliSubCommand::KillServer(_));
+    let no_auto_start = cli.no_auto_start || is_kill_server;
+
+    let client = match Client::new_default_unix_domain(
         initial,
         &mut ui,
-        cli.no_auto_start,
+        no_auto_start,
         cli.prefer_mux,
         cli.class
             .as_deref()
             .unwrap_or(wezterm_gui_subcommands::DEFAULT_WINDOW_CLASS),
-    )?;
+    ) {
+        Ok(client) => client,
+        // With auto-start suppressed above there was nothing to connect to.
+        // For every other subcommand that's a real failure, but for
+        // `kill-server` it means there is nothing left to kill, which is
+        // what success looks like from this side too.
+        Err(err) if is_kill_server && kill_server::no_server_to_kill(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
 
     match cli.sub {
         CliSubCommand::ListClients(cmd) => cmd.run(client).await,
@@ -197,6 +218,7 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
         CliSubCommand::ActivatePaneDirection(cmd) => cmd.run(client).await,
         CliSubCommand::GetPaneDirection(cmd) => cmd.run(client).await,
         CliSubCommand::KillPane(cmd) => cmd.run(client).await,
+        CliSubCommand::KillServer(cmd) => cmd.run(client).await,
         CliSubCommand::ActivatePane(cmd) => cmd.run(client).await,
         CliSubCommand::AdjustPaneSize(cmd) => cmd.run(client).await,
         CliSubCommand::ActivateTab(cmd) => cmd.run(client).await,

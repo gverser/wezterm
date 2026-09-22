@@ -40,6 +40,7 @@ for cmd in \
     get-pane-direction \
     get-text \
     kill-pane \
+    kill-server \
     list \
     list-clients \
     move-pane-to-new-tab \

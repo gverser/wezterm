@@ -85,12 +85,63 @@ Close them all and quit?",
     Some(text)
 }
 
+/// Whether closing this window should offer to stop the mux server too.
+///
+/// Deliberately not a function of how many panes the client mirrors: that
+/// mirror includes the panes of the very window being closed, so it is never
+/// zero and would decide nothing.
+pub fn should_confirm_stop_server(
+    is_last_window: bool,
+    is_client_domain: bool,
+    cfg: config::MuxServerCloseConfirmation,
+) -> bool {
+    matches!(cfg, config::MuxServerCloseConfirmation::AlwaysPrompt)
+        && is_last_window
+        && is_client_domain
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     fn hidden(items: &[(&str, usize)]) -> Vec<(String, usize)> {
         items.iter().map(|(n, c)| (n.to_string(), *c)).collect()
+    }
+
+    #[test]
+    fn the_last_window_of_a_mux_session_asks() {
+        assert!(should_confirm_stop_server(
+            true,
+            true,
+            config::MuxServerCloseConfirmation::AlwaysPrompt
+        ));
+    }
+
+    #[test]
+    fn another_window_is_still_open_so_the_server_is_still_wanted() {
+        assert!(!should_confirm_stop_server(
+            false,
+            true,
+            config::MuxServerCloseConfirmation::AlwaysPrompt
+        ));
+    }
+
+    #[test]
+    fn a_local_window_has_no_server_to_stop() {
+        assert!(!should_confirm_stop_server(
+            true,
+            false,
+            config::MuxServerCloseConfirmation::AlwaysPrompt
+        ));
+    }
+
+    #[test]
+    fn never_prompt_keeps_the_old_silent_detach() {
+        assert!(!should_confirm_stop_server(
+            true,
+            true,
+            config::MuxServerCloseConfirmation::NeverPrompt
+        ));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod session_edit;
 
 pub use confirm_close_pane::{
     confirm_close_pane, confirm_close_tab, confirm_close_window, confirm_quit_program,
+    confirm_stop_mux_server,
 };
 pub use copy::{CopyModeParams, CopyOverlay};
 pub use debug::show_debug_overlay;
