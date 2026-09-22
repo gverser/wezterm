@@ -1865,7 +1865,62 @@ fn default_mux_env_remove() -> Vec<String> {
         "SSH_AUTH_SOCK".to_string(),
         "SSH_CLIENT".to_string(),
         "SSH_CONNECTION".to_string(),
+        // A colour preference belongs to the shell that happened to start the
+        // server, not to the panes that server will still be creating days
+        // later. A stale NO_COLOR is invisible until you notice that a pane
+        // spawned one way is monochrome while a pane spawned another way, in
+        // the same window, is not.
+        "NO_COLOR".to_string(),
+        "FORCE_COLOR".to_string(),
+        "CLICOLOR".to_string(),
+        "CLICOLOR_FORCE".to_string(),
+        // A coding agent tells its child processes which of its sessions they
+        // belong to. Start the server from inside one and every pane it goes on
+        // to spawn claims the identity of a session that has long since ended.
+        // Names the agent sets for itself only; settings the user may have
+        // chosen, such as CLAUDE_CONFIG_DIR, are theirs to keep.
+        "CLAUDECODE".to_string(),
+        "CLAUDE_CODE_*".to_string(),
+        "CLAUDE_PID".to_string(),
     ]
+}
+
+/// Expand `mux_env_remove` patterns against the variables that are actually set.
+///
+/// A pattern ending in `*` matches by prefix. That is the only way to keep up
+/// with a tool that names its variables `FOO_ONE`, `FOO_TWO`, ... and adds more
+/// with each release; an exact list would rot silently. Any other pattern is a
+/// plain variable name and is passed through whether or not it is set, which
+/// keeps the behaviour of a list without wildcards exactly as it was.
+///
+/// Windows compares environment variable names case-insensitively, so prefix
+/// matching does too there. Elsewhere `Foo` and `FOO` are genuinely different
+/// variables and matching stays exact, so that a pattern cannot take something
+/// it was never meant to.
+pub fn mux_env_names_to_remove(patterns: &[String], present: &[String]) -> Vec<String> {
+    let mut names = vec![];
+    for pattern in patterns {
+        match pattern.strip_suffix('*') {
+            None => names.push(pattern.clone()),
+            Some(prefix) => {
+                for name in present {
+                    if env_name_has_prefix(name, prefix) && !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+fn env_name_has_prefix(name: &str, prefix: &str) -> bool {
+    if cfg!(windows) {
+        name.get(..prefix.len())
+            .map_or(false, |head| head.eq_ignore_ascii_case(prefix))
+    } else {
+        name.starts_with(prefix)
+    }
 }
 
 fn default_anim_fps() -> u8 {
@@ -2262,4 +2317,124 @@ fn default_macos_forward_mods() -> Modifiers {
 
 fn default_colr_rasterizer() -> FontRasterizerSelection {
     FontRasterizerSelection::Harfbuzz
+}
+
+#[cfg(test)]
+mod mux_env_remove_test {
+    use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_plain_name_is_passed_through_even_when_unset() {
+        // The caller hands these to remove_var, which is happy to be asked
+        // about a variable that isn't there. Filtering them against the
+        // environment first would only make the list depend on load order.
+        assert_eq!(
+            mux_env_names_to_remove(&strings(&["SSH_AUTH_SOCK"]), &[]),
+            strings(&["SSH_AUTH_SOCK"])
+        );
+    }
+
+    #[test]
+    fn a_trailing_star_matches_by_prefix() {
+        let present = strings(&[
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CONFIG_DIR",
+            "PATH",
+        ]);
+        assert_eq!(
+            mux_env_names_to_remove(&strings(&["CLAUDE_CODE_*"]), &present),
+            strings(&["CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"]),
+            "a setting the user chose for themselves is not part of the prefix"
+        );
+    }
+
+    #[test]
+    fn an_empty_prefix_would_take_everything_so_say_so_out_loud() {
+        // Documenting rather than defending: "*" on its own means the whole
+        // environment, and someone who writes it has asked for that.
+        let present = strings(&["PATH", "HOME"]);
+        assert_eq!(
+            mux_env_names_to_remove(&strings(&["*"]), &present),
+            strings(&["PATH", "HOME"])
+        );
+    }
+
+    #[test]
+    fn a_name_matched_twice_is_listed_once() {
+        let present = strings(&["CLAUDE_CODE_SESSION_ID"]);
+        assert_eq!(
+            mux_env_names_to_remove(&strings(&["CLAUDE_*", "CLAUDE_CODE_*"]), &present),
+            strings(&["CLAUDE_CODE_SESSION_ID"])
+        );
+    }
+
+    #[test]
+    fn the_default_list_covers_the_colour_preferences() {
+        // The bug that prompted this: a mux server started from a tool that
+        // sets NO_COLOR for its children handed that variable to every pane it
+        // built its own command line for, so those panes rendered monochrome
+        // while panes spawned with an explicit command -- whose environment
+        // comes from the gui process instead -- did not.
+        let names = mux_env_names_to_remove(&default_mux_env_remove(), &[]);
+        assert!(names.contains(&"NO_COLOR".to_string()), "{names:?}");
+        assert!(names.contains(&"FORCE_COLOR".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn the_default_list_still_covers_the_ssh_variables() {
+        let names = mux_env_names_to_remove(&default_mux_env_remove(), &[]);
+        for name in ["SSH_AUTH_SOCK", "SSH_CLIENT", "SSH_CONNECTION"] {
+            assert!(names.contains(&name.to_string()), "{name} missing");
+        }
+    }
+
+    #[test]
+    fn the_default_list_takes_an_agents_session_but_not_the_users_settings() {
+        let present = strings(&[
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_PID",
+            "CLAUDE_CONFIG_DIR",
+        ]);
+        let names = mux_env_names_to_remove(&default_mux_env_remove(), &present);
+        for name in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_PID",
+        ] {
+            assert!(names.contains(&name.to_string()), "{name} missing");
+        }
+        assert!(
+            !names.contains(&"CLAUDE_CONFIG_DIR".to_string()),
+            "a directory the user pointed at is not session state: {names:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn prefix_matching_follows_the_platform_on_case() {
+        let present = strings(&["claude_code_session_id"]);
+        assert_eq!(
+            mux_env_names_to_remove(&strings(&["CLAUDE_CODE_*"]), &present),
+            present,
+            "windows environment variable names are case-insensitive"
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn prefix_matching_follows_the_platform_on_case() {
+        let present = strings(&["claude_code_session_id"]);
+        assert!(
+            mux_env_names_to_remove(&strings(&["CLAUDE_CODE_*"]), &present).is_empty(),
+            "elsewhere they are distinct variables and a pattern must not overreach"
+        );
+    }
 }

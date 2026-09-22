@@ -200,7 +200,14 @@ fn run() -> anyhow::Result<()> {
     ] {
         std::env::remove_var(name);
     }
-    for name in &config::configuration().mux_env_remove {
+    // Patterns, not just names: see config::mux_env_names_to_remove. Reading the
+    // environment here rather than at spawn time is what makes this stick --
+    // every command line the server builds for itself later, for a pane or for
+    // the bridge's own service, starts from this process's environment.
+    let present: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .collect();
+    for name in config::mux_env_names_to_remove(&config::configuration().mux_env_remove, &present) {
         std::env::remove_var(name);
     }
 
