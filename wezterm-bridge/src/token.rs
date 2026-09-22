@@ -50,8 +50,11 @@ fn restrict_permissions(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path) {
-    // On Windows the file inherits the user profile's ACL, which already
-    // excludes other users.
+    // On Windows the file inherits its directory's ACL. Under the user
+    // profile that already excludes other users, but in a portable install
+    // the token lives under the install directory instead, so it gets
+    // whatever ACL that directory has -- the same users who can already
+    // edit the wezterm.lua sitting beside it.
 }
 
 /// Compare in constant time, so a wrong token cannot be guessed one byte at a

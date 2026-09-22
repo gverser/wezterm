@@ -78,6 +78,21 @@ error will be shown and the default configuration will be used instead.
     drive mode.  It is **not** recommended to store your configs in that
     location if you are not running off a thumb drive.
 
+    In thumb drive mode, the files wezterm writes for itself (the saved session
+    tree, recently used commands and emoji, the debug overlay history and the
+    bridge token) are kept in a `data` directory next to wezterm.exe instead of
+    in `%APPDATA%\wezterm`.  The first time that directory is used, those files
+    are copied into it from `%APPDATA%\wezterm` if they exist there; the
+    originals are left in place.  `plugins` and the update check state are not
+    copied.  Once the copy has succeeded a `.migrated` file is written in the
+    `data` directory; delete it to have missing files copied again.
+    A program started from a pane of a thumb drive install, whose
+    `WEZTERM_CONFIG_FILE` still points at that install's `wezterm.lua`, uses the
+    same `data` directory.
+    If the `data` directory cannot be created or written to, wezterm keeps using
+    `%APPDATA%\wezterm`.  Files in `data` get the permissions of the directory
+    wezterm is installed in.
+
 `wezterm` will watch the config file that it loads; if/when it changes, the
 configuration will be automatically reloaded and the majority of options will
 take effect immediately.  You may also use the `CTRL+SHIFT+R` keyboard shortcut

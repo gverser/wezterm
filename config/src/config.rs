@@ -1816,11 +1816,17 @@ pub(crate) fn compute_cache_dir() -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn compute_data_dir() -> anyhow::Result<PathBuf> {
-    if let Some(runtime) = dirs_next::data_dir() {
-        return Ok(runtime.join("wezterm"));
+    let legacy = match dirs_next::data_dir() {
+        Some(dir) => dir.join("wezterm"),
+        None => crate::HOME_DIR.join(".local/share/wezterm"),
+    };
+
+    #[cfg(windows)]
+    if let Some(data) = crate::portable::resolve(&legacy) {
+        return Ok(data);
     }
 
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(legacy)
 }
 
 pub(crate) fn compute_runtime_dir() -> anyhow::Result<PathBuf> {
