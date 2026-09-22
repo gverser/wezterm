@@ -6,8 +6,65 @@
 
 use mux::{FeishuState, Mux};
 use parking_lot::Mutex;
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+
+/// The service's app id and secret, when they live in the data dir.
+pub const CREDENTIALS_FILE: &str = "feishu-credentials.txt";
+
+/// The token Claude Code hooks present to the service, in the data dir.
+pub const HOOK_TOKEN_FILE: &str = "bridge-hook-token";
+
+/// Where the files the Feishu service shares with the bridge are.
+pub struct ServicePaths {
+    pub port: u16,
+    pub token_path: PathBuf,
+    pub data_dir: PathBuf,
+    /// Where the service kept its hook token before it lived in the data dir.
+    pub legacy_hook_token: PathBuf,
+}
+
+/// The environment the Feishu service is started with.
+///
+/// The service has defaults of its own for every one of these, and they
+/// point at wherever things happened to be when it was written. Telling it
+/// is what lets the files move with the install. A variable already set in
+/// our own environment is left out, so an explicit choice is never
+/// overridden.
+fn service_env(
+    paths: &ServicePaths,
+    already_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, OsString)> {
+    let mut env: Vec<(&'static str, OsString)> = vec![
+        (
+            "BRIDGE_TOKEN_PATH",
+            paths.token_path.clone().into_os_string(),
+        ),
+        ("BRIDGE_PORT", paths.port.to_string().into()),
+    ];
+
+    // A hook token that exists has already been pasted into someone's Claude
+    // Code settings. Pointing the service at a path with nothing in it would
+    // have it mint a different token, and every hook would start failing. So
+    // the data dir is used once it has a token, or when there is none
+    // anywhere to keep.
+    let hook_token = paths.data_dir.join(HOOK_TOKEN_FILE);
+    if hook_token.exists() || !paths.legacy_hook_token.exists() {
+        env.push(("HOOK_TOKEN_PATH", hook_token.into_os_string()));
+    }
+
+    // Only when it is there: otherwise the service's own default still
+    // applies, rather than a path that is certain to fail.
+    let credentials = paths.data_dir.join(CREDENTIALS_FILE);
+    if credentials.is_file() {
+        env.push(("FEISHU_CREDENTIALS", credentials.into_os_string()));
+    }
+
+    env.retain(|(name, _)| !already_set(name));
+    env
+}
 
 /// Work out what to report, given what we can observe.
 ///
@@ -38,8 +95,8 @@ mod job {
     use std::process::Child;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -95,6 +152,7 @@ mod job {
 
 pub struct FeishuService {
     command: Vec<String>,
+    paths: ServicePaths,
     child: Mutex<Option<Child>>,
     /// Whether a client is attached to the bridge. The service *running* and
     /// the service being *usable* are different things, and only the bridge
@@ -107,9 +165,10 @@ pub struct FeishuService {
 }
 
 impl FeishuService {
-    pub fn new(command: Vec<String>) -> Arc<Self> {
+    pub fn new(command: Vec<String>, paths: ServicePaths) -> Arc<Self> {
         Arc::new(Self {
             command,
+            paths,
             child: Mutex::new(None),
             client_attached: Mutex::new(false),
             crashed: Mutex::new(None),
@@ -155,6 +214,12 @@ impl FeishuService {
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
         cmd.stdin(Stdio::null());
+
+        // Worked out at every start rather than once: dropping the
+        // credentials file into place should not need a mux server restart.
+        for (name, value) in service_env(&self.paths, |name| std::env::var_os(name).is_some()) {
+            cmd.env(name, value);
+        }
 
         #[cfg(windows)]
         {
@@ -311,7 +376,113 @@ mod test {
 
     #[test]
     fn an_unconfigured_service_knows_it() {
-        let svc = FeishuService::new(vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        let svc = FeishuService::new(vec![], paths_in(dir.path()));
         assert!(!svc.is_configured());
+    }
+
+    fn paths_in(dir: &std::path::Path) -> ServicePaths {
+        let data_dir = dir.join("data");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        ServicePaths {
+            port: 8788,
+            token_path: data_dir.join("bridge-token"),
+            data_dir,
+            legacy_hook_token: home.join(".wezterm-bridge-hook-token"),
+        }
+    }
+
+    fn get(env: &[(&'static str, OsString)], name: &str) -> Option<OsString> {
+        env.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone())
+    }
+
+    fn nothing_set(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn the_bridge_token_and_port_are_always_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let env = service_env(&paths, nothing_set);
+
+        assert_eq!(
+            get(&env, "BRIDGE_TOKEN_PATH"),
+            Some(paths.token_path.clone().into_os_string())
+        );
+        assert_eq!(get(&env, "BRIDGE_PORT"), Some(OsString::from("8788")));
+    }
+
+    #[test]
+    fn a_fresh_install_keeps_its_hook_token_in_the_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        let env = service_env(&paths, nothing_set);
+
+        assert_eq!(
+            get(&env, "HOOK_TOKEN_PATH"),
+            Some(paths.data_dir.join(HOOK_TOKEN_FILE).into_os_string())
+        );
+    }
+
+    #[test]
+    fn a_hook_token_already_in_the_data_dir_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        std::fs::write(paths.data_dir.join(HOOK_TOKEN_FILE), "new").unwrap();
+        std::fs::write(&paths.legacy_hook_token, "old").unwrap();
+        let env = service_env(&paths, nothing_set);
+
+        assert_eq!(
+            get(&env, "HOOK_TOKEN_PATH"),
+            Some(paths.data_dir.join(HOOK_TOKEN_FILE).into_os_string())
+        );
+    }
+
+    #[test]
+    fn a_hook_token_still_in_home_is_left_where_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        std::fs::write(&paths.legacy_hook_token, "old").unwrap();
+        let env = service_env(&paths, nothing_set);
+
+        assert_eq!(
+            get(&env, "HOOK_TOKEN_PATH"),
+            None,
+            "pointing the service at an empty path would mint a new token and break every configured hook"
+        );
+    }
+
+    #[test]
+    fn credentials_are_passed_only_when_the_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        assert_eq!(
+            get(&service_env(&paths, nothing_set), "FEISHU_CREDENTIALS"),
+            None
+        );
+
+        let credentials = paths.data_dir.join(CREDENTIALS_FILE);
+        std::fs::write(&credentials, "APP_ID:x").unwrap();
+        assert_eq!(
+            get(&service_env(&paths, nothing_set), "FEISHU_CREDENTIALS"),
+            Some(credentials.into_os_string())
+        );
+    }
+
+    #[test]
+    fn an_explicit_environment_variable_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_in(dir.path());
+        std::fs::write(paths.data_dir.join(CREDENTIALS_FILE), "APP_ID:x").unwrap();
+        let env = service_env(&paths, |name| {
+            name == "BRIDGE_PORT" || name == "FEISHU_CREDENTIALS"
+        });
+
+        assert_eq!(get(&env, "BRIDGE_PORT"), None);
+        assert_eq!(get(&env, "FEISHU_CREDENTIALS"), None);
+        assert!(get(&env, "BRIDGE_TOKEN_PATH").is_some());
     }
 }

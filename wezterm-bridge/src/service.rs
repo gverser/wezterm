@@ -32,13 +32,27 @@ const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200
 /// The sender for whichever client is connected, if any.
 type Outbox = Arc<Mutex<Option<Sender<Outbound>>>>;
 
-pub fn start(port: u16, token_path: PathBuf, feishu_command: Vec<String>) -> anyhow::Result<()> {
+pub fn start(
+    port: u16,
+    token_path: PathBuf,
+    feishu_command: Vec<String>,
+    data_dir: PathBuf,
+    legacy_hook_token: PathBuf,
+) -> anyhow::Result<()> {
     let token = crate::token::load_or_create(&token_path)
         .with_context(|| format!("loading the bridge token from {}", token_path.display()))?;
 
     let state = Arc::new(BridgeState::new());
     let outbox: Outbox = Arc::new(Mutex::new(None));
-    let feishu = crate::feishu::FeishuService::new(feishu_command);
+    let feishu = crate::feishu::FeishuService::new(
+        feishu_command,
+        crate::feishu::ServicePaths {
+            port,
+            token_path,
+            data_dir,
+            legacy_hook_token,
+        },
+    );
 
     subscribe(state.clone(), outbox.clone(), Arc::clone(&feishu));
 

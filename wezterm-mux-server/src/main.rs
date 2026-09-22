@@ -252,7 +252,13 @@ fn run() -> anyhow::Result<()> {
                 .bridge_token_path
                 .clone()
                 .unwrap_or_else(|| config::DATA_DIR.join("bridge-token"));
-            if let Err(err) = wezterm_bridge::service::start(cfg.bridge_port, token_path, cfg.feishu_command.clone()) {
+            if let Err(err) = wezterm_bridge::service::start(
+                cfg.bridge_port,
+                token_path,
+                cfg.feishu_command.clone(),
+                config::DATA_DIR.clone(),
+                config::HOME_DIR.join(".wezterm-bridge-hook-token"),
+            ) {
                 log::error!("failed to start the bridge: {err:#}");
             }
         }

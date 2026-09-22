@@ -213,8 +213,11 @@ pub struct Config {
     pub bridge_port: u16,
 
     /// Where the bridge keeps its IPC token. Defaults to
-    /// $DATA_DIR/bridge-token. The token is read from this file and is never
-    /// placed in the environment.
+    /// $DATA_DIR/bridge-token, where $DATA_DIR is `data` next to the
+    /// executable for a portable Windows install (one with wezterm.lua beside
+    /// wezterm.exe) and the per-user data dir otherwise. The token is read
+    /// from this file and is never placed in the environment; the Feishu
+    /// service is only told the path.
     #[dynamic(default)]
     pub bridge_token_path: Option<std::path::PathBuf>,
 
