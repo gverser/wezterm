@@ -442,7 +442,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 47;
+pub const CODEC_VERSION: usize = 48;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -507,6 +507,7 @@ pdu! {
     PaneFeishuChanged: 64,
     FeishuServiceStatus: 65,
     KillServer: 66,
+    SetWindowTabOrder: 67,
 }
 
 impl Pdu {
@@ -784,6 +785,19 @@ pub struct SetClipboard {
 pub struct SetWindowWorkspace {
     pub window_id: WindowId,
     pub workspace: String,
+}
+
+/// Client -> server: the tabs of a window are now in a different order.
+///
+/// Carries every tab of the window that the client knows about, in the order
+/// it shows them, rather than a single move: the client's window can hold tabs
+/// from other domains as well, so an index there means nothing here, and a
+/// whole order still comes out right when it crosses a tab being added on
+/// this side.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SetWindowTabOrder {
+    pub window_id: WindowId,
+    pub tab_ids: Vec<TabId>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1233,6 +1247,27 @@ mod test {
             DecodedPdu {
                 serial: 0x40,
                 pdu: Pdu::KillServer(KillServer {})
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn set_window_tab_order_round_trip() {
+        let mut encoded = Vec::new();
+        Pdu::SetWindowTabOrder(SetWindowTabOrder {
+            window_id: 2,
+            tab_ids: vec![5, 3, 4],
+        })
+        .encode(&mut encoded, 0x40)
+        .unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x40,
+                pdu: Pdu::SetWindowTabOrder(SetWindowTabOrder {
+                    window_id: 2,
+                    tab_ids: vec![5, 3, 4],
+                })
             },
             Pdu::decode(encoded.as_slice()).unwrap()
         );

@@ -303,6 +303,22 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::SetWindowTabOrder(SetWindowTabOrder { window_id, tab_ids }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            let mut window = mux
+                                .get_window_mut(window_id)
+                                .ok_or_else(|| anyhow!("no such window {window_id}"))?;
+                            window.set_tab_order(&tab_ids);
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::SetClientId(SetClientId {
                 mut client_id,
                 is_proxy,

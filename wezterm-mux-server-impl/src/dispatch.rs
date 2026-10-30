@@ -162,6 +162,10 @@ where
             Ok(Item::Notif(MuxNotification::WindowRemoved(_window_id))) => {}
             Ok(Item::Notif(MuxNotification::WindowCreated(_window_id))) => {}
             Ok(Item::Notif(MuxNotification::WindowInvalidated(_window_id))) => {}
+            // Only a client tells the server about a new order; nothing goes
+            // back the other way, so other attached GUIs keep theirs until
+            // they next attach.
+            Ok(Item::Notif(MuxNotification::WindowTabsReordered(_window_id))) => {}
             Ok(Item::Notif(MuxNotification::WindowWorkspaceChanged(window_id))) => {
                 let workspace = {
                     let mux = Mux::get();

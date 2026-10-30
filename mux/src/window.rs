@@ -236,6 +236,53 @@ impl Window {
         self.tabs.iter()
     }
 
+    /// Move the tab at `from` to `to`, shifting the ones in between along.
+    /// The active tab stays active wherever it lands.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let active = self.get_active().map(|tab| tab.tab_id());
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.tabs_reordered(active);
+    }
+
+    /// Put the tabs that `order` names into that order; see arrange_tab_ids.
+    /// The active tab stays active wherever it lands.
+    pub fn set_tab_order(&mut self, order: &[TabId]) {
+        let ids: Vec<TabId> = self.tabs.iter().map(|tab| tab.tab_id()).collect();
+        let arranged = arrange_tab_ids(&ids, order);
+        if arranged == ids {
+            return;
+        }
+        let active = self.get_active().map(|tab| tab.tab_id());
+        let mut tabs = std::mem::take(&mut self.tabs);
+        for id in arranged {
+            if let Some(idx) = tabs.iter().position(|tab| tab.tab_id() == id) {
+                self.tabs.push(tabs.remove(idx));
+            }
+        }
+        // Nothing should be left over, but a tab dropped here would vanish
+        // from the window while its panes went on running.
+        self.tabs.append(&mut tabs);
+        self.tabs_reordered(active);
+    }
+
+    /// Keep `active` the active tab after a reorder, and say so.
+    ///
+    /// The index is set directly rather than through set_active_without_saving,
+    /// which would tell whichever tab now sits at the old index that it lost
+    /// focus: the same tab is active before and after, so there is no focus
+    /// change to report.
+    fn tabs_reordered(&mut self, active: Option<TabId>) {
+        if let Some(idx) = active.and_then(|id| self.idx_by_id(id)) {
+            self.active = idx;
+        }
+        self.invalidate();
+        Mux::get().notify(MuxNotification::WindowTabsReordered(self.id));
+    }
+
     pub fn prune_dead_tabs(&mut self, live_tab_ids: &[TabId]) {
         let mut invalidated = false;
         let dead: Vec<TabId> = self
@@ -285,9 +332,60 @@ impl Window {
     }
 }
 
+/// The order `ids` end up in once the ones that `order` names are put into
+/// that order.
+///
+/// Each of them takes a slot that one of them held before, so an id that
+/// `order` does not mention keeps its place -- a tab added here that whoever
+/// sent the order had not heard of yet -- and one that `order` names but `ids`
+/// does not have is ignored.
+fn arrange_tab_ids(ids: &[TabId], order: &[TabId]) -> Vec<TabId> {
+    let mut wanted: Vec<TabId> = vec![];
+    for id in order {
+        if ids.contains(id) && !wanted.contains(id) {
+            wanted.push(*id);
+        }
+    }
+    let mut wanted = wanted.into_iter();
+    ids.iter()
+        .map(|id| {
+            if order.contains(id) {
+                wanted.next().unwrap_or(*id)
+            } else {
+                *id
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn naming_every_tab_puts_them_in_that_order() {
+        assert_eq!(arrange_tab_ids(&[1, 2, 3], &[3, 1, 2]), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn a_tab_the_order_does_not_name_keeps_its_place() {
+        assert_eq!(arrange_tab_ids(&[1, 2, 3, 4], &[4, 2, 1]), vec![4, 2, 3, 1]);
+    }
+
+    #[test]
+    fn a_tab_the_window_does_not_have_is_ignored() {
+        assert_eq!(arrange_tab_ids(&[1, 2], &[9, 2, 1]), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_tab_named_twice_counts_once() {
+        assert_eq!(arrange_tab_ids(&[1, 2, 3], &[3, 3, 1, 2]), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn an_empty_order_changes_nothing() {
+        assert_eq!(arrange_tab_ids(&[1, 2], &[]), vec![1, 2]);
+    }
 
     // Passing an explicit workspace keeps Window::new from reaching for the
     // global Mux, which does not exist in a unit test.

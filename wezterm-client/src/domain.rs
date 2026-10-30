@@ -338,6 +338,48 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
             })
             .detach();
         }
+        MuxNotification::WindowTabsReordered(window_id) => {
+            // Sent while the window is still borrowed for the reorder, so
+            // reading it has to wait, as with WindowWorkspaceChanged above.
+            promise::spawn::spawn_into_main_thread(async move {
+                let (inner, request) = {
+                    let mux = Mux::get();
+                    let domain = match mux.get_domain(local_domain_id) {
+                        Some(domain) => domain,
+                        None => return,
+                    };
+                    let domain = match domain.downcast_ref::<ClientDomain>() {
+                        Some(domain) => domain,
+                        None => return,
+                    };
+                    let (remote_window_id, inner) =
+                        match (domain.local_to_remote_window_id(window_id), domain.inner()) {
+                            (Some(remote_window_id), Some(inner)) => (remote_window_id, inner),
+                            _ => return,
+                        };
+                    // Only the tabs that came from this server: a local window
+                    // can hold tabs from other domains as well.
+                    let tab_ids: Vec<TabId> = match mux.get_window(window_id) {
+                        Some(window) => window
+                            .iter()
+                            .filter_map(|tab| domain.local_to_remote_tab_id(tab.tab_id()))
+                            .collect(),
+                        None => return,
+                    };
+                    (
+                        inner,
+                        codec::SetWindowTabOrder {
+                            window_id: remote_window_id,
+                            tab_ids,
+                        },
+                    )
+                };
+                if let Err(err) = inner.client.set_window_tab_order(request).await {
+                    log::error!("while sending the new tab order to the server: {err:#}");
+                }
+            })
+            .detach();
+        }
         MuxNotification::TabTitleChanged { tab_id, title } => {
             if let Some(remote_tab_id) = client_domain.local_to_remote_tab_id(tab_id) {
                 if let Some(inner) = client_domain.inner() {

@@ -1559,6 +1559,7 @@ impl TermWindow {
                     MuxNotification::PaneAdded(_)
                     | MuxNotification::WorkspaceRenamed { .. }
                     | MuxNotification::WindowWorkspaceChanged(_)
+                    | MuxNotification::WindowTabsReordered(_)
                     | MuxNotification::ActiveWorkspaceChanged(_)
                     | MuxNotification::Empty
                     | MuxNotification::WindowCreated(_) => {}
@@ -1749,6 +1750,8 @@ impl TermWindow {
                 // (next notifs should finish the workspace switch & reconcile the state)
                 return true;
             }
+            // The WindowInvalidated that comes with it is what redraws the bar.
+            MuxNotification::WindowTabsReordered(_) => return true,
             MuxNotification::TabResized(tab_id)
             | MuxNotification::TabTitleChanged { tab_id, .. } => {
                 let mux = Mux::get();
@@ -2546,9 +2549,7 @@ impl TermWindow {
 
         ensure!(tab_idx < max, "cannot move a tab out of range");
 
-        let tab_inst = window.remove_by_idx(active);
-        window.insert(tab_idx, &tab_inst);
-        window.set_active_without_saving(tab_idx);
+        window.move_tab(active, tab_idx);
 
         drop(window);
         self.update_title();

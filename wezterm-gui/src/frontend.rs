@@ -96,6 +96,7 @@ impl GuiFrontEnd {
                 MuxNotification::TabAddedToWindow { .. } => {}
                 MuxNotification::PaneRemoved(_) => {}
                 MuxNotification::WindowInvalidated(_) => {}
+                MuxNotification::WindowTabsReordered(_) => {}
                 MuxNotification::PaneOutput(_) => {}
                 MuxNotification::PaneAdded(_) => {}
                 MuxNotification::Alert {

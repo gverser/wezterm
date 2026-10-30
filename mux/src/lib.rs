@@ -81,6 +81,11 @@ pub enum MuxNotification {
     WindowRemoved(WindowId),
     WindowInvalidated(WindowId),
     WindowWorkspaceChanged(WindowId),
+    /// The tabs of a window were put in a different order. The window is
+    /// invalidated too; this says why, so that a client domain knows to tell
+    /// its server, which would otherwise hand the old order back on the next
+    /// attach.
+    WindowTabsReordered(WindowId),
     ActiveWorkspaceChanged(Arc<ClientId>),
     Alert {
         pane_id: PaneId,
