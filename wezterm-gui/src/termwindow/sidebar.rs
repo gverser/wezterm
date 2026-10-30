@@ -8,7 +8,10 @@
 //! `crate::sessions`.
 
 use crate::sessions::store::with_store;
-use crate::sessions::{clamp_scroll, clamp_width, NodeId, NodeKind, SessionNode, SessionSpawn};
+use crate::sessions::{
+    clamp_scroll, clamp_width, drop_placement, NodeId, NodeKind, Placement, SessionNode,
+    SessionSpawn,
+};
 use crate::spawn::SpawnWhere;
 use crate::termwindow::{UIItem, UIItemType};
 use ::window::{MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps};
@@ -70,6 +73,14 @@ pub struct ContextMenu {
     pub items: Vec<MenuAction>,
 }
 
+/// A node being dragged to a new place in the tree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeDrag {
+    pub id: NodeId,
+    /// Where it would go if dropped now; None over anywhere it cannot go.
+    pub target: Option<Placement>,
+}
+
 pub struct SidebarState {
     pub collapsed: bool,
 
@@ -82,6 +93,10 @@ pub struct SidebarState {
     /// mid-drag would recompute the terminal geometry, and therefore SIGWINCH
     /// every pty in the workspace, on every mouse-move.
     pub pending_width: Option<f32>,
+
+    /// Set once the pointer has gone far enough from a press on a node for it
+    /// to be a drag rather than a click.
+    pub drag: Option<NodeDrag>,
 
     pub scroll_offset: usize,
     pub selected: Option<NodeId>,
@@ -118,6 +133,7 @@ impl Default for SidebarState {
             collapsed: false,
             width: None,
             pending_width: None,
+            drag: None,
             scroll_offset: 0,
             selected: None,
             focus: None,
@@ -805,7 +821,7 @@ impl super::TermWindow {
         }
 
         match item.item_type.clone() {
-            UIItemType::SidebarNode(id) => self.mouse_event_sidebar_node(id, event),
+            UIItemType::SidebarNode(id) => self.mouse_event_sidebar_node(item, id, event),
             UIItemType::SidebarSearch => {
                 if matches!(event.kind, WMEK::Press(MousePress::Left)) {
                     self.sidebar.focus = Some(SidebarFocus::Search);
@@ -839,7 +855,7 @@ impl super::TermWindow {
         }
     }
 
-    fn mouse_event_sidebar_node(&mut self, id: NodeId, event: MouseEvent) {
+    fn mouse_event_sidebar_node(&mut self, item: UIItem, id: NodeId, event: MouseEvent) {
         match event.kind {
             WMEK::Press(MousePress::Left) => {
                 let streak = self
@@ -847,6 +863,19 @@ impl super::TermWindow {
                     .as_ref()
                     .map(|click| click.streak)
                     .unwrap_or(1);
+
+                if streak == 1 {
+                    // Only the highlight for now. Whether this press is a click
+                    // or the start of a drag isn't known until the pointer
+                    // moves or the button comes up, and a click's own effects
+                    // -- a folder folding up, the terminal switching to another
+                    // workspace -- would pull the tree out from under a drag.
+                    // See finish_sidebar_node_press.
+                    self.sidebar.selected = Some(id);
+                    self.invalidate_sidebar();
+                    self.dragging.replace((item, event));
+                    return;
+                }
 
                 let is_folder = with_store(|store| {
                     store
@@ -859,14 +888,10 @@ impl super::TermWindow {
                 // A folder's second click would just undo the first one's
                 // expand/collapse.
                 if is_folder {
-                    if streak == 1 {
-                        self.select_session_node(id);
-                    }
                     return;
                 }
 
                 match streak {
-                    1 => self.select_session_node(id),
                     2 => self.activate_session_node(id, true),
                     // A triple-click is still one gesture; opening again would
                     // race the spawn the second click just started.
@@ -925,5 +950,111 @@ impl super::TermWindow {
             }
         }
         context.invalidate();
+    }
+
+    /// Track a press on a node as the pointer moves: once it has gone far
+    /// enough to be a drag, work out where the node would land. Nothing moves
+    /// until the button comes up; see [`Self::finish_sidebar_node_press`].
+    pub fn drag_sidebar_node(
+        &mut self,
+        item: UIItem,
+        start_event: MouseEvent,
+        event: MouseEvent,
+        context: &dyn WindowOps,
+    ) {
+        let id = match item.item_type {
+            UIItemType::SidebarNode(id) => id,
+            _ => return,
+        };
+
+        if self.sidebar.drag.is_none() {
+            let dx = (event.coords.x - start_event.coords.x) as f32;
+            let dy = (event.coords.y - start_event.coords.y) as f32;
+            // While a search is narrowing the tree, the rows on screen are not
+            // each other's real neighbours, so a gap between two of them is no
+            // particular place in the tree.
+            let filtering = !self.sidebar.search.trim().is_empty();
+            if filtering || dx.hypot(dy) < self.sidebar_row_height() / 4. {
+                self.dragging.replace((item, start_event));
+                return;
+            }
+            self.sidebar.drag = Some(NodeDrag { id, target: None });
+        }
+
+        let target = self.sidebar_drop_target(id, event.coords.x, event.coords.y);
+        if let Some(drag) = self.sidebar.drag.as_mut() {
+            if drag.target != target {
+                drag.target = target;
+                // The marker is drawn over the cached rows rather than built
+                // into them, so a repaint is all it needs.
+                context.invalidate();
+            }
+        }
+        self.dragging.replace((item, start_event));
+    }
+
+    /// Where `dragged` would go if dropped at (x, y), or None when that is
+    /// nowhere it can go.
+    fn sidebar_drop_target(&self, dragged: NodeId, x: isize, y: isize) -> Option<Placement> {
+        let bounds = self.sidebar_bounds();
+        if (x as f32) < bounds.min_x() || (x as f32) >= bounds.max_x() {
+            return None;
+        }
+
+        // The rows as they were last drawn. The tree doesn't change until the
+        // drop, so they are still where the user sees them.
+        let mut hovered = None;
+        let mut last_drawn = None;
+        for item in &self.ui_items {
+            if let UIItemType::SidebarNode(id) = item.item_type {
+                if y >= item.y as isize && y < (item.y + item.height) as isize {
+                    let fraction = (y - item.y as isize) as f32 / item.height.max(1) as f32;
+                    hovered = Some((id, fraction));
+                }
+                last_drawn = Some((id, item.y + item.height));
+            }
+        }
+
+        with_store(|store| {
+            let tree = store.tree();
+            let rows = tree.visible_rows(None);
+            let placement = match hovered {
+                Some((id, fraction)) => {
+                    let index = rows.iter().position(|row| row.id == id)?;
+                    drop_placement(&rows, index, fraction)?
+                }
+                // Below the last row is the end of the top level -- provided
+                // that row is the end of the tree, and not merely the last one
+                // that fits on screen.
+                None => {
+                    let (last_id, bottom) = last_drawn?;
+                    let at_end = rows.last().map(|row| row.id) == Some(last_id);
+                    if !at_end || y < bottom as isize {
+                        return None;
+                    }
+                    Placement::LastIn(None)
+                }
+            };
+            tree.can_move(dragged, placement).then_some(placement)
+        })
+    }
+
+    /// The button came up on a press that began on a node. Drop the node where
+    /// the drag left it -- or, if it never moved far enough to be a drag, carry
+    /// out the click that the press put off.
+    pub fn finish_sidebar_node_press(&mut self, id: NodeId, context: &dyn WindowOps) {
+        match self.sidebar.drag.take() {
+            Some(NodeDrag {
+                target: Some(target),
+                ..
+            }) => {
+                with_store(|store| store.mutate(|tree| tree.move_node(id, target)));
+                self.invalidate_sidebar();
+            }
+            // Let go somewhere it cannot go: nothing moves, but the marker has
+            // to come off.
+            Some(NodeDrag { target: None, .. }) => context.invalidate(),
+            None => self.select_session_node(id),
+        }
     }
 }

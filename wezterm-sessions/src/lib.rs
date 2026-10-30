@@ -7,4 +7,6 @@ pub mod store;
 pub mod tree;
 
 pub use store::{sessions_file_name, SessionStore};
-pub use tree::{NodeId, NodeKind, RowKind, SessionNode, SessionSpawn, SessionTree, VisibleRow};
+pub use tree::{
+    NodeId, NodeKind, Placement, RowKind, SessionNode, SessionSpawn, SessionTree, VisibleRow,
+};

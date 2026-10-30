@@ -29,6 +29,7 @@ whatever was running under the previous one alive in the background.
 | Double click a session | Open it: start it if it isn't running, otherwise add a tab |
 | Click a folder | Expand or collapse it |
 | Right click | New session, new folder, rename, edit, delete |
+| Drag an entry | Move it, and a folder with everything in it: a line marks the gap it will go into, a box the folder it will go inside. Below the last entry is the end of the top level. Not while searching |
 | Drag the right edge | Change the sidebar's width |
 | Click the chevron | Collapse the sidebar to a rail, and back |
 

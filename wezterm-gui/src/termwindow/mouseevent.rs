@@ -146,8 +146,12 @@ impl super::TermWindow {
                 if press == &MousePress::Left {
                     if let Some((item, _)) = self.dragging.take() {
                         // Completed a drag
-                        if item.item_type == UIItemType::SidebarResizeHandle {
-                            self.commit_sidebar_resize(context);
+                        match item.item_type {
+                            UIItemType::SidebarResizeHandle => self.commit_sidebar_resize(context),
+                            UIItemType::SidebarNode(id) => {
+                                self.finish_sidebar_node_press(id, context)
+                            }
+                            _ => {}
                         }
                         return;
                     }
@@ -430,6 +434,9 @@ impl super::TermWindow {
             }
             UIItemType::SidebarResizeHandle => {
                 self.drag_sidebar_splitter(item, start_event, event, context);
+            }
+            UIItemType::SidebarNode(_) => {
+                self.drag_sidebar_node(item, start_event, event, context);
             }
             UIItemType::TabBar(TabBarItem::Tab { .. }) => {
                 self.drag_tab(item, start_event, event, context);

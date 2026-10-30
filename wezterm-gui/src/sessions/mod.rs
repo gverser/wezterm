@@ -7,10 +7,34 @@
 //! `termwindow::render::sidebar`.
 
 pub use wezterm_sessions::{
-    store, NodeId, NodeKind, RowKind, SessionNode, SessionSpawn, VisibleRow,
+    store, NodeId, NodeKind, Placement, RowKind, SessionNode, SessionSpawn, VisibleRow,
 };
 
 use std::ops::Range;
+
+/// Where a node dragged over `rows[index]` would be put, given how far down
+/// that row the pointer is: `fraction` runs from 0 at its top edge to 1 at its
+/// bottom.
+///
+/// A session row splits in half, before it and after it. A folder row keeps a
+/// quarter at each edge for before and after, and its middle half puts the
+/// node inside, at the end. The bottom quarter of an open folder with
+/// something in it means the top of its contents instead: that is the gap the
+/// pointer is over on screen, while "after the folder" would land below the
+/// last of its children, nowhere near the pointer.
+pub fn drop_placement(rows: &[VisibleRow], index: usize, fraction: f32) -> Option<Placement> {
+    let row = rows.get(index)?;
+    Some(match row.kind {
+        RowKind::Session if fraction < 0.5 => Placement::Before(row.id),
+        RowKind::Session => Placement::After(row.id),
+        RowKind::Folder { .. } if fraction < 0.25 => Placement::Before(row.id),
+        RowKind::Folder { .. } if fraction <= 0.75 => Placement::LastIn(Some(row.id)),
+        RowKind::Folder { expanded } => match rows.get(index + 1) {
+            Some(next) if expanded && next.depth > row.depth => Placement::Before(next.id),
+            _ => Placement::After(row.id),
+        },
+    })
+}
 
 /// Clamp a scroll position so the list never scrolls past its end.
 pub fn clamp_scroll(total_rows: usize, scroll_offset: usize, capacity: usize) -> usize {
@@ -103,6 +127,71 @@ pub fn should_confirm_stop_server(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn row(id: u64, depth: usize, kind: RowKind) -> VisibleRow<'static> {
+        VisibleRow {
+            id: NodeId(id),
+            name: "",
+            depth,
+            kind,
+        }
+    }
+
+    const OPEN: RowKind = RowKind::Folder { expanded: true };
+    const SHUT: RowKind = RowKind::Folder { expanded: false };
+
+    #[test]
+    fn a_session_row_splits_into_before_and_after() {
+        let rows = [row(1, 0, RowKind::Session)];
+        assert_eq!(
+            drop_placement(&rows, 0, 0.4),
+            Some(Placement::Before(NodeId(1)))
+        );
+        assert_eq!(
+            drop_placement(&rows, 0, 0.6),
+            Some(Placement::After(NodeId(1)))
+        );
+    }
+
+    #[test]
+    fn the_middle_of_a_folder_row_puts_the_node_inside() {
+        let rows = [row(1, 0, SHUT)];
+        assert_eq!(
+            drop_placement(&rows, 0, 0.2),
+            Some(Placement::Before(NodeId(1)))
+        );
+        assert_eq!(
+            drop_placement(&rows, 0, 0.5),
+            Some(Placement::LastIn(Some(NodeId(1))))
+        );
+        assert_eq!(
+            drop_placement(&rows, 0, 0.8),
+            Some(Placement::After(NodeId(1)))
+        );
+    }
+
+    #[test]
+    fn under_an_open_folder_is_the_top_of_its_contents() {
+        let rows = [row(1, 0, OPEN), row(2, 1, RowKind::Session)];
+        assert_eq!(
+            drop_placement(&rows, 0, 0.8),
+            Some(Placement::Before(NodeId(2)))
+        );
+    }
+
+    #[test]
+    fn under_an_open_but_empty_folder_is_after_it() {
+        let rows = [row(1, 0, OPEN), row(2, 0, RowKind::Session)];
+        assert_eq!(
+            drop_placement(&rows, 0, 0.8),
+            Some(Placement::After(NodeId(1)))
+        );
+    }
+
+    #[test]
+    fn a_row_that_is_not_there_has_no_placement() {
+        assert_eq!(drop_placement(&[], 0, 0.5), None);
+    }
 
     fn hidden(items: &[(&str, usize)]) -> Vec<(String, usize)> {
         items.iter().map(|(n, c)| (n.to_string(), *c)).collect()

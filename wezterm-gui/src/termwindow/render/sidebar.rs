@@ -4,7 +4,7 @@
 //! `render/borders.rs` for how that space is carved out.
 
 use crate::sessions::store::with_store;
-use crate::sessions::{visible_range, RowKind, VisibleRow};
+use crate::sessions::{visible_range, NodeId, Placement, RowKind, VisibleRow};
 use crate::termwindow::box_model::*;
 use crate::termwindow::sidebar::{ContextMenu, SidebarFocus, SIDEBAR_LINE_HEIGHT};
 use crate::termwindow::UIItemType;
@@ -142,6 +142,108 @@ impl crate::TermWindow {
             self.ui_items.append(&mut ui_items);
         }
         self.sidebar_computed = Some(computed);
+        self.paint_sidebar_drop_target()
+    }
+
+    /// Show where a node being dragged would land: a line across the gap it
+    /// would go into, indented to the level it would go in at, or a box around
+    /// the folder it would go inside.
+    ///
+    /// Drawn over the cached rows rather than built into them, so following
+    /// the pointer costs a repaint, not a rebuild of the tree.
+    fn paint_sidebar_drop_target(&self) -> anyhow::Result<()> {
+        let target = match self.sidebar.drag.and_then(|drag| drag.target) {
+            Some(target) => target,
+            None => return Ok(()),
+        };
+
+        let (_, metrics) = self.sidebar_font()?;
+        let thickness = metrics.underline_height.max(2) as f32;
+        let indent = metrics.cell_size.width as f32 * INDENT_CELLS;
+        let pad = metrics.cell_size.width as f32 * 0.5;
+        let bounds = self.sidebar_bounds();
+
+        // Where each row was drawn in this paint; the ui items were just
+        // collected from it.
+        let row_rect = |id: NodeId| -> Option<RectF> {
+            self.ui_items.iter().find_map(|item| match item.item_type {
+                UIItemType::SidebarNode(row) if row == id => Some(euclid::rect(
+                    item.x as f32,
+                    item.y as f32,
+                    item.width as f32,
+                    item.height as f32,
+                )),
+                _ => None,
+            })
+        };
+        let depth_of = |id: NodeId| -> usize {
+            with_store(|store| {
+                store
+                    .tree()
+                    .visible_rows(None)
+                    .iter()
+                    .find(|row| row.id == id)
+                    .map(|row| row.depth)
+                    .unwrap_or(0)
+            })
+        };
+        let line = |y: f32, depth: usize| -> RectF {
+            let x = bounds.min_x() + pad + depth as f32 * indent;
+            euclid::rect(
+                x,
+                y - thickness / 2.,
+                (bounds.max_x() - pad - x).max(0.),
+                thickness,
+            )
+        };
+
+        let rects = match target {
+            Placement::Before(id) => row_rect(id)
+                .map(|rect| vec![line(rect.min_y(), depth_of(id))])
+                .unwrap_or_default(),
+            Placement::After(id) => row_rect(id)
+                .map(|rect| vec![line(rect.max_y(), depth_of(id))])
+                .unwrap_or_default(),
+            Placement::LastIn(None) => self
+                .ui_items
+                .iter()
+                .filter(|item| matches!(item.item_type, UIItemType::SidebarNode(_)))
+                .last()
+                .map(|item| vec![line((item.y + item.height) as f32, 0)])
+                .unwrap_or_default(),
+            Placement::LastIn(Some(folder)) => row_rect(folder)
+                .map(|rect| {
+                    vec![
+                        euclid::rect(rect.min_x(), rect.min_y(), rect.width(), thickness),
+                        euclid::rect(
+                            rect.min_x(),
+                            rect.max_y() - thickness,
+                            rect.width(),
+                            thickness,
+                        ),
+                        euclid::rect(rect.min_x(), rect.min_y(), thickness, rect.height()),
+                        euclid::rect(
+                            rect.max_x() - thickness,
+                            rect.min_y(),
+                            thickness,
+                            rect.height(),
+                        ),
+                    ]
+                })
+                .unwrap_or_default(),
+        };
+
+        // The light text colour of the active tab: the edge colours are all
+        // within a shade of the sidebar background in the default palette.
+        let color = self.sidebar_colors().active_tab().fg_color.to_linear();
+        let gl_state = self.render_state.as_ref().unwrap();
+        // Above the rows, alongside the resize handle; the context menu sits
+        // above both, though a press always closes it before a drag can begin.
+        let layer = gl_state.layer_for_zindex(11)?;
+        let mut layers = layer.quad_allocator();
+        for rect in rects {
+            self.filled_rectangle(&mut layers, 2, rect, color)?;
+        }
         Ok(())
     }
 

@@ -157,6 +157,17 @@ pub enum RowKind {
     Session,
 }
 
+/// Where a node being moved is to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Just before this node, among its siblings.
+    Before(NodeId),
+    /// Just after this node, among its siblings.
+    After(NodeId),
+    /// The last child of this folder, or of the top level for None.
+    LastIn(Option<NodeId>),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionTree {
     #[serde(default)]
@@ -260,6 +271,89 @@ impl SessionTree {
         fn walk(nodes: &mut Vec<SessionNode>, id: NodeId) -> Option<SessionNode> {
             if let Some(idx) = nodes.iter().position(|n| n.id == id) {
                 return Some(nodes.remove(idx));
+            }
+            for node in nodes.iter_mut() {
+                if let NodeKind::Folder { children, .. } = &mut node.kind {
+                    if let Some(found) = walk(children, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        walk(&mut self.roots, id)
+    }
+
+    /// Whether `id` can be moved to `to`: both are in the tree, a LastIn names
+    /// a folder, and the move would not put a node beside or inside itself --
+    /// which for a folder means anywhere among its own contents.
+    pub fn can_move(&self, id: NodeId, to: Placement) -> bool {
+        let node = match self.find(id) {
+            Some(node) => node,
+            None => return false,
+        };
+        let target = match to {
+            Placement::Before(target) | Placement::After(target) => target,
+            Placement::LastIn(None) => return true,
+            Placement::LastIn(Some(folder)) => match self.find(folder) {
+                Some(found) if found.is_folder() => folder,
+                _ => return false,
+            },
+        };
+        self.find(target).is_some() && !contains(node, target)
+    }
+
+    /// Move `id`, along with everything beneath it, to `to`.
+    ///
+    /// Returns false and leaves the tree alone when [`Self::can_move`] says
+    /// no. A folder that the node goes into is opened, so that it does not
+    /// just vanish from view.
+    pub fn move_node(&mut self, id: NodeId, to: Placement) -> bool {
+        if !self.can_move(id, to) {
+            return false;
+        }
+        let node = match self.remove(id) {
+            Some(node) => node,
+            None => return false,
+        };
+        // can_move has made sure the target is still there now that the node
+        // is out of the tree. Should it not be after all, the node goes to the
+        // top level rather than being lost from sessions.json.
+        match to {
+            Placement::LastIn(None) => self.roots.push(node),
+            Placement::LastIn(Some(folder)) => {
+                if let Some(SessionNode {
+                    kind: NodeKind::Folder { children, expanded },
+                    ..
+                }) = self.find_mut(folder)
+                {
+                    children.push(node);
+                    *expanded = true;
+                } else {
+                    self.roots.push(node);
+                }
+            }
+            Placement::Before(target) | Placement::After(target) => {
+                let after = matches!(to, Placement::After(_));
+                match self.siblings_mut(target) {
+                    Some((siblings, idx)) => {
+                        siblings.insert(if after { idx + 1 } else { idx }, node)
+                    }
+                    None => self.roots.push(node),
+                }
+            }
+        }
+        true
+    }
+
+    /// The list that `id` sits in, and its index there.
+    fn siblings_mut(&mut self, id: NodeId) -> Option<(&mut Vec<SessionNode>, usize)> {
+        fn walk(
+            nodes: &mut Vec<SessionNode>,
+            id: NodeId,
+        ) -> Option<(&mut Vec<SessionNode>, usize)> {
+            if let Some(idx) = nodes.iter().position(|node| node.id == id) {
+                return Some((nodes, idx));
             }
             for node in nodes.iter_mut() {
                 if let NodeKind::Folder { children, .. } = &mut node.kind {
@@ -415,6 +509,11 @@ impl SessionTree {
     }
 }
 
+/// Whether `id` is `node` itself or anywhere beneath it.
+fn contains(node: &SessionNode, id: NodeId) -> bool {
+    node.id == id || node.children().iter().any(|child| contains(child, id))
+}
+
 /// Case-insensitive subsequence match, the same shape of matching the launcher
 /// offers. We don't use nucleo here because we only need a yes/no answer and
 /// want it to stay a pure function for testing.
@@ -528,6 +627,87 @@ mod test {
         assert_eq!(removed.children().len(), 2);
         assert_eq!(tree.find(NodeId(2)), None);
         assert_eq!(names(&tree.visible_rows(None)), vec![("gamma", 0)]);
+    }
+
+    #[test]
+    fn moving_before_a_sibling_reorders_the_folder() {
+        let mut tree = sample();
+        assert!(tree.move_node(NodeId(3), Placement::Before(NodeId(2))));
+        assert_eq!(
+            names(&tree.visible_rows(None)),
+            vec![("work", 0), ("beta", 1), ("alpha", 1), ("gamma", 0)]
+        );
+    }
+
+    #[test]
+    fn moving_after_a_node_elsewhere_leaves_the_folder() {
+        let mut tree = sample();
+        assert!(tree.move_node(NodeId(2), Placement::After(NodeId(4))));
+        assert_eq!(
+            names(&tree.visible_rows(None)),
+            vec![("work", 0), ("beta", 1), ("gamma", 0), ("alpha", 0)]
+        );
+    }
+
+    #[test]
+    fn moving_into_a_folder_puts_it_last_and_opens_the_folder() {
+        let mut tree = sample();
+        tree.toggle_expanded(NodeId(1));
+        assert!(tree.move_node(NodeId(4), Placement::LastIn(Some(NodeId(1)))));
+        assert_eq!(
+            names(&tree.visible_rows(None)),
+            vec![("work", 0), ("alpha", 1), ("beta", 1), ("gamma", 1)]
+        );
+    }
+
+    #[test]
+    fn moving_to_the_end_of_the_top_level() {
+        let mut tree = sample();
+        assert!(tree.move_node(NodeId(2), Placement::LastIn(None)));
+        assert_eq!(
+            names(&tree.visible_rows(None)),
+            vec![("work", 0), ("beta", 1), ("gamma", 0), ("alpha", 0)]
+        );
+    }
+
+    #[test]
+    fn a_folder_takes_its_contents_along() {
+        let mut tree = sample();
+        assert!(tree.move_node(NodeId(1), Placement::After(NodeId(4))));
+        assert_eq!(
+            names(&tree.visible_rows(None)),
+            vec![("gamma", 0), ("work", 0), ("alpha", 1), ("beta", 1)]
+        );
+    }
+
+    #[test]
+    fn a_folder_cannot_go_inside_itself() {
+        let mut tree = sample();
+        assert!(!tree.can_move(NodeId(1), Placement::LastIn(Some(NodeId(1)))));
+        assert!(!tree.can_move(NodeId(1), Placement::Before(NodeId(2))));
+        assert!(!tree.move_node(NodeId(1), Placement::After(NodeId(3))));
+        assert_eq!(tree, sample(), "a refused move changes nothing");
+    }
+
+    #[test]
+    fn a_node_cannot_go_beside_itself() {
+        let tree = sample();
+        assert!(!tree.can_move(NodeId(4), Placement::Before(NodeId(4))));
+        assert!(!tree.can_move(NodeId(4), Placement::After(NodeId(4))));
+    }
+
+    #[test]
+    fn only_a_folder_can_be_moved_into() {
+        let tree = sample();
+        assert!(!tree.can_move(NodeId(2), Placement::LastIn(Some(NodeId(4)))));
+    }
+
+    #[test]
+    fn a_missing_node_cannot_move_or_be_moved_to() {
+        let tree = sample();
+        assert!(!tree.can_move(NodeId(99), Placement::Before(NodeId(2))));
+        assert!(!tree.can_move(NodeId(2), Placement::After(NodeId(99))));
+        assert!(!tree.can_move(NodeId(2), Placement::LastIn(Some(NodeId(99)))));
     }
 
     #[test]
