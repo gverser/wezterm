@@ -768,6 +768,25 @@ impl TabBarState {
     }
 }
 
+/// Where a tab being dragged along the bar belongs, as the index to move it
+/// to.
+///
+/// `others` holds the left edge and width of every tab except the one being
+/// dragged, as the bar was last drawn. The dragged tab goes after each of them
+/// whose centre the pointer has passed.
+///
+/// Measuring against the tabs where they are drawn now, rather than where they
+/// would be without the dragged tab, keeps two tabs of different widths from
+/// swapping back and forth on every mouse move: once the dragged tab has gone
+/// past a neighbour, that neighbour's centre has moved by the dragged tab's
+/// width, so the pointer has to come back that far before they swap again.
+pub fn tab_drop_index(others: &[(f32, f32)], pointer_x: f32) -> usize {
+    others
+        .iter()
+        .filter(|(left, width)| left + width / 2. < pointer_x)
+        .count()
+}
+
 pub fn parse_status_text(text: &str, default_cell: CellAttributes) -> Line {
     let mut pen = default_cell.clone();
     let mut cells = vec![];
@@ -871,4 +890,49 @@ pub fn parse_status_text(text: &str, default_cell: CellAttributes) -> Line {
     });
     flush_print(&mut print_buffer, &mut cells, &pen);
     Line::from_cells(cells, SEQ_ZERO)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // A at [0, 100), the dragged tab at [100, 150), C at [150, 350).
+    const OTHERS: &[(f32, f32)] = &[(0., 100.), (150., 200.)];
+
+    #[test]
+    fn a_tab_stays_put_while_the_pointer_is_still_on_it() {
+        assert_eq!(tab_drop_index(OTHERS, 101.), 1);
+        assert_eq!(tab_drop_index(OTHERS, 149.), 1);
+    }
+
+    #[test]
+    fn a_tab_moves_once_the_pointer_passes_a_neighbours_centre() {
+        assert_eq!(tab_drop_index(OTHERS, 51.), 1);
+        assert_eq!(tab_drop_index(OTHERS, 49.), 0);
+        assert_eq!(tab_drop_index(OTHERS, 249.), 1);
+        assert_eq!(tab_drop_index(OTHERS, 251.), 2);
+    }
+
+    #[test]
+    fn past_either_end_of_the_bar_is_that_end() {
+        assert_eq!(tab_drop_index(OTHERS, -20.), 0);
+        assert_eq!(tab_drop_index(OTHERS, 1000.), 2);
+    }
+
+    #[test]
+    fn a_tab_with_no_others_has_nowhere_to_go() {
+        assert_eq!(tab_drop_index(&[], 500.), 0);
+    }
+
+    #[test]
+    fn a_wider_neighbour_does_not_swap_straight_back() {
+        // Dragged past C at 251, the bar is redrawn as A [0, 100),
+        // C [100, 300), dragged [300, 350). Where C was drawn before, 240
+        // would have put the tab back in front of it; against C as it is
+        // drawn now, the pointer has to get back to 200 for that.
+        let others: &[(f32, f32)] = &[(0., 100.), (100., 200.)];
+        assert_eq!(tab_drop_index(others, 240.), 2);
+        assert_eq!(tab_drop_index(others, 201.), 2);
+        assert_eq!(tab_drop_index(others, 199.), 1);
+    }
 }

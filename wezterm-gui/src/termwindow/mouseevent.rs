@@ -1,4 +1,4 @@
-use crate::tabbar::TabBarItem;
+use crate::tabbar::{tab_drop_index, TabBarItem};
 use crate::termwindow::{
     GuiWin, MouseCapture, PositionedSplit, ScrollHit, TermWindowNotif, UIItem, UIItemType, TMB,
 };
@@ -368,6 +368,50 @@ impl super::TermWindow {
         self.dragging.replace((item, start_event));
     }
 
+    /// Follow a tab being dragged along the bar, moving it as the pointer goes.
+    ///
+    /// The tab moves during the drag rather than on release, so the bar itself
+    /// shows where it will land. The press that started the drag activated it,
+    /// so this moves the active tab, the same as MoveTab does.
+    fn drag_tab(
+        &mut self,
+        item: UIItem,
+        start_event: MouseEvent,
+        event: MouseEvent,
+        context: &dyn WindowOps,
+    ) {
+        let (active_idx, num_tabs) = match Mux::get().get_window(self.mux_window_id) {
+            Some(window) => (window.get_active_idx(), window.len()),
+            None => return,
+        };
+
+        let mut drawn_active = None;
+        let mut others = vec![];
+        for ui_item in &self.ui_items {
+            if let UIItemType::TabBar(TabBarItem::Tab { tab_idx, active }) = ui_item.item_type {
+                if active {
+                    drawn_active = Some(tab_idx);
+                } else {
+                    others.push((ui_item.x as f32, ui_item.width as f32));
+                }
+            }
+        }
+
+        // Until the bar is redrawn after the last move -- or after the press
+        // that activated this tab -- it still shows the old order, and
+        // measuring against that would take a step the tab has already taken.
+        let drawn_is_current = drawn_active == Some(active_idx) && others.len() + 1 == num_tabs;
+        if drawn_is_current {
+            let target = tab_drop_index(&others, event.coords.x as f32);
+            if target != active_idx {
+                self.move_tab(target).ok();
+                context.invalidate();
+            }
+        }
+
+        self.dragging.replace((item, start_event));
+    }
+
     fn drag_ui_item(
         &mut self,
         item: UIItem,
@@ -386,6 +430,9 @@ impl super::TermWindow {
             }
             UIItemType::SidebarResizeHandle => {
                 self.drag_sidebar_splitter(item, start_event, event, context);
+            }
+            UIItemType::TabBar(TabBarItem::Tab { .. }) => {
+                self.drag_tab(item, start_event, event, context);
             }
             _ => {
                 log::error!("drag not implemented for {:?}", item);
@@ -518,6 +565,11 @@ impl super::TermWindow {
             WMEK::Press(MousePress::Left) => match item {
                 TabBarItem::Tab { tab_idx, .. } => {
                     self.activate_tab(tab_idx as isize).ok();
+                    // Moving with the button still down drags the tab along
+                    // the bar; see drag_tab.
+                    if let Some(ui_item) = self.last_ui_item.clone() {
+                        self.dragging.replace((ui_item, event.clone()));
+                    }
                 }
                 TabBarItem::NewTabButton { .. } => {
                     self.do_new_tab_button_click(MousePress::Left);
