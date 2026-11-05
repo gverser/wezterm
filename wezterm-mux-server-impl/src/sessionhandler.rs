@@ -1098,6 +1098,7 @@ async fn split_pane(split: SplitPane, client_id: Option<Arc<ClientId>>) -> anyho
         tab_id,
         window_id,
         size,
+        header_rows: mux.get_tab(tab_id).map(|t| t.header_rows()).unwrap_or(0),
     }))
 }
 
@@ -1123,6 +1124,7 @@ async fn domain_spawn_v2(spawn: SpawnV2, client_id: Option<Arc<ClientId>>) -> an
         tab_id: tab.tab_id(),
         window_id,
         size: tab.get_size(),
+        header_rows: tab.header_rows(),
     }))
 }
 

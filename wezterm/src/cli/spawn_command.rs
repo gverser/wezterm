@@ -63,18 +63,10 @@ impl SpawnCommand {
                     let panes = client.list_panes().await?;
                     let mut window_id = None;
                     'outer: for tabroot in panes.tabs {
-                        let mut cursor = tabroot.into_tree().cursor();
-
-                        loop {
-                            if let Some(entry) = cursor.leaf_mut() {
-                                if entry.pane_id == pane_id {
-                                    window_id.replace(entry.window_id);
-                                    break 'outer;
-                                }
-                            }
-                            match cursor.preorder_next() {
-                                Ok(c) => cursor = c,
-                                Err(_) => break,
+                        for entry in tabroot.into_pane_entries() {
+                            if entry.pane_id == pane_id {
+                                window_id.replace(entry.window_id);
+                                break 'outer;
                             }
                         }
                     }

@@ -274,6 +274,7 @@ fn pane_tree(
     workspace: &str,
     left_col: usize,
     top_row: usize,
+    header_rows: usize,
 ) -> PaneNode {
     match tree {
         Tree::Empty => PaneNode::Empty,
@@ -281,7 +282,15 @@ fn pane_tree(
             let data = data.unwrap();
             PaneNode::Split {
                 left: Box::new(pane_tree(
-                    &*left, tab_id, window_id, active, zoomed, workspace, left_col, top_row,
+                    &*left,
+                    tab_id,
+                    window_id,
+                    active,
+                    zoomed,
+                    workspace,
+                    left_col,
+                    top_row,
+                    header_rows,
                 )),
                 right: Box::new(pane_tree(
                     &*right,
@@ -300,46 +309,58 @@ fn pane_tree(
                     } else {
                         top_row + data.top_of_second()
                     },
+                    header_rows,
                 )),
                 node: data,
             }
         }
         Tree::Leaf(stack) => {
-            // Transitional: only the visible member goes on the wire until
-            // the codec learns to carry whole stacks.
-            let pane = stack.visible_pane();
-            let dims = pane.get_dimensions();
-            let working_dir = pane.get_current_working_dir(CachePolicy::AllowStale);
-            let cursor_pos = pane.get_cursor_position();
+            // The whole stack goes on the wire so that a client can rebuild
+            // hidden members too. The header rows sit at the top of the slot,
+            // so every member starts below them.
+            let panes = stack
+                .panes()
+                .iter()
+                .map(|pane| {
+                    let dims = pane.get_dimensions();
+                    let working_dir = pane.get_current_working_dir(CachePolicy::AllowStale);
+                    let cursor_pos = pane.get_cursor_position();
 
-            PaneNode::Leaf(PaneEntry {
-                window_id,
-                tab_id,
-                pane_id: pane.pane_id(),
-                title: pane.get_title(),
-                is_active_pane: is_pane(pane, &active),
-                is_zoomed_pane: is_pane(pane, &zoomed),
-                size: TerminalSize {
-                    cols: dims.cols,
-                    rows: dims.viewport_rows,
-                    pixel_height: dims.pixel_height,
-                    pixel_width: dims.pixel_width,
-                    dpi: dims.dpi,
-                },
-                working_dir: working_dir.map(Into::into),
-                workspace: workspace.to_string(),
-                cursor_pos,
-                physical_top: dims.physical_top,
-                left_col,
-                top_row,
-                tty_name: pane.tty_name(),
+                    PaneEntry {
+                        window_id,
+                        tab_id,
+                        pane_id: pane.pane_id(),
+                        title: pane.get_title(),
+                        is_active_pane: is_pane(pane, &active),
+                        is_zoomed_pane: is_pane(pane, &zoomed),
+                        size: TerminalSize {
+                            cols: dims.cols,
+                            rows: dims.viewport_rows,
+                            pixel_height: dims.pixel_height,
+                            pixel_width: dims.pixel_width,
+                            dpi: dims.dpi,
+                        },
+                        working_dir: working_dir.map(Into::into),
+                        workspace: workspace.to_string(),
+                        cursor_pos,
+                        physical_top: dims.physical_top,
+                        left_col,
+                        top_row: top_row + header_rows,
+                        tty_name: pane.tty_name(),
+                    }
+                })
+                .collect();
+            PaneNode::Leaf(PaneStackEntry {
+                panes,
+                visible: stack.visible_index(),
+                header_rows,
             })
         }
     }
 }
 
 fn build_from_pane_tree<F>(
-    tree: bintree::Tree<PaneEntry, SplitDirectionAndSize>,
+    tree: bintree::Tree<PaneStackEntry, SplitDirectionAndSize>,
     active: &mut Option<Arc<dyn Pane>>,
     zoomed: &mut Option<Arc<dyn Pane>>,
     make_pane: &mut F,
@@ -354,17 +375,29 @@ where
             right: Box::new(build_from_pane_tree(*right, active, zoomed, make_pane)),
             data,
         },
-        bintree::Tree::Leaf(entry) => {
-            let is_zoomed_pane = entry.is_zoomed_pane;
-            let is_active_pane = entry.is_active_pane;
-            let pane = make_pane(entry);
-            if is_zoomed_pane {
-                zoomed.replace(Arc::clone(&pane));
+        bintree::Tree::Leaf(stack_entry) => {
+            let mut panes = vec![];
+            for entry in stack_entry.panes {
+                let is_zoomed_pane = entry.is_zoomed_pane;
+                let is_active_pane = entry.is_active_pane;
+                let pane = make_pane(entry);
+                if is_zoomed_pane {
+                    zoomed.replace(Arc::clone(&pane));
+                }
+                if is_active_pane {
+                    active.replace(Arc::clone(&pane));
+                }
+                panes.push(pane);
             }
-            if is_active_pane {
-                active.replace(Arc::clone(&pane));
+            match PaneStack::from_parts(panes, stack_entry.visible) {
+                Some(stack) => Tree::Leaf(stack),
+                None => {
+                    // The server never sends this; don't let bad data take the
+                    // client down.
+                    log::error!("pane tree contains an empty stack; ignoring it");
+                    Tree::Empty
+                }
             }
-            Tree::Leaf(PaneStack::new(pane))
         }
     }
 }
@@ -1019,6 +1052,18 @@ impl TabInner {
 
         log::debug!("sync_with_pane_tree with size {:?}", size);
 
+        // Must be set before the tree is built and resized, because the
+        // members' sizes are derived from it.
+        let wire_header_rows = root.header_rows().unwrap_or(0);
+        if wire_header_rows > MAX_HEADER_ROWS {
+            log::warn!(
+                "sync_with_pane_tree: header_rows {} out of range, using {}",
+                wire_header_rows,
+                MAX_HEADER_ROWS
+            );
+        }
+        self.header_rows = wire_header_rows.min(MAX_HEADER_ROWS);
+
         let t = build_from_pane_tree(root.into_tree(), &mut active, &mut zoomed, &mut make_pane);
         let mut cursor = t.cursor();
 
@@ -1095,6 +1140,7 @@ impl TabInner {
                 &workspace,
                 0,
                 0,
+                self.header_rows,
             )
         } else {
             PaneNode::Empty
@@ -2746,11 +2792,23 @@ pub enum PaneNode {
         right: Box<PaneNode>,
         node: SplitDirectionAndSize,
     },
-    Leaf(PaneEntry),
+    Leaf(PaneStackEntry),
+}
+
+/// One leaf of the wire layout: every member of a stack, in stack order.
+///
+/// This type is used directly by the codec, take care to bump
+/// the codec version if you change this
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct PaneStackEntry {
+    pub panes: Vec<PaneEntry>,
+    /// Index into `panes`; untrusted, so readers must clamp it
+    pub visible: usize,
+    pub header_rows: usize,
 }
 
 impl PaneNode {
-    pub fn into_tree(self) -> bintree::Tree<PaneEntry, SplitDirectionAndSize> {
+    pub fn into_tree(self) -> bintree::Tree<PaneStackEntry, SplitDirectionAndSize> {
         match self {
             PaneNode::Empty => bintree::Tree::Empty,
             PaneNode::Split { left, right, node } => bintree::Tree::Node {
@@ -2762,11 +2820,38 @@ impl PaneNode {
         }
     }
 
+    /// All entries in preorder leaf order, then stack order. For callers
+    /// that only look panes up by id and don't care about the layout.
+    pub fn into_pane_entries(self) -> Vec<PaneEntry> {
+        fn walk(node: PaneNode, out: &mut Vec<PaneEntry>) {
+            match node {
+                PaneNode::Empty => {}
+                PaneNode::Split { left, right, .. } => {
+                    walk(*left, out);
+                    walk(*right, out);
+                }
+                PaneNode::Leaf(stack) => out.extend(stack.panes),
+            }
+        }
+        let mut out = vec![];
+        walk(self, &mut out);
+        out
+    }
+
     pub fn root_size(&self) -> Option<TerminalSize> {
         match self {
             PaneNode::Empty => None,
             PaneNode::Split { node, .. } => Some(node.size()),
-            PaneNode::Leaf(entry) => Some(entry.size),
+            PaneNode::Leaf(stack) => {
+                // A bad `visible` falls back to the first member, as
+                // `PaneStack::from_parts` does when the tree is built.
+                let entry = stack.panes.get(stack.visible).or(stack.panes.first())?;
+                // Clamped so that wire data cannot overflow the arithmetic.
+                Some(slot_size(
+                    &entry.size,
+                    stack.header_rows.min(MAX_HEADER_ROWS),
+                ))
+            }
         }
     }
 
@@ -2777,7 +2862,19 @@ impl PaneNode {
                 Some(res) => Some(res),
                 None => right.window_and_tab_ids(),
             },
-            PaneNode::Leaf(entry) => Some((entry.window_id, entry.tab_id)),
+            PaneNode::Leaf(stack) => stack
+                .panes
+                .first()
+                .map(|entry| (entry.window_id, entry.tab_id)),
+        }
+    }
+
+    /// The `header_rows` of the first leaf; all leaves of a tab agree.
+    pub fn header_rows(&self) -> Option<usize> {
+        match self {
+            PaneNode::Empty => None,
+            PaneNode::Split { left, right, .. } => left.header_rows().or(right.header_rows()),
+            PaneNode::Leaf(stack) => Some(stack.header_rows),
         }
     }
 }
@@ -3206,6 +3303,120 @@ mod test {
         tab.add_pane_to_stack(1, None, Arc::clone(&p2)).unwrap();
         tab.add_pane_to_stack(2, None, Arc::clone(&p3)).unwrap();
         (tab, [p1, p2, p3])
+    }
+
+    fn entry(
+        pane_id: PaneId,
+        top_row: usize,
+        left_col: usize,
+        rows: usize,
+        cols: usize,
+    ) -> PaneEntry {
+        PaneEntry {
+            window_id: 0,
+            tab_id: 0,
+            pane_id,
+            title: String::new(),
+            size: size(rows, cols),
+            working_dir: None,
+            is_active_pane: false,
+            is_zoomed_pane: false,
+            workspace: "default".to_string(),
+            cursor_pos: Default::default(),
+            physical_top: 0,
+            top_row,
+            left_col,
+            tty_name: None,
+        }
+    }
+
+    #[test]
+    fn pane_tree_round_trip_keeps_stacks() {
+        let (tab, _) = stacked_tab(); // leaf 0: [1, 2, 3], pane 3 visible
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        tab.split_and_insert(0, horz, FakePane::new(4, split.second))
+            .unwrap(); // leaf 1 active
+        let node = {
+            let mut inner = tab.inner.lock();
+            let active = inner.get_active_pane();
+            pane_tree(
+                inner.pane.as_ref().unwrap(),
+                tab.tab_id(),
+                7,
+                active.as_ref(),
+                None,
+                "default",
+                0,
+                0,
+                1,
+            )
+        };
+        assert_eq!(node.header_rows(), Some(1));
+        assert_eq!(node.root_size(), Some(size(24, 80)));
+
+        let mirror = Tab::new(&size(24, 80));
+        mirror.sync_with_pane_tree(size(24, 80), node, |e| {
+            FakePane::new(e.pane_id + 100, e.size)
+        });
+        assert_eq!(mirror.header_rows(), 1);
+        let s = mirror.iter_stacks();
+        assert_eq!(
+            (ids(&s[0].panes), s[0].visible, ids(&s[1].panes)),
+            (vec![101, 102, 103], 2, vec![104])
+        );
+        assert_eq!(mirror.get_active_pane().unwrap().pane_id(), 104);
+        let geo = |t: &Tab| -> Vec<_> {
+            t.iter_panes()
+                .iter()
+                .map(|p| (p.left, p.top, p.width, p.height))
+                .collect()
+        };
+        assert_eq!(geo(&mirror), geo(&tab));
+    }
+
+    #[test]
+    fn pane_node_entries_and_sizes() {
+        let node = PaneNode::Leaf(PaneStackEntry {
+            panes: vec![entry(1, 1, 0, 23, 80), entry(2, 1, 0, 23, 80)],
+            visible: 1,
+            header_rows: 1,
+        });
+        assert_eq!(
+            node.root_size().map(|s| (s.rows, s.pixel_height)),
+            Some((24, 600))
+        );
+        assert_eq!(
+            node.into_pane_entries()
+                .iter()
+                .map(|e| e.pane_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn pane_node_tolerates_bad_stack_entry() {
+        let bad = PaneNode::Leaf(PaneStackEntry {
+            panes: vec![entry(1, 1, 0, 23, 80), entry(2, 1, 0, 23, 80)],
+            visible: 5,
+            header_rows: 7,
+        });
+        let tab = Tab::new(&size(24, 80));
+        tab.sync_with_pane_tree(size(24, 80), bad, |e| FakePane::new(e.pane_id, e.size));
+        assert_eq!((tab.header_rows(), tab.iter_stacks()[0].visible), (1, 0));
+
+        let empty = PaneNode::Leaf(PaneStackEntry {
+            panes: vec![],
+            visible: 0,
+            header_rows: 1,
+        });
+        let tab = Tab::new(&size(24, 80));
+        tab.sync_with_pane_tree(size(24, 80), empty, |e| FakePane::new(e.pane_id, e.size));
+        assert!(tab.iter_all_panes().is_empty());
     }
 
     #[test]

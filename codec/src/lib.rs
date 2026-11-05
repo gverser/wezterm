@@ -442,7 +442,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 48;
+pub const CODEC_VERSION: usize = 49;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -713,6 +713,9 @@ pub struct SpawnResponse {
     pub pane_id: PaneId,
     pub window_id: WindowId,
     pub size: TerminalSize,
+    /// Header rows the server reserves above each stack in the tab, so the
+    /// client can size the new tab the same way.
+    pub header_rows: usize,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1268,6 +1271,81 @@ mod test {
                     window_id: 2,
                     tab_ids: vec![5, 3, 4],
                 })
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn list_panes_round_trip_with_stack() {
+        use mux::tab::{PaneEntry, PaneStackEntry};
+        let entry = |pane_id| PaneEntry {
+            window_id: 3,
+            tab_id: 2,
+            pane_id,
+            title: format!("pane {}", pane_id),
+            size: TerminalSize {
+                rows: 23,
+                cols: 80,
+                pixel_width: 800,
+                pixel_height: 460,
+                dpi: 96,
+            },
+            working_dir: None,
+            is_active_pane: pane_id == 2,
+            is_zoomed_pane: false,
+            workspace: "default".to_string(),
+            cursor_pos: Default::default(),
+            physical_top: 0,
+            top_row: 1,
+            left_col: 0,
+            tty_name: None,
+        };
+        let make = || {
+            Pdu::ListPanesResponse(ListPanesResponse {
+                tabs: vec![PaneNode::Leaf(PaneStackEntry {
+                    panes: vec![entry(1), entry(2)],
+                    visible: 1,
+                    header_rows: 1,
+                })],
+                tab_titles: vec!["tab".to_string()],
+                window_titles: HashMap::new(),
+            })
+        };
+        let mut encoded = Vec::new();
+        make().encode(&mut encoded, 0x41).unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x41,
+                pdu: make()
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn spawn_response_carries_header_rows() {
+        let make = || {
+            Pdu::SpawnResponse(SpawnResponse {
+                tab_id: 1,
+                pane_id: 2,
+                window_id: 3,
+                size: TerminalSize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 800,
+                    pixel_height: 600,
+                    dpi: 96,
+                },
+                header_rows: 1,
+            })
+        };
+        let mut encoded = Vec::new();
+        make().encode(&mut encoded, 0x42).unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x42,
+                pdu: make()
             },
             Pdu::decode(encoded.as_slice()).unwrap()
         );

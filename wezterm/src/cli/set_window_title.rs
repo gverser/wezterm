@@ -29,16 +29,8 @@ impl SetWindowTitle {
         let mut pane_id_to_window_id = HashMap::new();
 
         for tabroot in panes.tabs {
-            let mut cursor = tabroot.into_tree().cursor();
-
-            loop {
-                if let Some(entry) = cursor.leaf_mut() {
-                    pane_id_to_window_id.insert(entry.pane_id, entry.window_id);
-                }
-                match cursor.preorder_next() {
-                    Ok(c) => cursor = c,
-                    Err(_) => break,
-                }
+            for entry in tabroot.into_pane_entries() {
+                pane_id_to_window_id.insert(entry.pane_id, entry.window_id);
             }
         }
 

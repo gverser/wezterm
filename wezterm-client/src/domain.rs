@@ -8,7 +8,7 @@ use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
-use mux::tab::{SplitRequest, Tab, TabId};
+use mux::tab::{member_size, SplitRequest, Tab, TabId};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
@@ -901,10 +901,12 @@ impl Domain for ClientDomain {
             &inner,
             result.tab_id,
             result.pane_id,
-            size,
+            // The pane lives below the server's header rows, so it is
+            // smaller than the tab.
+            member_size(&size, result.header_rows),
             "wezterm",
         ));
-        let tab = Arc::new(Tab::new(&size));
+        let tab = Arc::new(Tab::with_header_rows(&size, result.header_rows));
         tab.assign_pane(&pane);
         inner.remove_old_tab_mapping(result.tab_id);
         inner.record_remote_to_local_tab_mapping(result.tab_id, tab.tab_id());
