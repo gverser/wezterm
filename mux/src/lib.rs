@@ -1,7 +1,7 @@
 use crate::client::{ClientId, ClientInfo};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
-use crate::tab::{SplitRequest, Tab, TabId};
+use crate::tab::{member_size, SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
 use anyhow::{anyhow, Context, Error};
 use config::keyassignment::SpawnTabDomain;
@@ -954,8 +954,8 @@ impl Mux {
         }
 
         let mut pane_ids = vec![];
-        for pos in tab.iter_panes_ignoring_zoom() {
-            pane_ids.push(pos.pane.pane_id());
+        for pane in tab.iter_all_panes() {
+            pane_ids.push(pane.pane_id());
         }
         log::debug!("panes to remove: {pane_ids:?}");
         for pane_id in pane_ids {
@@ -974,8 +974,8 @@ impl Mux {
             // Gather all the domains referenced by this window
             let mut domains_of_window = HashSet::new();
             for tab in window.iter() {
-                for pane in tab.iter_panes_ignoring_zoom() {
-                    domains_of_window.insert(pane.pane.domain_id());
+                for pane in tab.iter_all_panes() {
+                    domains_of_window.insert(pane.domain_id());
                 }
             }
 
@@ -1205,9 +1205,9 @@ impl Mux {
     pub fn resolve_pane_id(&self, pane_id: PaneId) -> Option<(DomainId, WindowId, TabId)> {
         let mut ids = None;
         for tab in self.tabs.read().values() {
-            for p in tab.iter_panes_ignoring_zoom() {
-                if p.pane.pane_id() == pane_id {
-                    ids = Some((tab.tab_id(), p.pane.domain_id()));
+            for p in tab.iter_all_panes() {
+                if p.pane_id() == pane_id {
+                    ids = Some((tab.tab_id(), p.domain_id()));
                     break;
                 }
             }
@@ -1426,9 +1426,12 @@ impl Mux {
             .remove_pane(pane_id)
             .ok_or_else(|| anyhow::anyhow!("pane {} wasn't in its containing tab!?", pane_id))?;
 
-        let tab = Arc::new(Tab::new(&size));
+        // Resize before assign_pane so the tab never sees a pane at the
+        // wrong size, and size it as a member so it doesn't cover the strip row.
+        let header_rows = src_tab.header_rows();
+        let tab = Arc::new(Tab::with_header_rows(&size, header_rows));
+        pane.resize(member_size(&size, header_rows))?;
         tab.assign_pane(&pane);
-        pane.resize(size)?;
         self.add_tab_and_active_pane(&tab)?;
         self.add_tab_to_window(&tab, window_id)?;
 

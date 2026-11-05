@@ -55,9 +55,9 @@ impl UserData for MuxTab {
             let mux = get_mux()?;
             let tab = this.resolve(&mux)?;
             Ok(tab
-                .iter_panes_ignoring_zoom()
+                .iter_all_panes()
                 .into_iter()
-                .map(|info| MuxPane(info.pane.pane_id()))
+                .map(|pane| MuxPane(pane.pane_id()))
                 .collect::<Vec<MuxPane>>())
         });
 

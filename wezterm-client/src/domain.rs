@@ -8,14 +8,19 @@ use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
-use mux::tab::{member_size, SplitRequest, Tab, TabId, MAX_HEADER_ROWS};
+use mux::tab::{configured_header_rows, member_size, SplitRequest, Tab, TabId, MAX_HEADER_ROWS};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
 use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use wezterm_term::TerminalSize;
+
+/// Set once the header_rows mismatch warning has been logged, so a long
+/// session doesn't repeat it on every pane list refresh.
+static HEADER_ROWS_MISMATCH_WARNED: AtomicBool = AtomicBool::new(false);
 
 pub struct ClientInner {
     pub client: Client,
@@ -48,8 +53,8 @@ impl ClientInner {
             .retain(
                 |remote_tab_id, local_tab_id| match mux.get_tab(*local_tab_id) {
                     Some(tab) => {
-                        for pos in tab.iter_panes_ignoring_zoom() {
-                            if pos.pane.domain_id() == self.local_domain_id {
+                        for pane in tab.iter_all_panes() {
+                            if pane.domain_id() == self.local_domain_id {
                                 return true;
                             }
                         }
@@ -72,8 +77,8 @@ impl ClientInner {
                 |_remote_window_id, local_window_id| match mux.get_window(*local_window_id) {
                     Some(w) => {
                         for tab in w.iter() {
-                            for pos in tab.iter_panes_ignoring_zoom() {
-                                if pos.pane.domain_id() == self.local_domain_id {
+                            for pane in tab.iter_all_panes() {
+                                if pane.domain_id() == self.local_domain_id {
                                     return true;
                                 }
                             }
@@ -674,6 +679,19 @@ impl ClientDomain {
                     }
                 });
 
+                // The remote tab always keeps the server's header_rows; a
+                // mismatch with local config only deserves a one-time hint.
+                if tab.header_rows() != configured_header_rows()
+                    && !HEADER_ROWS_MISMATCH_WARNED.swap(true, Ordering::Relaxed)
+                {
+                    log::warn!(
+                        "remote tab uses the server's header_rows {} rather than \
+                         the locally configured {}",
+                        tab.header_rows(),
+                        configured_header_rows()
+                    );
+                }
+
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
                     let mut window = mux
                         .get_window_mut(local_window_id)
@@ -980,12 +998,8 @@ impl Domain for ClientDomain {
             "wezterm",
         ));
 
-        let pane_index = match tab
-            .iter_panes()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
+        let pane_index = match tab.leaf_index_of(pane_id) {
+            Some(index) => index,
             None => anyhow::bail!("invalid pane id {}", pane_id),
         };
 

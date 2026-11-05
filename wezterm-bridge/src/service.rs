@@ -114,8 +114,8 @@ fn subscribe(state: Arc<BridgeState>, outbox: Outbox, feishu: Arc<crate::feishu:
                 let Some(tab) = mux.get_tab(tab_id) else {
                     return true;
                 };
-                for p in tab.iter_panes_ignoring_zoom() {
-                    if let Some(added) = describe_pane(&state, p.pane.pane_id()) {
+                for p in tab.iter_all_panes() {
+                    if let Some(added) = describe_pane(&state, p.pane_id()) {
                         post(&outbox, added);
                     }
                 }

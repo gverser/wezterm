@@ -7,7 +7,7 @@
 
 use crate::localpane::LocalPane;
 use crate::pane::{alloc_pane_id, Pane, PaneId};
-use crate::tab::{SplitRequest, Tab, TabId};
+use crate::tab::{configured_header_rows, member_size, SplitRequest, Tab, TabId};
 use crate::window::WindowId;
 use crate::Mux;
 use anyhow::{bail, Context, Error};
@@ -56,12 +56,15 @@ pub trait Domain: Downcast + Send + Sync {
         command_dir: Option<String>,
         window: WindowId,
     ) -> anyhow::Result<Arc<Tab>> {
+        // The pane must start at the member size, not the full tab size, or
+        // it would be resized again as soon as the tab reserves its strip row.
+        let header_rows = configured_header_rows();
         let pane = self
-            .spawn_pane(size, command, command_dir)
+            .spawn_pane(member_size(&size, header_rows), command, command_dir)
             .await
             .context("spawn")?;
 
-        let tab = Arc::new(Tab::new(&size));
+        let tab = Arc::new(Tab::with_header_rows(&size, header_rows));
         tab.assign_pane(&pane);
 
         let mux = Mux::get();
@@ -84,12 +87,9 @@ pub trait Domain: Downcast + Send + Sync {
             None => anyhow::bail!("Invalid tab id {}", tab),
         };
 
-        let pane_index = match tab
-            .iter_panes_ignoring_zoom()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
+        // The target may be a hidden stack member, so look it up by leaf.
+        let pane_index = match tab.leaf_index_of(pane_id) {
+            Some(index) => index,
             None => anyhow::bail!("invalid pane id {}", pane_id),
         };
 
@@ -103,8 +103,13 @@ pub trait Domain: Downcast + Send + Sync {
                 command,
                 command_dir,
             } => {
-                self.spawn_pane(split_size.second, command, command_dir)
-                    .await?
+                // split_size is a slot; spawn at the member size inside it.
+                self.spawn_pane(
+                    member_size(&split_size.second, tab.header_rows()),
+                    command,
+                    command_dir,
+                )
+                .await?
             }
             SplitSource::MovePane(src_pane_id) => {
                 let (_domain, _window, src_tab) = mux
@@ -128,12 +133,8 @@ pub trait Domain: Downcast + Send + Sync {
         };
 
         // pane_index may have changed if src_pane was also in the same tab
-        let final_pane_index = match tab
-            .iter_panes_ignoring_zoom()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane_id)
-        {
-            Some(p) => p.index,
+        let final_pane_index = match tab.leaf_index_of(pane_id) {
+            Some(index) => index,
             None => anyhow::bail!("invalid pane id {}", pane_id),
         };
 

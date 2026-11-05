@@ -884,6 +884,10 @@ pub struct Config {
     #[dynamic(default = "default_true")]
     pub unzoom_on_switch_pane: bool,
 
+    /// Reserve one row at the top of every pane for a pane tab strip.
+    #[dynamic(default)]
+    pub enable_pane_tab_bar: bool,
+
     #[dynamic(default = "default_max_fps")]
     pub max_fps: u64,
 

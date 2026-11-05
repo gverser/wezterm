@@ -686,6 +686,16 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     }
 }
 
+/// The `header_rows` that tabs created locally should use. Remote tabs keep
+/// the value the server reports instead.
+pub fn configured_header_rows() -> usize {
+    if configuration().enable_pane_tab_bar {
+        1
+    } else {
+        0
+    }
+}
+
 impl Tab {
     pub fn new(size: &TerminalSize) -> Self {
         Self::with_header_rows(size, 0)

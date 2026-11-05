@@ -1677,7 +1677,9 @@ impl TermWindow {
             return tab_overlay.pane_id() == pane_id;
         }
 
-        tab.contains_pane(pane_id)
+        // Hidden stack members must not count: their output would otherwise
+        // keep invalidating a window that can't show them.
+        tab.contains_visible_pane(pane_id)
     }
 
     fn mux_pane_output_event(&mut self, pane_id: PaneId) {
@@ -2055,8 +2057,8 @@ impl TermWindow {
             let term_config: Arc<dyn TerminalConfiguration> =
                 Arc::new(TermConfig::with_config(config.clone()));
             for tab in window.iter() {
-                for pane in tab.iter_panes_ignoring_zoom() {
-                    pane.pane.set_config(Arc::clone(&term_config));
+                for pane in tab.iter_all_panes() {
+                    pane.set_config(Arc::clone(&term_config));
                 }
             }
             for state in self.pane_state.borrow().values() {

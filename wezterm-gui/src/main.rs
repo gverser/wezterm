@@ -268,8 +268,8 @@ fn have_panes_in_domain_and_ws(domain: &Arc<dyn Domain>, workspace: &Option<Stri
         for window_id in mux.iter_windows_in_workspace(ws) {
             if let Some(win) = mux.get_window(window_id) {
                 for t in win.iter() {
-                    for p in t.iter_panes_ignoring_zoom() {
-                        if p.pane.domain_id() == domain.domain_id() {
+                    for p in t.iter_all_panes() {
+                        if p.domain_id() == domain.domain_id() {
                             return true;
                         }
                     }
