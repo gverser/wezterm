@@ -14,8 +14,10 @@ use std::sync::Arc;
 use url::Url;
 use wezterm_term::{StableRowIndex, TerminalSize};
 
-pub type Tree = bintree::Tree<Arc<dyn Pane>, SplitDirectionAndSize>;
-pub type Cursor = bintree::Cursor<Arc<dyn Pane>, SplitDirectionAndSize>;
+pub use crate::pane_stack::{member_size, slot_size, PaneStack, MAX_HEADER_ROWS};
+
+pub type Tree = bintree::Tree<PaneStack, SplitDirectionAndSize>;
+pub type Cursor = bintree::Cursor<PaneStack, SplitDirectionAndSize>;
 
 static TAB_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
 pub type TabId = usize;
@@ -46,6 +48,9 @@ struct TabInner {
     zoomed: Option<Arc<dyn Pane>>,
     title: String,
     recency: Recency,
+    /// Rows reserved at the top of every leaf slot for its tab strip;
+    /// always within `0..=MAX_HEADER_ROWS`.
+    header_rows: usize,
 }
 
 /// A Tab is a container of Panes
@@ -252,7 +257,10 @@ fn pane_tree(
                 node: data,
             }
         }
-        Tree::Leaf(pane) => {
+        Tree::Leaf(stack) => {
+            // Transitional: only the visible member goes on the wire until
+            // the codec learns to carry whole stacks.
+            let pane = stack.visible_pane();
             let dims = pane.get_dimensions();
             let working_dir = pane.get_current_working_dir(CachePolicy::AllowStale);
             let cursor_pos = pane.get_cursor_position();
@@ -309,14 +317,83 @@ where
             if is_active_pane {
                 active.replace(Arc::clone(&pane));
             }
-            Tree::Leaf(pane)
+            Tree::Leaf(PaneStack::new(pane))
         }
     }
 }
 
+/// The stacks of `tree` in preorder, which is the order that leaf indices
+/// (`TabInner::active`, `PositionedPane::index`) count in.
+fn leaves(tree: &Tree) -> Vec<&PaneStack> {
+    fn walk<'a>(tree: &'a Tree, out: &mut Vec<&'a PaneStack>) {
+        match tree {
+            Tree::Empty => {}
+            Tree::Node { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            Tree::Leaf(stack) => out.push(stack),
+        }
+    }
+    let mut out = vec![];
+    walk(tree, &mut out);
+    out
+}
+
+/// Like `leaves`, but mutable, so that whole stacks can be swapped.
+fn leaves_mut(tree: &mut Tree) -> Vec<&mut PaneStack> {
+    fn walk<'a>(tree: &'a mut Tree, out: &mut Vec<&'a mut PaneStack>) {
+        match tree {
+            Tree::Empty => {}
+            Tree::Node { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            Tree::Leaf(stack) => out.push(stack),
+        }
+    }
+    let mut out = vec![];
+    walk(tree, &mut out);
+    out
+}
+
+/// Swaps the contents of leaves `i` and `j`, so a whole stack changes place.
+fn swap_stacks(stacks: &mut [&mut PaneStack], i: usize, j: usize) {
+    if i == j {
+        return;
+    }
+    let (lo, hi) = (i.min(j), i.max(j));
+    let (head, tail) = stacks.split_at_mut(hi);
+    std::mem::swap(&mut *head[lo], &mut *tail[0]);
+}
+
+/// The position of the leaf at `cursor` and the size of its slot, that is,
+/// before its header rows are taken out.
+fn slot_geometry(cursor: &Cursor, root_size: TerminalSize) -> (usize, usize, TerminalSize) {
+    let mut left = 0usize;
+    let mut top = 0usize;
+    let mut parent_size = None;
+    for (branch, node) in cursor.path_to_root() {
+        if let Some(node) = node {
+            if parent_size.is_none() {
+                parent_size.replace(if branch == PathBranch::IsRight {
+                    node.second
+                } else {
+                    node.first
+                });
+            }
+            if branch == PathBranch::IsRight {
+                top += node.top_of_second();
+                left += node.left_of_second();
+            }
+        }
+    }
+    (left, top, parent_size.unwrap_or(root_size))
+}
+
 /// Computes the minimum (x, y) size based on the panes in this portion
-/// of the tree.
-fn compute_min_size(tree: &mut Tree) -> (usize, usize) {
+/// of the tree. A leaf needs one row for its members plus its header rows.
+fn compute_min_size(tree: &mut Tree, header_rows: usize) -> (usize, usize) {
     match tree {
         Tree::Node { data: None, .. } | Tree::Empty => (1, 1),
         Tree::Node {
@@ -324,19 +401,24 @@ fn compute_min_size(tree: &mut Tree) -> (usize, usize) {
             right,
             data: Some(data),
         } => {
-            let (left_x, left_y) = compute_min_size(&mut *left);
-            let (right_x, right_y) = compute_min_size(&mut *right);
+            let (left_x, left_y) = compute_min_size(&mut *left, header_rows);
+            let (right_x, right_y) = compute_min_size(&mut *right, header_rows);
             match data.direction {
                 SplitDirection::Vertical => (left_x.max(right_x), left_y + right_y + 1),
                 SplitDirection::Horizontal => (left_x + right_x + 1, left_y.max(right_y)),
             }
         }
-        Tree::Leaf(_) => (1, 1),
+        Tree::Leaf(_) => (1, 1 + header_rows),
     }
 }
 
-fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &TerminalSize) {
-    let (min_x, _) = compute_min_size(tree);
+fn adjust_x_size(
+    tree: &mut Tree,
+    mut x_adjust: isize,
+    cell_dimensions: &TerminalSize,
+    header_rows: usize,
+) {
+    let (min_x, _) = compute_min_size(tree, header_rows);
     while x_adjust != 0 {
         match tree {
             Tree::Empty | Tree::Leaf(_) => return,
@@ -356,26 +438,26 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                         x_adjust = new_cols.saturating_sub(data.first.cols as isize);
 
                         if x_adjust != 0 {
-                            adjust_x_size(&mut *left, x_adjust, cell_dimensions);
+                            adjust_x_size(&mut *left, x_adjust, cell_dimensions, header_rows);
                             data.first.cols = new_cols.try_into().unwrap();
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
 
-                            adjust_x_size(&mut *right, x_adjust, cell_dimensions);
+                            adjust_x_size(&mut *right, x_adjust, cell_dimensions, header_rows);
                             data.second.cols = data.first.cols;
                             data.second.pixel_width = data.first.pixel_width;
                         }
                         return;
                     }
                     SplitDirection::Horizontal if x_adjust > 0 => {
-                        adjust_x_size(&mut *left, 1, cell_dimensions);
+                        adjust_x_size(&mut *left, 1, cell_dimensions, header_rows);
                         data.first.cols += 1;
                         data.first.pixel_width =
                             data.first.cols.saturating_mul(cell_dimensions.pixel_width);
                         x_adjust -= 1;
 
                         if x_adjust > 0 {
-                            adjust_x_size(&mut *right, 1, cell_dimensions);
+                            adjust_x_size(&mut *right, 1, cell_dimensions, header_rows);
                             data.second.cols += 1;
                             data.second.pixel_width =
                                 data.second.cols.saturating_mul(cell_dimensions.pixel_width);
@@ -383,16 +465,21 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                         }
                     }
                     SplitDirection::Horizontal => {
-                        // x_adjust is negative
-                        if data.first.cols > 1 {
-                            adjust_x_size(&mut *left, -1, cell_dimensions);
+                        // x_adjust is negative.
+                        // Only shrink a side that is above its own minimum:
+                        // a nested subtree already at its minimum cannot
+                        // absorb the -1, and asking it to would loop forever.
+                        if data.first.cols > compute_min_size(&mut *left, header_rows).0 {
+                            adjust_x_size(&mut *left, -1, cell_dimensions, header_rows);
                             data.first.cols -= 1;
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
                         }
-                        if x_adjust < 0 && data.second.cols > 1 {
-                            adjust_x_size(&mut *right, -1, cell_dimensions);
+                        if x_adjust < 0
+                            && data.second.cols > compute_min_size(&mut *right, header_rows).0
+                        {
+                            adjust_x_size(&mut *right, -1, cell_dimensions, header_rows);
                             data.second.cols -= 1;
                             data.second.pixel_width =
                                 data.second.cols.saturating_mul(cell_dimensions.pixel_width);
@@ -405,8 +492,13 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
     }
 }
 
-fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &TerminalSize) {
-    let (_, min_y) = compute_min_size(tree);
+fn adjust_y_size(
+    tree: &mut Tree,
+    mut y_adjust: isize,
+    cell_dimensions: &TerminalSize,
+    header_rows: usize,
+) {
+    let (_, min_y) = compute_min_size(tree, header_rows);
     while y_adjust != 0 {
         match tree {
             Tree::Empty | Tree::Leaf(_) => return,
@@ -426,25 +518,25 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                         y_adjust = new_rows.saturating_sub(data.first.rows as isize);
 
                         if y_adjust != 0 {
-                            adjust_y_size(&mut *left, y_adjust, cell_dimensions);
+                            adjust_y_size(&mut *left, y_adjust, cell_dimensions, header_rows);
                             data.first.rows = new_rows.try_into().unwrap();
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
 
-                            adjust_y_size(&mut *right, y_adjust, cell_dimensions);
+                            adjust_y_size(&mut *right, y_adjust, cell_dimensions, header_rows);
                             data.second.rows = data.first.rows;
                             data.second.pixel_height = data.first.pixel_height;
                         }
                         return;
                     }
                     SplitDirection::Vertical if y_adjust > 0 => {
-                        adjust_y_size(&mut *left, 1, cell_dimensions);
+                        adjust_y_size(&mut *left, 1, cell_dimensions, header_rows);
                         data.first.rows += 1;
                         data.first.pixel_height =
                             data.first.rows.saturating_mul(cell_dimensions.pixel_height);
                         y_adjust -= 1;
                         if y_adjust > 0 {
-                            adjust_y_size(&mut *right, 1, cell_dimensions);
+                            adjust_y_size(&mut *right, 1, cell_dimensions, header_rows);
                             data.second.rows += 1;
                             data.second.pixel_height = data
                                 .second
@@ -454,16 +546,22 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                         }
                     }
                     SplitDirection::Vertical => {
-                        // y_adjust is negative
-                        if data.first.rows > 1 {
-                            adjust_y_size(&mut *left, -1, cell_dimensions);
+                        // y_adjust is negative.
+                        // Only shrink a side that is above its own minimum
+                        // (which includes header rows): a nested subtree
+                        // already at its minimum cannot absorb the -1, and
+                        // asking it to would loop forever.
+                        if data.first.rows > compute_min_size(&mut *left, header_rows).1 {
+                            adjust_y_size(&mut *left, -1, cell_dimensions, header_rows);
                             data.first.rows -= 1;
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
                         }
-                        if y_adjust < 0 && data.second.rows > 1 {
-                            adjust_y_size(&mut *right, -1, cell_dimensions);
+                        if y_adjust < 0
+                            && data.second.rows > compute_min_size(&mut *right, header_rows).1
+                        {
+                            adjust_y_size(&mut *right, -1, cell_dimensions, header_rows);
                             data.second.rows -= 1;
                             data.second.pixel_height = data
                                 .second
@@ -478,7 +576,9 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
     }
 }
 
-fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize) {
+/// `size` is the slot of `tree`; every leaf's members get the slot minus
+/// `header_rows`.
+fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize, header_rows: usize) {
     match tree {
         Tree::Empty => return,
         Tree::Node { data: None, .. } => return,
@@ -487,11 +587,11 @@ fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize) {
             right,
             data: Some(data),
         } => {
-            apply_sizes_from_splits(&*left, &data.first);
-            apply_sizes_from_splits(&*right, &data.second);
+            apply_sizes_from_splits(&*left, &data.first, header_rows);
+            apply_sizes_from_splits(&*right, &data.second, header_rows);
         }
-        Tree::Leaf(pane) => {
-            pane.resize(*size).ok();
+        Tree::Leaf(stack) => {
+            stack.resize_all(member_size(size, header_rows)).ok();
         }
     }
 }
@@ -508,12 +608,34 @@ fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
 
 impl Tab {
     pub fn new(size: &TerminalSize) -> Self {
-        let inner = TabInner::new(size);
+        Self::with_header_rows(size, 0)
+    }
+
+    /// Creates a tab whose leaves reserve `header_rows` at their top for a
+    /// tab strip. Values above `MAX_HEADER_ROWS` are clamped.
+    pub fn with_header_rows(size: &TerminalSize, header_rows: usize) -> Self {
+        let inner = TabInner::new(size, header_rows.min(MAX_HEADER_ROWS));
         let tab_id = inner.id;
         Self {
             inner: Mutex::new(inner),
             tab_id,
         }
+    }
+
+    pub fn header_rows(&self) -> usize {
+        self.inner.lock().header_rows
+    }
+
+    /// Every pane in the tab, hidden stack members included, in leaf
+    /// preorder and then stack order. Ignores zoom.
+    pub fn iter_all_panes(&self) -> Vec<Arc<dyn Pane>> {
+        self.inner.lock().iter_all_panes()
+    }
+
+    /// The index of the leaf whose stack holds `pane_id`, whether or not it
+    /// is the visible member. Ignores zoom.
+    pub fn leaf_index_of(&self, pane_id: PaneId) -> Option<usize> {
+        self.inner.lock().leaf_index_of(pane_id)
     }
 
     pub fn get_title(&self) -> String {
@@ -557,7 +679,7 @@ impl Tab {
 
     /// Returns a count of how many panes are in this tab
     pub fn count_panes(&self) -> Option<usize> {
-        self.inner.try_lock().map(|mut inner| inner.count_panes())
+        self.inner.try_lock().map(|inner| inner.count_panes())
     }
 
     /// Sets the zoom state, returns the prior state
@@ -754,7 +876,7 @@ impl Tab {
 }
 
 impl TabInner {
-    fn new(size: &TerminalSize) -> Self {
+    fn new(size: &TerminalSize, header_rows: usize) -> Self {
         Self {
             id: TAB_ID.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed),
             pane: Some(Tree::new()),
@@ -764,6 +886,7 @@ impl TabInner {
             zoomed: None,
             title: String::new(),
             recency: Recency::default(),
+            header_rows,
         }
     }
 
@@ -784,8 +907,8 @@ impl TabInner {
             // Resolve the active pane to its index
             let mut index = 0;
             loop {
-                if let Some(pane) = cursor.leaf_mut() {
-                    if active.pane_id() == pane.pane_id() {
+                if let Some(stack) = cursor.leaf_mut() {
+                    if stack.position_of(active.pane_id()).is_some() {
                         // Found it
                         self.active = index;
                         self.recency.tag(index);
@@ -858,22 +981,67 @@ impl TabInner {
         }
     }
 
-    /// Returns a count of how many panes are in this tab
-    fn count_panes(&mut self) -> usize {
-        let mut count = 0;
-        let mut cursor = self.pane.take().unwrap().cursor();
+    /// Returns a count of how many panes are in this tab, hidden stack
+    /// members included
+    fn count_panes(&self) -> usize {
+        match &self.pane {
+            Some(root) => leaves(root).iter().map(|stack| stack.len()).sum(),
+            None => 0,
+        }
+    }
 
-        loop {
-            if cursor.is_leaf() {
-                count += 1;
+    fn iter_all_panes(&self) -> Vec<Arc<dyn Pane>> {
+        match &self.pane {
+            Some(root) => leaves(root)
+                .into_iter()
+                .flat_map(|stack| stack.panes().iter().cloned())
+                .collect(),
+            None => vec![],
+        }
+    }
+
+    fn leaf_index_of(&self, pane_id: PaneId) -> Option<usize> {
+        let root = self.pane.as_ref()?;
+        leaves(root)
+            .iter()
+            .position(|stack| stack.position_of(pane_id).is_some())
+    }
+
+    /// Runs `f` on the stack of leaf `leaf`; `None` if there is no such leaf.
+    fn with_leaf_at<R>(&mut self, leaf: usize, f: impl FnOnce(&mut PaneStack) -> R) -> Option<R> {
+        let root = self.pane.as_mut()?;
+        leaves_mut(root).into_iter().nth(leaf).map(f)
+    }
+
+    /// The slot size of leaf `leaf` in the split layout, ignoring zoom.
+    fn slot_of_leaf(&mut self, leaf: usize) -> Option<TerminalSize> {
+        let root_size = self.size;
+        let cursor = self.pane.take()?.cursor();
+        match cursor.go_to_nth_leaf(leaf) {
+            Ok(c) => {
+                let (_, _, slot) = slot_geometry(&c, root_size);
+                self.pane.replace(c.tree());
+                Some(slot)
             }
-            match cursor.preorder_next() {
-                Ok(c) => cursor = c,
-                Err(c) => {
-                    self.pane.replace(c.tree());
-                    return count;
-                }
+            Err(c) => {
+                self.pane.replace(c.tree());
+                None
             }
+        }
+    }
+
+    /// Zoom makes the whole tab the slot of the leaf holding `zoomed`, so
+    /// every member of that leaf, hidden ones included, is sized for it.
+    fn resize_zoomed_leaf(&mut self, zoomed: &Arc<dyn Pane>, size: TerminalSize) {
+        let member = member_size(&size, self.header_rows);
+        let resized = self.leaf_index_of(zoomed.pane_id()).and_then(|leaf| {
+            self.with_leaf_at(leaf, |stack| {
+                stack.resize_all(member).ok();
+            })
+        });
+        if resized.is_none() {
+            // Not in the tree; still resize it, as was done before stacks.
+            zoomed.resize(member).ok();
         }
     }
 
@@ -903,26 +1071,21 @@ impl TabInner {
             // Locate the active pane
             self.size_before_zoom = size;
             if let Some(pane) = self.get_active_pane() {
+                // set_zoomed must reach a ClientPane's server before the
+                // resize does: a Resize arriving while the server is not yet
+                // zoomed gets written back into its splits as the whole tab
+                // size, which then also poisons size_before_zoom.
                 pane.set_zoomed(true);
-                pane.resize(size).ok();
+                self.resize_zoomed_leaf(&pane, size);
                 self.zoomed.replace(pane);
             }
         }
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
     }
 
+    /// True if any stack holds `pane`, as a visible or hidden member.
     fn contains_pane(&self, pane: PaneId) -> bool {
-        fn contains(tree: &Tree, pane: PaneId) -> bool {
-            match tree {
-                Tree::Empty => false,
-                Tree::Node { left, right, .. } => contains(left, pane) || contains(right, pane),
-                Tree::Leaf(p) => p.pane_id() == pane,
-            }
-        }
-        match &self.pane {
-            Some(root) => contains(root, pane),
-            None => false,
-        }
+        self.leaf_index_of(pane).is_some()
     }
 
     /// Walks the pane tree to produce the topologically ordered flattened
@@ -937,81 +1100,64 @@ impl TabInner {
         self.iter_panes_impl(false)
     }
 
+    /// Each leaf takes the stack of the leaf after it, and the last leaf
+    /// takes the first stack. Whole stacks move; the active leaf index stays.
     fn rotate_counter_clockwise(&mut self) {
-        let panes = self.iter_panes_ignoring_zoom();
-        if panes.is_empty() {
-            // Shouldn't happen, but we check for this here so that the
-            // expect below cannot trigger a panic
-            return;
-        }
-        let mut pane_to_swap = panes
-            .first()
-            .map(|p| p.pane.clone())
-            .expect("at least one pane");
-
-        let mut cursor = self.pane.take().unwrap().cursor();
-
-        loop {
-            if cursor.is_leaf() {
-                std::mem::swap(&mut pane_to_swap, cursor.leaf_mut().unwrap());
+        {
+            let mut stacks = match self.pane.as_mut() {
+                Some(root) => leaves_mut(root),
+                None => return,
+            };
+            if stacks.is_empty() {
+                return;
             }
-
-            match cursor.postorder_next() {
-                Ok(c) => cursor = c,
-                Err(c) => {
-                    self.pane.replace(c.tree());
-                    let size = self.size;
-                    apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
-                    break;
-                }
+            // Bubble the first stack along to the last leaf.
+            for i in 1..stacks.len() {
+                swap_stacks(&mut stacks, i - 1, i);
             }
         }
+        let size = self.size;
+        apply_sizes_from_splits(self.pane.as_ref().unwrap(), &size, self.header_rows);
     }
 
+    /// Each leaf takes the stack of the leaf before it, and the first leaf
+    /// takes the last stack. Whole stacks move; the active leaf index stays.
     fn rotate_clockwise(&mut self) {
-        let panes = self.iter_panes_ignoring_zoom();
-        if panes.is_empty() {
-            // Shouldn't happen, but we check for this here so that the
-            // expect below cannot trigger a panic
-            return;
-        }
-        let mut pane_to_swap = panes
-            .last()
-            .map(|p| p.pane.clone())
-            .expect("at least one pane");
-
-        let mut cursor = self.pane.take().unwrap().cursor();
-
-        loop {
-            if cursor.is_leaf() {
-                std::mem::swap(&mut pane_to_swap, cursor.leaf_mut().unwrap());
+        {
+            let mut stacks = match self.pane.as_mut() {
+                Some(root) => leaves_mut(root),
+                None => return,
+            };
+            if stacks.is_empty() {
+                return;
             }
-
-            match cursor.preorder_next() {
-                Ok(c) => cursor = c,
-                Err(c) => {
-                    self.pane.replace(c.tree());
-                    let size = self.size;
-                    apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
-                    break;
-                }
+            // Bubble the last stack back to the first leaf.
+            for i in (1..stacks.len()).rev() {
+                swap_stacks(&mut stacks, i - 1, i);
             }
         }
+        let size = self.size;
+        apply_sizes_from_splits(self.pane.as_ref().unwrap(), &size, self.header_rows);
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
     }
 
+    /// One entry per leaf, describing its visible member. `top`/`height`
+    /// are those of the member itself, below the leaf's header rows.
     fn iter_panes_impl(&mut self, respect_zoom_state: bool) -> Vec<PositionedPane> {
         let mut panes = vec![];
+        let header_rows = self.header_rows;
 
         if respect_zoom_state {
             if let Some(zoomed) = self.zoomed.as_ref() {
-                let size = self.size;
+                // The zoomed leaf's slot is the whole tab and it keeps its
+                // header rows at the top.
+                let size = member_size(&self.size, header_rows);
                 panes.push(PositionedPane {
                     index: 0,
                     is_active: true,
                     is_zoomed: true,
                     left: 0,
-                    top: 0,
+                    top: header_rows,
                     width: size.cols.into(),
                     pixel_width: size.pixel_width.into(),
                     height: size.rows.into(),
@@ -1030,34 +1176,16 @@ impl TabInner {
         loop {
             if cursor.is_leaf() {
                 let index = panes.len();
-                let mut left = 0usize;
-                let mut top = 0usize;
-                let mut parent_size = None;
-                for (branch, node) in cursor.path_to_root() {
-                    if let Some(node) = node {
-                        if parent_size.is_none() {
-                            parent_size.replace(if branch == PathBranch::IsRight {
-                                node.second
-                            } else {
-                                node.first
-                            });
-                        }
-                        if branch == PathBranch::IsRight {
-                            top += node.top_of_second();
-                            left += node.left_of_second();
-                        }
-                    }
-                }
-
-                let pane = Arc::clone(cursor.leaf_mut().unwrap());
-                let dims = parent_size.unwrap_or_else(|| root_size);
+                let (left, top, slot) = slot_geometry(&cursor, root_size);
+                let pane = Arc::clone(cursor.leaf_mut().unwrap().visible_pane());
+                let dims = member_size(&slot, header_rows);
 
                 panes.push(PositionedPane {
                     index,
                     is_active: index == active_idx,
                     is_zoomed: zoomed_id == Some(pane.pane_id()),
                     left,
-                    top,
+                    top: top + header_rows,
                     width: dims.cols as _,
                     height: dims.rows as _,
                     pixel_width: dims.pixel_width as _,
@@ -1142,12 +1270,13 @@ impl TabInner {
             return;
         }
 
-        if let Some(zoomed) = &self.zoomed {
+        if let Some(zoomed) = self.zoomed.clone() {
             self.size = size;
-            zoomed.resize(size).ok();
+            self.resize_zoomed_leaf(&zoomed, size);
         } else {
             let dims = cell_dimensions(&size);
-            let (min_x, min_y) = compute_min_size(self.pane.as_mut().unwrap());
+            let header_rows = self.header_rows;
+            let (min_x, min_y) = compute_min_size(self.pane.as_mut().unwrap(), header_rows);
             let current_size = self.size;
 
             // Constrain the new size to the minimum possible dimensions
@@ -1166,17 +1295,19 @@ impl TabInner {
                 self.pane.as_mut().unwrap(),
                 cols as isize - current_size.cols as isize,
                 &dims,
+                header_rows,
             );
             adjust_y_size(
                 self.pane.as_mut().unwrap(),
                 rows as isize - current_size.rows as isize,
                 &dims,
+                header_rows,
             );
 
             self.size = size;
 
             // And then resize the individual panes to match
-            apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
+            apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size, header_rows);
         }
 
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -1220,11 +1351,13 @@ impl TabInner {
             return;
         }
 
-        fn compute_size(node: &mut Tree) -> Option<TerminalSize> {
+        fn compute_size(node: &mut Tree, header_rows: usize) -> Option<TerminalSize> {
             match node {
                 Tree::Empty => None,
-                Tree::Leaf(pane) => {
-                    let dims = pane.get_dimensions();
+                Tree::Leaf(stack) => {
+                    // All members share one size; the slot adds the header
+                    // rows back on top of it.
+                    let dims = stack.visible_pane().get_dimensions();
                     let size = TerminalSize {
                         cols: dims.cols,
                         rows: dims.viewport_rows,
@@ -1232,14 +1365,14 @@ impl TabInner {
                         pixel_width: dims.pixel_width,
                         dpi: dims.dpi,
                     };
-                    Some(size)
+                    Some(slot_size(&size, header_rows))
                 }
                 Tree::Node { left, right, data } => {
                     if let Some(data) = data {
-                        if let Some(first) = compute_size(left) {
+                        if let Some(first) = compute_size(left, header_rows) {
                             data.first = first;
                         }
-                        if let Some(second) = compute_size(right) {
+                        if let Some(second) = compute_size(right, header_rows) {
                             data.second = second;
                         }
                         Some(data.size())
@@ -1250,8 +1383,9 @@ impl TabInner {
             }
         }
 
+        let header_rows = self.header_rows;
         if let Some(root) = self.pane.as_mut() {
-            if let Some(size) = compute_size(root) {
+            if let Some(size) = compute_size(root, header_rows) {
                 self.size = size;
             }
         }
@@ -1293,6 +1427,7 @@ impl TabInner {
 
     fn adjust_node_at_cursor(&mut self, cursor: &mut Cursor, delta: isize) {
         let cell_dimensions = self.cell_dimensions();
+        let header_rows = self.header_rows as isize;
         if let Ok(Some(node)) = cursor.node_mut() {
             match node.direction {
                 SplitDirection::Horizontal => {
@@ -1314,11 +1449,13 @@ impl TabInner {
                 SplitDirection::Vertical => {
                     let height = node.height();
 
+                    // Each side keeps at least one member row below its
+                    // header rows.
                     let mut rows = node.first.rows as isize;
                     rows = rows
                         .saturating_add(delta)
-                        .max(1)
-                        .min((height as isize).saturating_sub(2));
+                        .max(1 + header_rows)
+                        .min((height as isize).saturating_sub(2 + header_rows));
                     node.first.rows = rows as usize;
                     node.first.pixel_height =
                         node.first.rows.saturating_mul(cell_dimensions.pixel_height);
@@ -1343,6 +1480,7 @@ impl TabInner {
             }
         }
         let root_size = self.size;
+        let header_rows = self.header_rows;
 
         loop {
             // Figure out the available size by looking at our immediate parent node.
@@ -1359,7 +1497,9 @@ impl TabInner {
 
             if cursor.is_leaf() {
                 // Apply our size to the tty
-                cursor.leaf_mut().map(|pane| pane.resize(pane_size));
+                cursor
+                    .leaf_mut()
+                    .map(|stack| stack.resize_all(member_size(&pane_size, header_rows)));
             } else {
                 self.apply_pane_size(pane_size, &mut cursor);
             }
@@ -1453,11 +1593,20 @@ impl TabInner {
     }
 
     fn get_pane_direction(&mut self, direction: PaneDirection, ignore_zoom: bool) -> Option<usize> {
-        let panes = if ignore_zoom {
+        let mut panes = if ignore_zoom {
             self.iter_panes_ignoring_zoom()
         } else {
             self.iter_panes()
         };
+
+        // Adjacency is a property of the slots: a pane below another one
+        // starts after the lower leaf's header rows, so compare the slots or
+        // vertically stacked panes never find each other.
+        let header_rows = self.header_rows;
+        for pane in panes.iter_mut() {
+            pane.top = pane.top.saturating_sub(header_rows);
+            pane.height += header_rows;
+        }
 
         let active = match panes.iter().find(|pane| pane.is_active) {
             Some(p) => p,
@@ -1561,7 +1710,7 @@ impl TabInner {
         let mux = Mux::get();
         !self
             .remove_pane_if(
-                |_, pane| {
+                |pane| {
                     // If the pane is no longer known to the mux, then its liveness
                     // state isn't guaranteed to be monitored or updated, so let's
                     // consider the pane effectively dead if it isn't in the mux.
@@ -1583,37 +1732,43 @@ impl TabInner {
 
     fn kill_pane(&mut self, pane_id: PaneId) -> bool {
         !self
-            .remove_pane_if(|_, pane| pane.pane_id() == pane_id, true)
+            .remove_pane_if(|pane| pane.pane_id() == pane_id, true)
             .is_empty()
     }
 
     fn kill_panes_in_domain(&mut self, domain: DomainId) -> bool {
         !self
-            .remove_pane_if(|_, pane| pane.domain_id() == domain, true)
+            .remove_pane_if(|pane| pane.domain_id() == domain, true)
             .is_empty()
     }
 
     fn remove_pane(&mut self, pane_id: PaneId) -> Option<Arc<dyn Pane>> {
-        let panes = self.remove_pane_if(|_, pane| pane.pane_id() == pane_id, false);
+        let panes = self.remove_pane_if(|pane| pane.pane_id() == pane_id, false);
         for pane in panes {
             return Some(pane);
         }
         None
     }
 
+    /// Removes every pane, visible or hidden, for which `f` returns true.
+    /// A leaf is only unsplit once its stack is empty.
     fn remove_pane_if<F>(&mut self, f: F, kill: bool) -> Vec<Arc<dyn Pane>>
     where
-        F: Fn(usize, &Arc<dyn Pane>) -> bool,
+        F: Fn(&Arc<dyn Pane>) -> bool,
     {
         let mut dead_panes = vec![];
         let zoomed_pane = self.zoomed.as_ref().map(|p| p.pane_id());
 
         {
             let root_size = self.size;
+            let header_rows = self.header_rows;
             let mut cursor = self.pane.take().unwrap().cursor();
             let mut pane_index = 0;
             let mut removed_indices = vec![];
             let cell_dims = self.cell_dimensions();
+            // Set once a leaf has been unsplit; from then on the layout of
+            // the rest of the tree has to be re-applied as we walk it.
+            let mut layout_changed = false;
 
             loop {
                 // Figure out the available size by looking at our immediate parent node.
@@ -1629,17 +1784,22 @@ impl TabInner {
                 };
 
                 if cursor.is_leaf() {
-                    let pane = Arc::clone(cursor.leaf_mut().unwrap());
-                    if f(pane_index, &pane) {
-                        removed_indices.push(pane_index);
-                        if Some(pane.pane_id()) == zoomed_pane {
+                    let stack = cursor.leaf_mut().unwrap();
+                    let removed = stack.remove_where(&f);
+                    let emptied = stack.is_empty();
+                    if let Some(zoomed_id) = zoomed_pane {
+                        if removed.iter().any(|p| p.pane_id() == zoomed_id) {
                             // If we removed the zoomed pane, un-zoom our state!
                             self.zoomed.take();
                         }
+                    }
+                    dead_panes.extend(removed);
+
+                    if emptied {
+                        removed_indices.push(pane_index);
                         let parent;
                         match cursor.unsplit_leaf() {
-                            Ok((c, dead, p)) => {
-                                dead_panes.push(dead);
+                            Ok((c, _empty_stack, p)) => {
                                 parent = p.unwrap();
                                 cursor = c;
                             }
@@ -1647,13 +1807,13 @@ impl TabInner {
                                 // We might be the root, for example
                                 if c.is_top() && c.is_leaf() {
                                     self.pane.replace(Tree::Empty);
-                                    dead_panes.push(pane);
                                 } else {
                                     self.pane.replace(c.tree());
                                 }
                                 break;
                             }
                         };
+                        layout_changed = true;
 
                         // Now we need to increase the size of the current node
                         // and propagate the revised size to its children.
@@ -1666,17 +1826,17 @@ impl TabInner {
                         };
 
                         if let Some(unsplit) = cursor.leaf_mut() {
-                            unsplit.resize(size).ok();
+                            unsplit.resize_all(member_size(&size, header_rows)).ok();
                         } else {
                             self.apply_pane_size(size, &mut cursor);
                         }
-                    } else if !dead_panes.is_empty() {
+                    } else if layout_changed {
                         // Apply our revised size to the tty
-                        pane.resize(pane_size).ok();
+                        stack.resize_all(member_size(&pane_size, header_rows)).ok();
                     }
 
                     pane_index += 1;
-                } else if !dead_panes.is_empty() {
+                } else if layout_changed {
                     self.apply_pane_size(pane_size, &mut cursor);
                 }
                 match cursor.preorder_next() {
@@ -1710,37 +1870,29 @@ impl TabInner {
     }
 
     fn can_close_without_prompting(&mut self, reason: CloseReason) -> bool {
-        let panes = self.iter_panes_ignoring_zoom();
-        for pos in &panes {
-            if !pos.pane.can_close_without_prompting(reason) {
-                return false;
-            }
-        }
-        true
+        // Hidden stack members count too: closing the tab closes them.
+        self.iter_all_panes()
+            .iter()
+            .all(|pane| pane.can_close_without_prompting(reason))
     }
 
     fn is_dead(&mut self) -> bool {
         // Make sure we account for all panes, so that we don't
         // kill the whole tab if the zoomed pane is dead!
-        let panes = self.iter_panes_ignoring_zoom();
-        let mut dead_count = 0;
-        for pos in &panes {
-            if pos.pane.is_dead() {
-                dead_count += 1;
-            }
-        }
-        dead_count == panes.len()
+        // Hidden stack members keep the tab alive just the same.
+        self.iter_all_panes().iter().all(|pane| pane.is_dead())
     }
 
+    /// The zoomed pane if any, else the visible member of the active leaf.
     fn get_active_pane(&mut self) -> Option<Arc<dyn Pane>> {
         if let Some(zoomed) = self.zoomed.as_ref() {
             return Some(Arc::clone(zoomed));
         }
 
-        self.iter_panes_ignoring_zoom()
-            .iter()
-            .nth(self.active)
-            .map(|p| Arc::clone(&p.pane))
+        let root = self.pane.as_ref()?;
+        leaves(root)
+            .get(self.active)
+            .map(|stack| Arc::clone(stack.visible_pane()))
     }
 
     fn get_active_idx(&self) -> usize {
@@ -1761,29 +1913,37 @@ impl TabInner {
             self.toggle_zoom();
         }
 
-        if let Some(item) = self
-            .iter_panes_ignoring_zoom()
-            .iter()
-            .find(|p| p.pane.pane_id() == pane.pane_id())
-        {
-            self.active = item.index;
-            self.recency.tag(item.index);
+        // Only a visible member can be activated here, as before stacks
+        // existed; bringing a hidden member forward is a separate operation.
+        let pane_id = pane.pane_id();
+        let leaf = self.leaf_index_of(pane_id).filter(|&leaf| {
+            self.with_leaf_at(leaf, |stack| stack.visible_pane().pane_id() == pane_id)
+                .unwrap_or(false)
+        });
+        if let Some(leaf) = leaf {
+            self.active = leaf;
+            self.recency.tag(leaf);
             self.advise_focus_change(prior);
         }
     }
 
     fn advise_focus_change(&mut self, prior: Option<Arc<dyn Pane>>) {
-        let mux = Mux::get();
+        // There is no Mux in unit tests; the panes are still told.
+        let mux = Mux::try_get();
         let current = self.get_active_pane();
         match (prior, current) {
             (Some(prior), Some(current)) if prior.pane_id() != current.pane_id() => {
                 prior.focus_changed(false);
                 current.focus_changed(true);
-                mux.notify(MuxNotification::PaneFocused(current.pane_id()));
+                if let Some(mux) = &mux {
+                    mux.notify(MuxNotification::PaneFocused(current.pane_id()));
+                }
             }
             (None, Some(current)) => {
                 current.focus_changed(true);
-                mux.notify(MuxNotification::PaneFocused(current.pane_id()));
+                if let Some(mux) = &mux {
+                    mux.notify(MuxNotification::PaneFocused(current.pane_id()));
+                }
             }
             (Some(prior), None) => {
                 prior.focus_changed(false);
@@ -1802,9 +1962,18 @@ impl TabInner {
     }
 
     fn assign_pane(&mut self, pane: &Arc<dyn Pane>) {
-        match Tree::new().cursor().assign_top(Arc::clone(pane)) {
+        match Tree::new()
+            .cursor()
+            .assign_top(PaneStack::new(Arc::clone(pane)))
+        {
             Ok(c) => self.pane = Some(c.tree()),
             Err(_) => panic!("tried to assign root pane to non-empty tree"),
+        }
+        // The caller sized the pane for the whole tab; make room for the
+        // header rows. Header-less tabs skip this to keep the resize count
+        // unchanged (a tmux pane forwards every resize to tmux).
+        if self.header_rows > 0 {
+            pane.resize(member_size(&self.size, self.header_rows)).ok();
         }
     }
 
@@ -1812,9 +1981,11 @@ impl TabInner {
         cell_dimensions(&self.size)
     }
 
+    /// Swaps the whole stack of the active leaf with that of leaf
+    /// `pane_index`.
     fn swap_active_with_index(&mut self, pane_index: usize, keep_focus: bool) -> Option<()> {
         let active_idx = self.get_active_idx();
-        let mut pane = self.get_active_pane()?;
+        let prior = self.get_active_pane()?;
         log::trace!(
             "swap_active_with_index: pane_index {} active {}",
             pane_index,
@@ -1822,46 +1993,27 @@ impl TabInner {
         );
 
         {
-            let mut cursor = self.pane.take().unwrap().cursor();
-
-            // locate the requested index
-            match cursor.go_to_nth_leaf(pane_index) {
-                Ok(c) => cursor = c,
-                Err(c) => {
-                    log::trace!("didn't find pane {pane_index}");
-                    self.pane.replace(c.tree());
-                    return None;
-                }
-            };
-
-            std::mem::swap(&mut pane, cursor.leaf_mut().unwrap());
-
-            // re-position to the root
-            cursor = cursor.tree().cursor();
-
-            // and now go and update the active idx
-            match cursor.go_to_nth_leaf(active_idx) {
-                Ok(c) => cursor = c,
-                Err(c) => {
-                    self.pane.replace(c.tree());
-                    log::trace!("didn't find active {active_idx}");
-                    return None;
-                }
-            };
-
-            std::mem::swap(&mut pane, cursor.leaf_mut().unwrap());
-            self.pane.replace(cursor.tree());
-
-            // Advise the panes of their new sizes
-            let size = self.size;
-            apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
+            let mut stacks = leaves_mut(self.pane.as_mut()?);
+            if pane_index >= stacks.len() {
+                log::trace!("didn't find pane {pane_index}");
+                return None;
+            }
+            if active_idx >= stacks.len() {
+                log::trace!("didn't find active {active_idx}");
+                return None;
+            }
+            swap_stacks(&mut stacks, pane_index, active_idx);
         }
+
+        // Advise the panes of their new sizes
+        let size = self.size;
+        apply_sizes_from_splits(self.pane.as_ref().unwrap(), &size, self.header_rows);
 
         // And update focus
         if keep_focus {
             self.set_active_idx(pane_index);
         } else {
-            self.advise_focus_change(Some(pane));
+            self.advise_focus_change(Some(prior));
         }
         None
     }
@@ -1873,12 +2025,13 @@ impl TabInner {
     ) -> Option<SplitDirectionAndSize> {
         let cell_dims = self.cell_dimensions();
 
-        fn split_dimension(dim: usize, request: SplitRequest) -> (usize, usize) {
+        // `min` is the smallest size the new side may have.
+        fn split_dimension(dim: usize, request: SplitRequest, min: usize) -> (usize, usize) {
             let target_size = match request.size {
                 SplitSize::Cells(n) => n,
                 SplitSize::Percent(n) => (dim * (n as usize)) / 100,
             }
-            .max(1);
+            .max(min);
 
             let remain = dim.saturating_sub(target_size + 1);
 
@@ -1889,17 +2042,20 @@ impl TabInner {
             }
         }
 
+        // A leaf needs a member row below its header rows.
+        let min_leaf_rows = 1 + self.header_rows;
+
         if request.top_level {
             let size = self.size;
 
             let ((width1, width2), (height1, height2)) = match request.direction {
                 SplitDirection::Horizontal => (
-                    split_dimension(size.cols as usize, request),
+                    split_dimension(size.cols as usize, request, 1),
                     (size.rows as usize, size.rows as usize),
                 ),
                 SplitDirection::Vertical => (
                     (size.cols as usize, size.cols as usize),
-                    split_dimension(size.rows as usize, request),
+                    split_dimension(size.rows as usize, request, min_leaf_rows),
                 ),
             };
 
@@ -1926,15 +2082,17 @@ impl TabInner {
         // a bogus split state (https://github.com/wezterm/wezterm/issues/723)
         self.set_zoomed(false);
 
-        self.iter_panes().iter().nth(pane_index).map(|pos| {
+        // Split the leaf's slot, header rows included, not just its member.
+        self.slot_of_leaf(pane_index).map(|slot| {
             let ((width1, width2), (height1, height2)) = match request.direction {
                 SplitDirection::Horizontal => (
-                    split_dimension(pos.width, request),
-                    (pos.height, pos.height),
+                    split_dimension(slot.cols, request, 1),
+                    (slot.rows, slot.rows),
                 ),
-                SplitDirection::Vertical => {
-                    ((pos.width, pos.width), split_dimension(pos.height, request))
-                }
+                SplitDirection::Vertical => (
+                    (slot.cols, slot.cols),
+                    split_dimension(slot.rows, request, min_leaf_rows),
+                ),
             };
 
             SplitDirectionAndSize {
@@ -1975,9 +2133,11 @@ impl TabInner {
                 })?;
 
             let tab_size = self.size;
-            if split_info.first.rows == 0
+            let header_rows = self.header_rows;
+            // Each side needs a member row below its header rows.
+            if split_info.first.rows < 1 + header_rows
                 || split_info.first.cols == 0
-                || split_info.second.rows == 0
+                || split_info.second.rows < 1 + header_rows
                 || split_info.second.cols == 0
                 || split_info.top_of_second() + split_info.second.rows > tab_size.rows
                 || split_info.left_of_second() + split_info.second.cols > tab_size.cols
@@ -2015,15 +2175,27 @@ impl TabInner {
 
             if request.top_level && !cursor.is_leaf() {
                 let result = if request.target_is_second {
-                    cursor.split_node_and_insert_right(Arc::clone(&pane))
+                    cursor.split_node_and_insert_right(PaneStack::new(Arc::clone(&pane)))
                 } else {
-                    cursor.split_node_and_insert_left(Arc::clone(&pane))
+                    cursor.split_node_and_insert_left(PaneStack::new(Arc::clone(&pane)))
                 };
                 cursor = match result {
                     Ok(c) => {
                         cursor = match c.assign_node(Some(split_info)) {
                             Err(c) | Ok(c) => c,
                         };
+
+                        // The caller sized the new pane for its whole slot.
+                        // Header-less tabs skip this to keep the resize count
+                        // unchanged.
+                        if header_rows > 0 {
+                            let slot = if request.target_is_second {
+                                &split_info.second
+                            } else {
+                                &split_info.first
+                            };
+                            pane.resize(member_size(slot, header_rows)).ok();
+                        }
 
                         self.pane.replace(cursor.tree());
 
@@ -2049,20 +2221,27 @@ impl TabInner {
                 }
             };
 
-            let existing_pane = Arc::clone(cursor.leaf_mut().unwrap());
+            let new_stack = PaneStack::new(pane);
+            let first_member = member_size(&split_info.first, header_rows);
+            let second_member = member_size(&split_info.second, header_rows);
+            {
+                // The whole existing stack moves into its new slot.
+                let existing_stack = cursor.leaf_mut().unwrap();
+                let (stack1, stack2) = if request.target_is_second {
+                    (&*existing_stack, &new_stack)
+                } else {
+                    (&new_stack, &*existing_stack)
+                };
+                stack1.resize_all(first_member)?;
+                stack2.resize_all(second_member)?;
+            }
 
-            let (pane1, pane2) = if request.target_is_second {
-                (existing_pane, pane)
+            let result = if request.target_is_second {
+                cursor.split_leaf_and_insert_right(new_stack)
             } else {
-                (pane, existing_pane)
+                cursor.split_leaf_and_insert_left(new_stack)
             };
-
-            pane1.resize(split_info.first)?;
-            pane2.resize(split_info.second.clone())?;
-
-            *cursor.leaf_mut().unwrap() = pane1;
-
-            match cursor.split_leaf_and_insert_right(pane2) {
+            match result {
                 Ok(c) => cursor = c,
                 Err(c) => {
                     self.pane.replace(c.tree());
@@ -2398,6 +2577,140 @@ mod test {
         assert_eq!(24, panes[2].height);
         assert_eq!(400, panes[2].pixel_width);
         assert_eq!(600, panes[2].pixel_height);
+    }
+
+    /// An 80x24 tab with `h` header rows, split once vertically at the
+    /// default 50%: pane 1 on top, pane 2 (active) below. With `h = 1` the
+    /// slots are 11 and 12 rows.
+    fn vertical_pair(h: usize) -> Tab {
+        let tab = Tab::with_header_rows(&size(24, 80), h);
+        tab.assign_pane(&FakePane::new(1, size(24, 80)));
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, vert).unwrap();
+        assert_eq!(
+            tab.split_and_insert(0, vert, FakePane::new(2, split.second))
+                .unwrap(),
+            1
+        );
+        tab
+    }
+
+    #[test]
+    fn header_row_geometry() {
+        let tab = Tab::with_header_rows(&size(24, 80), 1);
+        let p1 = FakePane::new(1, size(24, 80));
+        tab.assign_pane(&p1);
+        assert_eq!(current_size(&p1), size(23, 80));
+        let panes = tab.iter_panes();
+        assert_eq!(
+            (panes[0].top, panes[0].height, panes[0].pixel_height),
+            (1, 23, 575)
+        );
+
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, vert).unwrap();
+        assert_eq!((split.first.rows, split.second.rows), (11, 12)); // slots
+        assert_eq!(
+            tab.split_and_insert(0, vert, FakePane::new(2, split.second))
+                .unwrap(),
+            1
+        );
+
+        let panes = tab.iter_panes();
+        assert_eq!(
+            (panes[0].top, panes[0].height, panes[0].pixel_height),
+            (1, 10, 250)
+        );
+        assert_eq!(
+            (panes[1].top, panes[1].height, panes[1].pixel_height),
+            (13, 11, 275)
+        );
+        assert_eq!(tab.get_pane_direction(PaneDirection::Up, false), Some(0));
+        tab.set_active_idx(0);
+        assert_eq!(tab.get_pane_direction(PaneDirection::Down, false), Some(1));
+    }
+
+    #[test]
+    fn header_row_min_size() {
+        let tab = vertical_pair(1); // helper: h=1, 80x24, one vertical split (slots 11/12)
+        tab.resize(size(3, 80));
+        assert_eq!(tab.get_size().rows, 5); // 2 + 1 + 2
+        assert!(tab.iter_panes().iter().all(|p| p.height >= 1));
+    }
+
+    #[test]
+    fn header_row_min_size_nested() {
+        // slots 11 / (5 / 6): the lower subtree reaches its minimum first.
+        let tab = vertical_pair(1);
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(1, vert).unwrap();
+        tab.split_and_insert(1, vert, FakePane::new(3, split.second))
+            .unwrap();
+        tab.resize(size(3, 80));
+        assert_eq!(tab.get_size().rows, 8); // 2 + 1 + 2 + 1 + 2
+        assert!(tab.iter_panes().iter().all(|p| p.height == 1));
+    }
+
+    #[test]
+    fn header_row_split_needs_two_rows() {
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        for (h, ok) in [(0, true), (1, false)] {
+            let tab = Tab::with_header_rows(&size(4, 80), h);
+            tab.assign_pane(&FakePane::new(1, size(4, 80)));
+            let split = tab.compute_split_size(0, vert).unwrap();
+            assert_eq!(
+                tab.split_and_insert(0, vert, FakePane::new(2, split.second))
+                    .is_ok(),
+                ok
+            );
+        }
+    }
+
+    #[test]
+    fn header_row_split_drag_keeps_two_rows() {
+        let tab = vertical_pair(1);
+        tab.resize_split_by(0, -100);
+        let p = tab.iter_panes();
+        assert_eq!((p[0].height, p[1].height), (1, 20));
+        tab.resize_split_by(0, 100);
+        let p = tab.iter_panes();
+        assert_eq!((p[0].height, p[1].height), (20, 1));
+    }
+
+    #[test]
+    fn header_row_rebuild_is_fixed_point() {
+        let tab = vertical_pair(1);
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        tab.split_and_insert(0, horz, FakePane::new(3, split.second))
+            .unwrap();
+        let geometry = |t: &Tab| -> Vec<_> {
+            t.iter_panes()
+                .iter()
+                .map(|p| (p.index, p.left, p.top, p.width, p.height))
+                .collect()
+        };
+        let (before, splits, sz) = (geometry(&tab), tab.iter_splits(), tab.get_size());
+        tab.rebuild_splits_sizes_from_contained_panes();
+        assert_eq!(
+            (geometry(&tab), tab.iter_splits(), tab.get_size()),
+            (before, splits, sz)
+        );
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
