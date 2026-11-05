@@ -57,8 +57,6 @@ pub(crate) fn ids(panes: &[Arc<dyn Pane>]) -> Vec<PaneId> {
 }
 
 /// The value of the most recent `focus_changed` call, if any.
-// Not exercised until the tab.rs tests that follow this helper land.
-#[allow(dead_code)]
 pub(crate) fn last_focus(pane: &Arc<dyn Pane>) -> Option<bool> {
     let fake = pane
         .downcast_ref::<FakePane>()
