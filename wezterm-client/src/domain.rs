@@ -8,7 +8,7 @@ use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
-use mux::tab::{member_size, SplitRequest, Tab, TabId};
+use mux::tab::{member_size, SplitRequest, Tab, TabId, MAX_HEADER_ROWS};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
@@ -897,16 +897,27 @@ impl Domain for ClientDomain {
 
         inner.record_remote_to_local_window_mapping(result.window_id, window);
 
+        // Clamp once where the server's value enters, so that the pane and the
+        // tab agree and member_size cannot overflow on a bogus value.
+        let header_rows = result.header_rows.min(MAX_HEADER_ROWS);
+        if header_rows != result.header_rows {
+            log::warn!(
+                "spawn: server sent header_rows {} out of range, using {}",
+                result.header_rows,
+                header_rows
+            );
+        }
+
         let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
             &inner,
             result.tab_id,
             result.pane_id,
             // The pane lives below the server's header rows, so it is
             // smaller than the tab.
-            member_size(&size, result.header_rows),
+            member_size(&size, header_rows),
             "wezterm",
         ));
-        let tab = Arc::new(Tab::with_header_rows(&size, result.header_rows));
+        let tab = Arc::new(Tab::with_header_rows(&size, header_rows));
         tab.assign_pane(&pane);
         inner.remove_old_tab_mapping(result.tab_id);
         inner.record_remote_to_local_tab_mapping(result.tab_id, tab.tab_id());
