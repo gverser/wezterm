@@ -738,6 +738,21 @@ impl Tab {
         self.inner.lock().toggle_zoom()
     }
 
+    /// True if `pane_id` is a member, visible or hidden, of the zoomed
+    /// leaf. False while not zoomed.
+    pub fn zoomed_leaf_contains(&self, pane_id: PaneId) -> bool {
+        self.inner.lock().zoomed_leaf_contains(pane_id)
+    }
+
+    /// Applies a request to zoom (`zoomed`) or unzoom `pane`. Zoom belongs
+    /// to a leaf: asking to zoom a member of the zoomed leaf brings it to
+    /// the front and keeps the zoom, and asking to unzoom any member of it
+    /// unzooms. A request about a pane outside the zoomed leaf zooms that
+    /// pane's leaf, or does nothing if it asks to unzoom.
+    pub fn set_pane_zoomed(&self, pane: &Arc<dyn Pane>, zoomed: bool) {
+        self.inner.lock().set_pane_zoomed(pane, zoomed)
+    }
+
     pub fn contains_pane(&self, pane: PaneId) -> bool {
         self.inner.lock().contains_pane(pane)
     }
@@ -881,7 +896,8 @@ impl Tab {
     }
 
     /// Activates the leaf holding `pane`, first making `pane` its visible
-    /// member if it is hidden.
+    /// member if it is hidden. Within the zoomed leaf the zoom stays and
+    /// moves to `pane`.
     pub fn set_active_pane(&self, pane: &Arc<dyn Pane>) {
         self.inner.lock().set_active_pane(pane)
     }
@@ -899,7 +915,8 @@ impl Tab {
 
     /// Adds `pane` to the stack of the leaf holding `target_pane_id`, at
     /// `index` (clamped), or right after the visible member for `None`.
-    /// The new member becomes visible and is sized to the leaf's members.
+    /// The new member becomes visible and is sized to the leaf's members;
+    /// in the zoomed leaf that is the zoom size, and the zoom moves to it.
     /// Fails, leaving the tab untouched, if the tab has no header rows,
     /// `target_pane_id` is not in it, `pane` already is, or `pane` refuses
     /// its size.
@@ -1136,7 +1153,16 @@ impl TabInner {
     /// Makes `pane_id` the visible member of leaf `leaf`; does nothing if
     /// it is not a member there. Every change of a stack's visible member
     /// goes through here, so that whatever has to follow such a change is
-    /// done in one place.
+    /// done in one place. The one exception is removal: `remove_where`
+    /// picks the successor itself, and by the time this runs the removed
+    /// member is gone from the tree, so `remove_pane_if` hands the zoom
+    /// over on its own and only calls this afterwards for the focus rule.
+    ///
+    /// If `leaf` is the zoomed leaf, the zoom stays and moves to the new
+    /// visible member, so that `zoomed` never names a hidden member. All
+    /// members of that leaf already have the zoom size. Neither member is
+    /// told about it through `Pane::set_zoomed`: on a `ClientPane` that
+    /// sends the server a request to zoom or unzoom.
     ///
     /// The member pushed out of view, and the visible member of a leaf
     /// other than the active one, are told directly that they are not
@@ -1150,18 +1176,23 @@ impl TabInner {
     /// told the opposite first.
     fn show_member(&mut self, leaf: usize, pane_id: PaneId) {
         let active = self.active;
+        let zoomed_id = self.zoomed.as_ref().map(|p| p.pane_id());
         let shown = self
             .with_leaf_at(leaf, |stack| {
                 let index = stack.position_of(pane_id)?;
                 let before = Arc::clone(stack.visible_pane());
                 stack.set_visible(index);
-                Some((before, Arc::clone(stack.visible_pane())))
+                let holds_zoom = zoomed_id.map_or(false, |id| stack.position_of(id).is_some());
+                Some((before, Arc::clone(stack.visible_pane()), holds_zoom))
             })
             .flatten();
-        let (before, now) = match shown {
+        let (before, now, holds_zoom) = match shown {
             Some(shown) => shown,
             None => return,
         };
+        if holds_zoom {
+            self.zoomed.replace(Arc::clone(&now));
+        }
         if before.pane_id() != now.pane_id() {
             before.focus_changed(false);
         }
@@ -1236,6 +1267,35 @@ impl TabInner {
             }
         }
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+    }
+
+    fn zoomed_leaf_contains(&self, pane_id: PaneId) -> bool {
+        let (zoomed_id, root) = match (&self.zoomed, &self.pane) {
+            (Some(zoomed), Some(root)) => (zoomed.pane_id(), root),
+            _ => return false,
+        };
+        leaves(root).iter().any(|stack| {
+            stack.position_of(zoomed_id).is_some() && stack.position_of(pane_id).is_some()
+        })
+    }
+
+    fn set_pane_zoomed(&mut self, pane: &Arc<dyn Pane>, zoomed: bool) {
+        // With no header rows every leaf holds a single pane, and these arms
+        // do what the mux server's SetPaneZoomed handler did before zoom
+        // went per leaf: the first arm is then a no-op, as set_active_pane
+        // returns early for the pane that is already zoomed.
+        match (self.zoomed_leaf_contains(pane.pane_id()), zoomed) {
+            (true, true) => self.set_active_pane(pane),
+            (true, false) => {
+                self.set_zoomed(false);
+            }
+            (false, true) => {
+                self.set_zoomed(false);
+                self.set_active_pane(pane);
+                self.set_zoomed(true);
+            }
+            (false, false) => {}
+        }
     }
 
     /// True if any stack holds `pane`, as a visible or hidden member.
@@ -2030,8 +2090,20 @@ impl TabInner {
                     }
                     if let Some(zoomed_id) = zoomed_pane {
                         if removed.iter().any(|p| p.pane_id() == zoomed_id) {
-                            // If we removed the zoomed pane, un-zoom our state!
-                            self.zoomed.take();
+                            if emptied {
+                                // The zoomed leaf is going away, and the
+                                // zoom with it.
+                                self.zoomed.take();
+                            } else {
+                                // The leaf stays zoomed and the zoom passes
+                                // to the member that took over, which already
+                                // has the zoom size. This has to happen here:
+                                // show_member, run below, no longer finds the
+                                // removed pane in the tree to see it go.
+                                // Pane::set_zoomed is left alone, as in
+                                // show_member.
+                                self.zoomed.replace(Arc::clone(stack.visible_pane()));
+                            }
                         }
                     }
                     dead_panes.extend(removed);
@@ -2096,9 +2168,10 @@ impl TabInner {
             removed_indices.retain(|&idx| idx <= active_idx);
             self.active = active_idx.saturating_sub(removed_indices.len());
 
-            // remove_where already made each successor visible; it still goes
-            // through show_member, which can only run once the tree is back
-            // in place and the active leaf is settled. Header-less tabs have
+            // remove_where already made each successor visible, and the zoom
+            // was handed over above; show_member still runs for its focus
+            // rule, which can only be applied once the tree is back in place
+            // and the active leaf is settled. Header-less tabs have
             // single-member stacks and never get here.
             for pane_id in successors {
                 if let Some(leaf) = self.leaf_index_of(pane_id) {
@@ -2157,14 +2230,18 @@ impl TabInner {
             return;
         }
 
-        if self.zoomed.is_some() {
+        let pane_id = pane.pane_id();
+        // Switching to another member of the zoomed leaf is not switching
+        // panes: show_member below hands the zoom over to it. Without
+        // header rows the only member is the zoomed pane itself, which
+        // returned above, so this behaves as before.
+        if self.zoomed.is_some() && !self.zoomed_leaf_contains(pane_id) {
             if !configuration().unzoom_on_switch_pane {
                 return;
             }
             self.toggle_zoom();
         }
 
-        let pane_id = pane.pane_id();
         if let Some(leaf) = self.leaf_index_of(pane_id) {
             self.active = leaf;
             self.recency.tag(leaf);
@@ -2215,9 +2292,13 @@ impl TabInner {
             // A pane in two stacks would confuse leaf_index_of and closing.
             anyhow::bail!("pane {} is already in tab {}", pane_id, self.id);
         }
-        let slot = self
-            .slot_of_leaf(leaf)
-            .ok_or_else(|| anyhow::anyhow!("tab {} has no leaf {}", self.id, leaf))?;
+        // The zoomed leaf's slot is the whole tab, whatever the splits say.
+        let slot = if self.zoomed_leaf_contains(target_pane_id) {
+            self.size
+        } else {
+            self.slot_of_leaf(leaf)
+                .ok_or_else(|| anyhow::anyhow!("tab {} has no leaf {}", self.id, leaf))?
+        };
         // Every member of a stack has the same size. Size it before it joins,
         // so that a refusal leaves the tab as it was, as in split_and_insert.
         pane.resize(member_size(&slot, header_rows))?;
@@ -3336,6 +3417,120 @@ mod test {
             (ids(&s[0].panes), ids(&s[1].panes)),
             (vec![4], vec![1, 2, 3])
         );
+    }
+
+    /// `stacked_tab` split horizontally, so that leaf 1 holds pane 4; then
+    /// leaf 0 (panes 1, 2 and 3, with pane 3 visible) is activated and
+    /// zoomed.
+    fn zoomable_tab() -> (Tab, [Arc<dyn Pane>; 4]) {
+        let (tab, [p1, p2, p3]) = stacked_tab();
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        let p4 = FakePane::new(4, split.second);
+        tab.split_and_insert(0, horz, Arc::clone(&p4)).unwrap();
+        tab.set_active_pane(&p3);
+        tab.set_zoomed(true);
+        (tab, [p1, p2, p3, p4])
+    }
+
+    #[test]
+    fn zoom_covers_leaf_and_keeps_header() {
+        let (tab, [p1, p2, p3, p4]) = zoomable_tab();
+        let panes = tab.iter_panes();
+        assert_eq!(
+            (
+                panes.len(),
+                panes[0].pane.pane_id(),
+                panes[0].top,
+                panes[0].height,
+                panes[0].width
+            ),
+            (1, 3, 1, 23, 80)
+        );
+        for p in [&p1, &p2, &p3] {
+            assert_eq!(current_size(p), size(23, 80));
+        }
+        assert_eq!(current_size(&p4).cols, 40);
+        assert_eq!(tab.iter_stacks().len(), 1);
+    }
+
+    #[test]
+    fn zoom_survives_switch_inside_leaf() {
+        let (tab, [p1, ..]) = zoomable_tab();
+        tab.set_active_pane(&p1);
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 1);
+        assert_eq!(tab.iter_panes()[0].pane.pane_id(), 1);
+    }
+
+    #[test]
+    fn zoom_survives_closing_visible() {
+        let (tab, [p1, ..]) = zoomable_tab();
+        tab.set_active_pane(&p1);
+        tab.remove_pane(1);
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 2);
+    }
+
+    #[test]
+    fn zoom_ends_when_leaf_goes() {
+        let (tab, _) = zoomable_tab();
+        for id in [1, 2, 3] {
+            tab.remove_pane(id);
+        }
+        assert!(tab.get_zoomed_pane().is_none());
+        let panes = tab.iter_panes();
+        assert_eq!(
+            (
+                panes.len(),
+                panes[0].pane.pane_id(),
+                panes[0].width,
+                panes[0].height
+            ),
+            (1, 4, 80, 23)
+        );
+    }
+
+    #[test]
+    fn set_pane_zoomed_semantics() {
+        let (tab, [p1, p2, _p3, p4]) = zoomable_tab();
+        assert!(tab.zoomed_leaf_contains(1) && !tab.zoomed_leaf_contains(4));
+        tab.set_pane_zoomed(&p1, true); // hidden member: brought to front, zoom kept
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 1);
+        tab.set_pane_zoomed(&p4, false); // other leaf: nothing
+        assert!(tab.get_zoomed_pane().is_some());
+        tab.set_pane_zoomed(&p2, false); // hidden member of the zoomed leaf: unzoom
+        assert!(tab.get_zoomed_pane().is_none());
+        tab.set_pane_zoomed(&p4, true);
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 4);
+        assert_eq!(tab.get_active_pane().unwrap().pane_id(), 4);
+    }
+
+    #[test]
+    fn switch_to_other_leaf_unzooms() {
+        let (tab, [.., p4]) = zoomable_tab();
+        tab.set_active_pane(&p4); // unzoom_on_switch_pane defaults to true
+        assert!(tab.get_zoomed_pane().is_none());
+        assert_eq!(tab.get_active_pane().unwrap().pane_id(), 4);
+    }
+
+    #[test]
+    fn zoom_follows_pane_added_to_zoomed_leaf() {
+        let (tab, _) = zoomable_tab();
+        let p5 = FakePane::new(5, size(23, 39));
+        tab.add_pane_to_stack(1, None, Arc::clone(&p5)).unwrap();
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 5);
+        assert_eq!(tab.iter_panes()[0].pane.pane_id(), 5);
+        assert_eq!(current_size(&p5), size(23, 80)); // zoom size, not the leaf's slot
+    }
+
+    #[test]
+    fn zoom_follows_reorder_inside_zoomed_leaf() {
+        let (tab, _) = zoomable_tab(); // zoomed leaf [1, 2, 3], pane 3 visible
+        tab.move_pane_to_stack(1, 3, 0).unwrap(); // pane 1 becomes visible
+        assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 1);
+        assert_eq!(tab.iter_panes()[0].pane.pane_id(), 1);
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {

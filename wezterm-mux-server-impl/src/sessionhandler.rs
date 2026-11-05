@@ -582,24 +582,10 @@ impl SessionHandler {
                             let tab = mux
                                 .get_tab(containing_tab_id)
                                 .ok_or_else(|| anyhow!("no such tab {}", containing_tab_id))?;
-                            match tab.get_zoomed_pane() {
-                                Some(p) => {
-                                    let is_zoomed = p.pane_id() == pane_id;
-                                    if is_zoomed != zoomed {
-                                        tab.set_zoomed(false);
-                                        if zoomed {
-                                            tab.set_active_pane(&pane);
-                                            tab.set_zoomed(zoomed);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    if zoomed {
-                                        tab.set_active_pane(&pane);
-                                        tab.set_zoomed(zoomed);
-                                    }
-                                }
-                            }
+                            // Zoom belongs to a leaf: the client may ask about
+                            // any member of the zoomed leaf, not just the one
+                            // this side last saw zoomed.
+                            tab.set_pane_zoomed(&pane, zoomed);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
