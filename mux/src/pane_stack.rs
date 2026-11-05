@@ -32,6 +32,12 @@ pub fn member_size(slot: &TerminalSize, header_rows: usize) -> TerminalSize {
     }
 }
 
+/// The fewest rows a leaf slot may have: one row for a member plus the
+/// reserved header rows.
+pub fn min_leaf_rows(header_rows: usize) -> usize {
+    1 + header_rows
+}
+
 /// Inverse of `member_size`: the slot size needed to hold a member of
 /// size `member` plus `header_rows`.
 pub fn slot_size(member: &TerminalSize, header_rows: usize) -> TerminalSize {

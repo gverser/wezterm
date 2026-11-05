@@ -14,7 +14,7 @@ use std::sync::Arc;
 use url::Url;
 use wezterm_term::{StableRowIndex, TerminalSize};
 
-pub use crate::pane_stack::{member_size, slot_size, PaneStack, MAX_HEADER_ROWS};
+pub use crate::pane_stack::{member_size, min_leaf_rows, slot_size, PaneStack, MAX_HEADER_ROWS};
 
 pub type Tree = bintree::Tree<PaneStack, SplitDirectionAndSize>;
 pub type Cursor = bintree::Cursor<PaneStack, SplitDirectionAndSize>;
@@ -370,11 +370,22 @@ where
 {
     match tree {
         bintree::Tree::Empty => Tree::Empty,
-        bintree::Tree::Node { left, right, data } => Tree::Node {
-            left: Box::new(build_from_pane_tree(*left, active, zoomed, make_pane)),
-            right: Box::new(build_from_pane_tree(*right, active, zoomed, make_pane)),
-            data,
-        },
+        bintree::Tree::Node { left, right, data } => {
+            let left = build_from_pane_tree(*left, active, zoomed, make_pane);
+            let right = build_from_pane_tree(*right, active, zoomed, make_pane);
+            // An Empty child under a Node would stop bintree's preorder walk
+            // and hide the right-hand siblings from `iter_panes`, so collapse
+            // the split instead.
+            match (left, right) {
+                (Tree::Empty, Tree::Empty) => Tree::Empty,
+                (Tree::Empty, other) | (other, Tree::Empty) => other,
+                (left, right) => Tree::Node {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    data,
+                },
+            }
+        }
         bintree::Tree::Leaf(stack_entry) => {
             let mut panes = vec![];
             for entry in stack_entry.panes {
@@ -488,7 +499,7 @@ fn compute_min_size(tree: &mut Tree, header_rows: usize) -> (usize, usize) {
                 SplitDirection::Horizontal => (left_x + right_x + 1, left_y.max(right_y)),
             }
         }
-        Tree::Leaf(_) => (1, 1 + header_rows),
+        Tree::Leaf(_) => (1, min_leaf_rows(header_rows)),
     }
 }
 
@@ -1778,7 +1789,7 @@ impl TabInner {
 
     fn adjust_node_at_cursor(&mut self, cursor: &mut Cursor, delta: isize) {
         let cell_dimensions = self.cell_dimensions();
-        let header_rows = self.header_rows as isize;
+        let min_rows = min_leaf_rows(self.header_rows) as isize;
         if let Ok(Some(node)) = cursor.node_mut() {
             match node.direction {
                 SplitDirection::Horizontal => {
@@ -1805,8 +1816,8 @@ impl TabInner {
                     let mut rows = node.first.rows as isize;
                     rows = rows
                         .saturating_add(delta)
-                        .max(1 + header_rows)
-                        .min((height as isize).saturating_sub(2 + header_rows));
+                        .max(min_rows)
+                        .min((height as isize).saturating_sub(1 + min_rows));
                     node.first.rows = rows as usize;
                     node.first.pixel_height =
                         node.first.rows.saturating_mul(cell_dimensions.pixel_height);
@@ -2411,9 +2422,19 @@ impl TabInner {
             let to_leaf = self.leaf_index_of(target_pane_id).ok_or_else(|| {
                 anyhow::anyhow!("pane {} vanished from tab {}", target_pane_id, self.id)
             })?;
+            // The pane has already left its old leaf, so failing to land it
+            // must be reported rather than silently dropping the pane.
             self.edit_stack(to_leaf, |stack| {
                 stack.insert(index, Arc::clone(&pane));
-            });
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no stack at leaf {} to receive pane {} in tab {}",
+                    to_leaf,
+                    pane_id,
+                    self.id
+                )
+            })?;
             if let Some(slot) = self.slot_of_leaf(to_leaf) {
                 // The pane has already left its old leaf, so a refusal can't
                 // undo the move any more; it keeps its old size instead.
@@ -2550,7 +2571,7 @@ impl TabInner {
         }
 
         // A leaf needs a member row below its header rows.
-        let min_leaf_rows = 1 + self.header_rows;
+        let min_rows = min_leaf_rows(self.header_rows);
 
         if request.top_level {
             let size = self.size;
@@ -2562,7 +2583,7 @@ impl TabInner {
                 ),
                 SplitDirection::Vertical => (
                     (size.cols as usize, size.cols as usize),
-                    split_dimension(size.rows as usize, request, min_leaf_rows),
+                    split_dimension(size.rows as usize, request, min_rows),
                 ),
             };
 
@@ -2598,7 +2619,7 @@ impl TabInner {
                 ),
                 SplitDirection::Vertical => (
                     (slot.cols, slot.cols),
-                    split_dimension(slot.rows, request, min_leaf_rows),
+                    split_dimension(slot.rows, request, min_rows),
                 ),
             };
 
@@ -2642,9 +2663,9 @@ impl TabInner {
             let tab_size = self.size;
             let header_rows = self.header_rows;
             // Each side needs a member row below its header rows.
-            if split_info.first.rows < 1 + header_rows
+            if split_info.first.rows < min_leaf_rows(header_rows)
                 || split_info.first.cols == 0
-                || split_info.second.rows < 1 + header_rows
+                || split_info.second.rows < min_leaf_rows(header_rows)
                 || split_info.second.cols == 0
                 || split_info.top_of_second() + split_info.second.rows > tab_size.rows
                 || split_info.left_of_second() + split_info.second.cols > tab_size.cols
@@ -3430,6 +3451,40 @@ mod test {
     }
 
     #[test]
+    fn empty_stack_under_split_collapses_the_split() {
+        // Malformed wire data: an empty stack on one side of a split must not
+        // leave an Empty under a Node, which would hide the siblings to its
+        // right from the preorder walk behind `iter_panes`.
+        let node = PaneNode::Split {
+            left: Box::new(PaneNode::Leaf(PaneStackEntry {
+                panes: vec![],
+                visible: 0,
+                header_rows: 1,
+            })),
+            right: Box::new(PaneNode::Leaf(PaneStackEntry {
+                panes: vec![entry(2, 1, 40, 23, 40)],
+                visible: 0,
+                header_rows: 1,
+            })),
+            node: SplitDirectionAndSize {
+                direction: SplitDirection::Horizontal,
+                first: size(24, 39),
+                second: size(24, 40),
+            },
+        };
+        let tab = Tab::new(&size(24, 80));
+        tab.sync_with_pane_tree(size(24, 80), node, |e| FakePane::new(e.pane_id, e.size));
+        assert_eq!(
+            tab.iter_panes()
+                .iter()
+                .map(|p| p.pane.pane_id())
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(ids(&tab.iter_all_panes()), vec![2]);
+    }
+
+    #[test]
     fn stack_add_shows_new_pane() {
         let (tab, [p1, p2, p3]) = stacked_tab();
         let panes = tab.iter_panes();
@@ -3567,6 +3622,39 @@ mod test {
         assert_eq!(
             (last_focus(&p3), last_focus(&p1)),
             (Some(true), Some(false))
+        );
+    }
+
+    #[test]
+    fn stack_move_from_earlier_leaf_into_later_leaf() {
+        // Source leaf before the target leaf: removing the pane collapses
+        // leaf 0, so the target moves from leaf index 1 to 0 and has to be
+        // looked up again.
+        let tab = Tab::with_header_rows(&size(24, 80), 1);
+        let p1 = FakePane::new(1, size(24, 80));
+        tab.assign_pane(&p1);
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        tab.split_and_insert(0, horz, FakePane::new(2, split.second))
+            .unwrap();
+        assert_eq!(tab.iter_stacks().len(), 2);
+
+        tab.move_pane_to_stack(1, 2, 1).unwrap();
+
+        let stacks = tab.iter_stacks();
+        assert_eq!(
+            (stacks.len(), ids(&stacks[0].panes), stacks[0].visible),
+            (1, vec![2, 1], 1)
+        );
+        assert_eq!(tab.get_active_pane().unwrap().pane_id(), 1);
+        assert_eq!(tab.iter_panes()[0].pane.pane_id(), 1);
+        assert_eq!(
+            current_size(&p1),
+            member_size(&size(24, 80), 1),
+            "moved pane is sized for the whole tab"
         );
     }
 
@@ -3752,6 +3840,91 @@ mod test {
         tab.move_pane_to_stack(1, 3, 0).unwrap(); // pane 1 becomes visible
         assert_eq!(tab.get_zoomed_pane().unwrap().pane_id(), 1);
         assert_eq!(tab.iter_panes()[0].pane.pane_id(), 1);
+    }
+
+    #[test]
+    fn h0_adds_no_resize_calls() {
+        // With header_rows = 0 every pane must see exactly the resize calls
+        // the upstream algorithm makes (tmux panes turn each one into a
+        // command). Expected counts, derived by reading upstream tab.rs at
+        // 80de2bac5 for panes p1 (left) and p2 (right, active):
+        //  - assign_pane: upstream assigns the root without resizing: p1 0.
+        //  - split_and_insert: pane1.resize(first), pane2.resize(second):
+        //    p1 1, p2 1.
+        //  - resize_split_by: cascade_size_from_cursor resizes each leaf
+        //    below the split once: p1 2, p2 2.
+        //  - set_zoomed(true): toggle_zoom resizes only the active pane
+        //    (p2) to the tab size: p2 3.
+        //  - set_zoomed(false): Tab::resize -> apply_sizes_from_splits
+        //    resizes every leaf once: p1 3, p2 4.
+        //  - remove_pane(2): the pane removed is not resized; the leaf that
+        //    takes over the parent's slot is resized once (`unsplit.resize`):
+        //    p1 4, p2 4.
+        let tab = Tab::new(&size(24, 80));
+        let p1 = FakePane::new(1, size(24, 80));
+        tab.assign_pane(&p1);
+        assert_eq!(resize_count(&p1), 0);
+
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        let p2 = FakePane::new(2, split.second);
+        tab.split_and_insert(0, horz, Arc::clone(&p2)).unwrap();
+        assert_eq!((resize_count(&p1), resize_count(&p2)), (1, 1));
+
+        tab.resize_split_by(0, 5);
+        assert_eq!((resize_count(&p1), resize_count(&p2)), (2, 2));
+
+        tab.set_zoomed(true);
+        assert_eq!((resize_count(&p1), resize_count(&p2)), (2, 3));
+
+        tab.set_zoomed(false);
+        assert_eq!((resize_count(&p1), resize_count(&p2)), (3, 4));
+
+        tab.remove_pane(2);
+        assert_eq!((resize_count(&p1), resize_count(&p2)), (4, 4));
+    }
+
+    /// An 80x24 tab with one header row and leaves [1, 2] (pane 2 visible),
+    /// [3] and [4], split side by side.
+    fn three_leaf_tab() -> Tab {
+        let tab = Tab::with_header_rows(&size(24, 80), 1);
+        tab.assign_pane(&FakePane::new(1, size(24, 80)));
+        tab.add_pane_to_stack(1, None, FakePane::new(2, size(24, 80)))
+            .unwrap();
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        for (leaf, id) in [(0, 3), (1, 4)] {
+            let split = tab.compute_split_size(leaf, horz).unwrap();
+            tab.split_and_insert(leaf, horz, FakePane::new(id, split.second))
+                .unwrap();
+        }
+        tab
+    }
+
+    #[test]
+    fn rotate_moves_whole_stacks() {
+        let layout = |tab: &Tab| -> Vec<(Vec<PaneId>, usize)> {
+            tab.iter_stacks()
+                .iter()
+                .map(|s| (ids(&s.panes), s.visible))
+                .collect()
+        };
+        let (s0, s1, s2) = ((vec![1, 2], 1), (vec![3], 0), (vec![4], 0));
+        let tab = three_leaf_tab();
+        assert_eq!(layout(&tab), vec![s0.clone(), s1.clone(), s2.clone()]);
+
+        // Same movement as upstream applies to single panes.
+        tab.rotate_counter_clockwise();
+        assert_eq!(layout(&tab), vec![s1.clone(), s2.clone(), s0.clone()]);
+
+        let tab = three_leaf_tab();
+        tab.rotate_clockwise();
+        assert_eq!(layout(&tab), vec![s2, s0, s1]);
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {

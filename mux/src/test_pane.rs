@@ -18,6 +18,7 @@ pub(crate) struct FakePane {
     size: Mutex<TerminalSize>,
     focus: Mutex<Option<bool>>,
     fail_resize: bool,
+    resizes: Mutex<usize>,
 }
 
 impl FakePane {
@@ -27,6 +28,7 @@ impl FakePane {
             size: Mutex::new(size),
             focus: Mutex::new(None),
             fail_resize: false,
+            resizes: Mutex::new(0),
         })
     }
 
@@ -37,6 +39,7 @@ impl FakePane {
             size: Mutex::new(size),
             focus: Mutex::new(None),
             fail_resize: true,
+            resizes: Mutex::new(0),
         })
     }
 }
@@ -71,6 +74,15 @@ pub(crate) fn current_size(pane: &Arc<dyn Pane>) -> TerminalSize {
         .expect("current_size: not a FakePane");
     let size = *fake.size.lock();
     size
+}
+
+/// How many times `resize` has been called on the pane, failed calls included.
+pub(crate) fn resize_count(pane: &Arc<dyn Pane>) -> usize {
+    let fake = pane
+        .downcast_ref::<FakePane>()
+        .expect("resize_count: not a FakePane");
+    let count = *fake.resizes.lock();
+    count
 }
 
 impl Pane for FakePane {
@@ -142,10 +154,11 @@ impl Pane for FakePane {
     fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>> {
         Ok(None)
     }
-    fn writer(&self) -> MappedMutexGuard<dyn std::io::Write> {
+    fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
         unimplemented!()
     }
     fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
+        *self.resizes.lock() += 1;
         if self.fail_resize {
             anyhow::bail!("FakePane {} refuses to resize", self.id);
         }
