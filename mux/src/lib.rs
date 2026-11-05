@@ -40,11 +40,14 @@ pub mod connui;
 pub mod domain;
 pub mod localpane;
 pub mod pane;
+pub mod pane_stack;
 pub mod renderable;
 pub mod ssh;
 pub mod ssh_agent;
 pub mod tab;
 pub mod termwiztermtab;
+#[cfg(test)]
+mod test_pane;
 pub mod tmux;
 pub mod tmux_commands;
 mod tmux_pty;
