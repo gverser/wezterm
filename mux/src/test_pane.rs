@@ -17,6 +17,7 @@ pub(crate) struct FakePane {
     id: PaneId,
     size: Mutex<TerminalSize>,
     focus: Mutex<Option<bool>>,
+    fail_resize: bool,
 }
 
 impl FakePane {
@@ -25,6 +26,17 @@ impl FakePane {
             id,
             size: Mutex::new(size),
             focus: Mutex::new(None),
+            fail_resize: false,
+        })
+    }
+
+    /// A pane whose `resize` always fails, for exercising error paths.
+    pub(crate) fn with_failing_resize(id: PaneId, size: TerminalSize) -> Arc<dyn Pane> {
+        Arc::new(Self {
+            id,
+            size: Mutex::new(size),
+            focus: Mutex::new(None),
+            fail_resize: true,
         })
     }
 }
@@ -136,6 +148,9 @@ impl Pane for FakePane {
         unimplemented!()
     }
     fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
+        if self.fail_resize {
+            anyhow::bail!("FakePane {} refuses to resize", self.id);
+        }
         *self.size.lock() = size;
         Ok(())
     }

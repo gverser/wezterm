@@ -2232,8 +2232,17 @@ impl TabInner {
                 } else {
                     (&new_stack, &*existing_stack)
                 };
-                stack1.resize_all(first_member)?;
-                stack2.resize_all(second_member)?;
+                let resized = stack1
+                    .resize_all(first_member)
+                    .and_then(|()| stack2.resize_all(second_member));
+                if let Err(err) = resized {
+                    // The tree was taken out of self.pane above; put it back
+                    // unsplit before failing, or the next take().unwrap()
+                    // on this tab panics (in the mux server, that takes down
+                    // every session).
+                    self.pane.replace(cursor.tree());
+                    return Err(err);
+                }
             }
 
             let result = if request.target_is_second {
@@ -2711,6 +2720,28 @@ mod test {
             (geometry(&tab), tab.iter_splits(), tab.get_size()),
             (before, splits, sz)
         );
+    }
+
+    #[test]
+    fn failed_split_resize_keeps_the_tab_usable() {
+        // The refusing new pane is resized second when it goes right and
+        // first when it goes left, so both early returns are covered.
+        for target_is_second in [true, false] {
+            let tab = Tab::new(&size(24, 80));
+            tab.assign_pane(&FakePane::new(1, size(24, 80)));
+            let vert = SplitRequest {
+                direction: SplitDirection::Vertical,
+                target_is_second,
+                ..Default::default()
+            };
+            let split = tab.compute_split_size(0, vert).unwrap();
+            let refusing = FakePane::with_failing_resize(2, split.second);
+            assert!(tab.split_and_insert(0, vert, refusing).is_err());
+
+            let panes = tab.iter_panes();
+            assert_eq!(panes.len(), 1);
+            assert_eq!(panes[0].pane.pane_id(), 1);
+        }
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
