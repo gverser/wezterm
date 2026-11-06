@@ -128,7 +128,19 @@ fn marker_width(tab: &StripTab) -> usize {
 
 /// " " + marker + title + " × " — the fixed parts are 4 cells.
 fn natural_width(tab: &StripTab) -> usize {
-    unicode_column_width(&tab.title, None) + 4 + marker_width(tab)
+    Graphemes::new(&tab.title)
+        .map(grapheme_width)
+        .sum::<usize>()
+        + 4
+        + marker_width(tab)
+}
+
+/// Width of a grapheme as `Cell` will actually store it. Measuring with
+/// anything else (e.g. `unicode_column_width`) disagrees for zero-width
+/// graphemes and control chars, which `Cell` still gives one column, and
+/// that would push the trailing " × " out of its hit region.
+fn grapheme_width(g: &str) -> usize {
+    Cell::new_grapheme(g, CellAttributes::default(), None).width()
 }
 
 /// Append `s` grapheme by grapheme. A wide grapheme is followed by a blank
@@ -157,7 +169,7 @@ fn tab_cells(tab: &StripTab, w: usize, attrs: &CellAttributes) -> Vec<Cell> {
     let budget = w.saturating_sub(fixed);
     let mut used = 0;
     for g in Graphemes::new(&tab.title) {
-        let gw = unicode_column_width(g, None);
+        let gw = grapheme_width(g);
         if used + gw > budget {
             break;
         }
@@ -361,6 +373,37 @@ mod test {
         assert!(!s.hits.is_empty());
         for h in &s.hits {
             assert!(h.x + h.width <= 30, "{:?}", h);
+        }
+    }
+
+    #[test]
+    fn strip_ignores_zero_width_graphemes() {
+        for title in [
+            "a\u{200B}b",
+            "a\u{200B}\u{200B}\u{200B}b",
+            "a\tb",
+            "\u{0301}ab",
+            "a\u{200E}b",
+        ] {
+            for width in [20, 12, 9] {
+                let s = layout_strip(
+                    &[tab(1, title, true, false), tab(2, "z", false, false)],
+                    true,
+                    width,
+                    &style(),
+                );
+                assert_eq!(s.line.len(), width, "{:?}", title);
+                let closes: Vec<_> = s
+                    .hits
+                    .iter()
+                    .filter(|h| matches!(h.kind, StripHitKind::Close(_)))
+                    .collect();
+                assert!(!closes.is_empty(), "{:?}", title);
+                for h in closes {
+                    let c = s.line.get_cell(h.x).unwrap();
+                    assert_eq!(c.str(), "×", "{:?} w={}", title, width);
+                }
+            }
         }
     }
 
