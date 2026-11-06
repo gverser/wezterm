@@ -32,6 +32,19 @@ pub fn member_size(slot: &TerminalSize, header_rows: usize) -> TerminalSize {
     }
 }
 
+/// `pane`'s current size in cells, as the pane stack spawn paths pass it
+/// on. The pixel sizes are left at 0, as `Mux::split_pane` does.
+pub(crate) fn pane_cell_size(pane: &dyn Pane) -> TerminalSize {
+    let dims = pane.get_dimensions();
+    TerminalSize {
+        cols: dims.cols,
+        rows: dims.viewport_rows,
+        pixel_width: 0,
+        pixel_height: 0,
+        dpi: dims.dpi,
+    }
+}
+
 /// The fewest rows a leaf slot may have: one row for a member plus the
 /// reserved header rows.
 pub fn min_leaf_rows(header_rows: usize) -> usize {

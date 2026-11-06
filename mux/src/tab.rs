@@ -1012,13 +1012,25 @@ impl Tab {
             return None;
         }
         let leaf = self.get_pane_direction(direction, false)?;
-        // Not zoomed, so the stack indices are the leaf indices.
+        let (visible, position) = self.visible_member_of_leaf(leaf)?;
+        Some((visible.pane_id(), position + 1))
+    }
+
+    /// The visible member of the leaf with topological index `leaf`. The
+    /// index is the real leaf number even while zoomed, but then only the
+    /// zoomed leaf is found, as `iter_stacks` holds only that one.
+    pub fn visible_pane_of_leaf(&self, leaf: usize) -> Option<Arc<dyn Pane>> {
+        self.visible_member_of_leaf(leaf).map(|(pane, _)| pane)
+    }
+
+    /// `visible_pane_of_leaf`, along with its position in the stack.
+    fn visible_member_of_leaf(&self, leaf: usize) -> Option<(Arc<dyn Pane>, usize)> {
         let stack = self
             .iter_stacks()
             .into_iter()
             .find(|stack| stack.index == leaf)?;
-        let visible = stack.panes.get(stack.visible)?;
-        Some((visible.pane_id(), stack.visible + 1))
+        let pane = Arc::clone(stack.panes.get(stack.visible)?);
+        Some((pane, stack.visible))
     }
 
     /// Assigns the root pane.
@@ -1705,14 +1717,14 @@ impl TabInner {
             .unwrap_or(1);
         // Floors for the two sides, only enforced with header rows so that
         // header_rows = 0 keeps upstream's cascade exactly.
+        let enforce_floors = self.header_rows > 0;
         let (min_first, min_second) = match cursor.subtree() {
-            Tree::Node { left, right, .. } if self.header_rows > 0 => (
+            Tree::Node { left, right, .. } if enforce_floors => (
                 compute_min_size(left, self.header_rows),
                 compute_min_size(right, self.header_rows),
             ),
             _ => ((1, 1), (1, 1)),
         };
-        let enforce_floors = self.header_rows > 0;
         if let Ok(Some(node)) = cursor.node_mut() {
             // Adjust the size of the node; we preserve the size of the first
             // child and adjust the second, so if we are split down the middle
@@ -1869,7 +1881,10 @@ impl TabInner {
                         .saturating_add(delta)
                         .max(min_first)
                         .min((height as isize).saturating_sub(1 + min_second));
-                    node.first.rows = rows as usize;
+                    // The bound above goes negative only for a tree that is
+                    // already too small for its floors; keep that from
+                    // wrapping to a huge row count.
+                    node.first.rows = rows.max(0) as usize;
                     node.first.pixel_height =
                         node.first.rows.saturating_mul(cell_dimensions.pixel_height);
 
@@ -3389,18 +3404,24 @@ mod test {
 
     #[test]
     fn neighbor_stack_target_points_after_the_visible_member() {
-        let (tab, _) = stacked_tab(); // leaf 0: [1, 2, 3], pane 3 visible
+        let (tab, [_, p2, _]) = stacked_tab(); // leaf 0: [1, 2, 3], pane 3 visible
         let horz = SplitRequest {
             direction: SplitDirection::Horizontal,
             ..Default::default()
         };
         let split = tab.compute_split_size(0, horz).unwrap();
-        tab.split_and_insert(0, horz, FakePane::new(4, split.second))
-            .unwrap(); // leaf 1 active
-        assert_eq!(tab.neighbor_stack_target(PaneDirection::Left), Some((3, 3)));
+        let p4 = FakePane::new(4, split.second);
+        tab.split_and_insert(0, horz, Arc::clone(&p4)).unwrap();
+        // Show pane 2 in leaf 0, which is not its last member, so that
+        // "after the visible member" and "at the end" differ.
+        tab.set_active_pane(&p2);
+        tab.set_active_pane(&p4); // leaf 1 active again
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Left), Some((2, 2)));
         assert_eq!(tab.neighbor_stack_target(PaneDirection::Right), None);
         assert_eq!(tab.neighbor_stack_target(PaneDirection::Next), None);
         assert_eq!(tab.neighbor_stack_target(PaneDirection::Prev), None);
+        tab.set_zoomed(true);
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Left), None);
     }
 
     fn entry(
@@ -4026,6 +4047,8 @@ mod test {
         };
         let all = [&p1, &p2, &p3, &p4];
         let base = counts(&all);
+        // Zooming pane 3 in zoomable_tab is counted, so the counter is wired.
+        assert_eq!(base, vec![0, 0, 1, 0]);
 
         tab.set_active_pane(&p1); // switch inside the stack
         assert_eq!(counts(&all), base);

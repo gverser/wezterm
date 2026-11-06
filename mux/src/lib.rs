@@ -1,5 +1,6 @@
 use crate::client::{ClientId, ClientInfo};
 use crate::pane::{CachePolicy, Pane, PaneId};
+use crate::pane_stack::pane_cell_size;
 use crate::ssh_agent::AgentProxy;
 use crate::tab::{member_size, SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
@@ -1418,15 +1419,7 @@ impl Mux {
             pane.set_config(config);
         }
 
-        let dims = pane.get_dimensions();
-        let size = TerminalSize {
-            cols: dims.cols,
-            rows: dims.viewport_rows,
-            pixel_height: 0,
-            pixel_width: 0,
-            dpi: dims.dpi,
-        };
-
+        let size = pane_cell_size(&*pane);
         Ok((pane, size))
     }
 

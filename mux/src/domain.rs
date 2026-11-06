@@ -7,6 +7,7 @@
 
 use crate::localpane::LocalPane;
 use crate::pane::{alloc_pane_id, Pane, PaneId};
+use crate::pane_stack::pane_cell_size;
 use crate::tab::{configured_header_rows, member_size, SplitRequest, Tab, TabId};
 use crate::window::WindowId;
 use crate::Mux;
@@ -171,14 +172,7 @@ pub trait Domain: Downcast + Send + Sync {
             .get_pane(target_pane_id)
             .ok_or_else(|| anyhow::anyhow!("invalid pane id {}", target_pane_id))?;
         // The target's size is already the member size.
-        let dims = target.get_dimensions();
-        let size = TerminalSize {
-            cols: dims.cols,
-            rows: dims.viewport_rows,
-            pixel_width: 0,
-            pixel_height: 0,
-            dpi: dims.dpi,
-        };
+        let size = pane_cell_size(&*target);
 
         let pane = self.spawn_pane(size, command, command_dir).await?;
         if let Err(err) = tab.add_pane_to_stack(target_pane_id, None, Arc::clone(&pane)) {
