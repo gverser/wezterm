@@ -763,6 +763,22 @@ impl SessionHandler {
                 .detach();
             }
 
+            Pdu::SpawnPaneInStack(request) => {
+                let client_id = self.client_id.clone();
+                spawn_into_main_thread(async move {
+                    schedule_spawn_pane_in_stack(request, send_response, client_id);
+                })
+                .detach();
+            }
+
+            Pdu::MovePaneToStack(request) => {
+                let client_id = self.client_id.clone();
+                spawn_into_main_thread(async move {
+                    schedule_move_pane_to_stack(request, send_response, client_id);
+                })
+                .detach();
+            }
+
             Pdu::GetPaneRenderableDimensions(GetPaneRenderableDimensions { pane_id }) => {
                 spawn_into_main_thread(async move {
                     catch(
@@ -1158,4 +1174,77 @@ async fn move_pane(
         tab_id: tab.tab_id(),
         window_id,
     }))
+}
+
+// Same shim as schedule_split_pane: keeps the non-Send locals of the async
+// body out of spawn_into_main_thread's flow analysis.
+fn schedule_spawn_pane_in_stack<SND>(
+    request: SpawnPaneInStack,
+    send_response: SND,
+    client_id: Option<Arc<ClientId>>,
+) where
+    SND: Fn(anyhow::Result<Pdu>) + 'static,
+{
+    promise::spawn::spawn(
+        async move { send_response(spawn_pane_in_stack(request, client_id).await) },
+    )
+    .detach();
+}
+
+async fn spawn_pane_in_stack(
+    request: SpawnPaneInStack,
+    client_id: Option<Arc<ClientId>>,
+) -> anyhow::Result<Pdu> {
+    let mux = Mux::get();
+    let _identity = mux.with_identity(client_id);
+
+    let (pane, size) = mux
+        .spawn_pane_in_stack(request.pane_id, request.command, request.command_dir)
+        .await?;
+
+    // Report where the new pane actually is rather than where the target
+    // was before the await, since the client maps its mirror from these ids.
+    let pane_id = pane.pane_id();
+    let (_domain_id, window_id, tab_id) = mux
+        .resolve_pane_id(pane_id)
+        .ok_or_else(|| anyhow!("spawned pane {} is not in any window", pane_id))?;
+    let header_rows = mux
+        .get_tab(tab_id)
+        .ok_or_else(|| anyhow!("tab {} of spawned pane {} not found", tab_id, pane_id))?
+        .header_rows();
+
+    Ok::<Pdu, anyhow::Error>(Pdu::SpawnResponse(SpawnResponse {
+        pane_id,
+        tab_id,
+        window_id,
+        size,
+        header_rows,
+    }))
+}
+
+fn schedule_move_pane_to_stack<SND>(
+    request: MovePaneToStack,
+    send_response: SND,
+    client_id: Option<Arc<ClientId>>,
+) where
+    SND: Fn(anyhow::Result<Pdu>) + 'static,
+{
+    promise::spawn::spawn(
+        async move { send_response(move_pane_to_stack(request, client_id).await) },
+    )
+    .detach();
+}
+
+async fn move_pane_to_stack(
+    request: MovePaneToStack,
+    client_id: Option<Arc<ClientId>>,
+) -> anyhow::Result<Pdu> {
+    let mux = Mux::get();
+    // Attribute the change to the requesting client, as move_pane does.
+    let _identity = mux.with_identity(client_id);
+
+    mux.move_pane_to_stack(request.pane_id, request.target_pane_id, request.index)
+        .await?;
+
+    Ok::<Pdu, anyhow::Error>(Pdu::UnitResponse(UnitResponse {}))
 }

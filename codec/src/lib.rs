@@ -442,7 +442,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 49;
+pub const CODEC_VERSION: usize = 50;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -508,6 +508,8 @@ pdu! {
     FeishuServiceStatus: 65,
     KillServer: 66,
     SetWindowTabOrder: 67,
+    SpawnPaneInStack: 68,
+    MovePaneToStack: 69,
 }
 
 impl Pdu {
@@ -523,7 +525,9 @@ impl Pdu {
             | Self::Resize(_)
             | Self::SetClipboard(_)
             | Self::SetPaneZoomed(_)
-            | Self::SpawnV2(_) => true,
+            | Self::SpawnV2(_)
+            | Self::SpawnPaneInStack(_)
+            | Self::MovePaneToStack(_) => true,
             _ => false,
         }
     }
@@ -665,6 +669,26 @@ pub struct SplitPane {
     /// Instead of spawning a command, move the specified
     /// pane into the new split target
     pub move_pane_id: Option<PaneId>,
+}
+
+/// Spawn a new pane as an extra member of the stack holding `pane_id`.
+/// No tab id is sent: the server finds the tab from the pane, so a stale
+/// client-side mapping cannot point the request at the wrong tab.
+/// The server answers with a SpawnResponse for the new pane.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SpawnPaneInStack {
+    pub pane_id: PaneId,
+    pub command: Option<CommandBuilder>,
+    pub command_dir: Option<String>,
+}
+
+/// Move `pane_id` into the stack holding `target_pane_id` (same tab only),
+/// at position `index` among that stack's members.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct MovePaneToStack {
+    pub pane_id: PaneId,
+    pub target_pane_id: PaneId,
+    pub index: usize,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1274,6 +1298,62 @@ mod test {
             },
             Pdu::decode(encoded.as_slice()).unwrap()
         );
+    }
+
+    #[test]
+    fn spawn_pane_in_stack_round_trip() {
+        let make = || {
+            Pdu::SpawnPaneInStack(SpawnPaneInStack {
+                pane_id: 3,
+                command: None,
+                command_dir: Some("C:\\x".into()),
+            })
+        };
+        let mut encoded = Vec::new();
+        make().encode(&mut encoded, 0x40).unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x40,
+                pdu: make()
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn move_pane_to_stack_round_trip() {
+        let make = || {
+            Pdu::MovePaneToStack(MovePaneToStack {
+                pane_id: 3,
+                target_pane_id: 7,
+                index: 2,
+            })
+        };
+        let mut encoded = Vec::new();
+        make().encode(&mut encoded, 0x40).unwrap();
+        assert_eq!(
+            DecodedPdu {
+                serial: 0x40,
+                pdu: make()
+            },
+            Pdu::decode(encoded.as_slice()).unwrap()
+        );
+    }
+
+    #[test]
+    fn stack_pdus_count_as_user_input() {
+        assert!(Pdu::SpawnPaneInStack(SpawnPaneInStack {
+            pane_id: 3,
+            command: None,
+            command_dir: None,
+        })
+        .is_user_input());
+        assert!(Pdu::MovePaneToStack(MovePaneToStack {
+            pane_id: 3,
+            target_pane_id: 7,
+            index: 2,
+        })
+        .is_user_input());
     }
 
     #[test]

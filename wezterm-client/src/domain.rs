@@ -811,6 +811,18 @@ impl ClientDomain {
     }
 }
 
+/// The server only knows its own pane ids, so a local pane can be named in a
+/// request only if it mirrors a remote one.
+fn remote_pane_id_of(local_pane_id: PaneId) -> anyhow::Result<PaneId> {
+    let pane = Mux::get()
+        .get_pane(local_pane_id)
+        .ok_or_else(|| anyhow!("pane_id {} is invalid", local_pane_id))?;
+    let pane = pane
+        .downcast_ref::<ClientPane>()
+        .ok_or_else(|| anyhow!("pane_id {} is not a ClientPane", local_pane_id))?;
+    Ok(pane.remote_pane_id)
+}
+
 #[async_trait(?Send)]
 impl Domain for ClientDomain {
     fn domain_id(&self) -> DomainId {
@@ -1009,6 +1021,65 @@ impl Domain for ClientDomain {
         mux.add_pane(&pane)?;
 
         Ok(pane)
+    }
+
+    /// The server owns the stack, so it spawns there and enforces the
+    /// header_rows rule itself; the local mirror is then rebuilt from the
+    /// server's pane list rather than patched here. `_tab_id` is unused:
+    /// the server finds the tab from the pane id.
+    async fn spawn_pane_in_stack(
+        &self,
+        _tab_id: TabId,
+        target_pane_id: PaneId,
+        command: Option<CommandBuilder>,
+        command_dir: Option<String>,
+    ) -> anyhow::Result<Arc<dyn Pane>> {
+        let inner = self
+            .inner()
+            .ok_or_else(|| anyhow!("domain is not attached"))?;
+
+        let result = inner
+            .client
+            .spawn_pane_in_stack(codec::SpawnPaneInStack {
+                pane_id: remote_pane_id_of(target_pane_id)?,
+                command,
+                command_dir,
+            })
+            .await?;
+
+        self.resync().await?;
+
+        let local_pane_id = inner
+            .remote_to_local_pane_id(result.pane_id)
+            .ok_or_else(|| anyhow!("remote pane {} didn't resolve after resync", result.pane_id))?;
+        Mux::get()
+            .get_pane(local_pane_id)
+            .ok_or_else(|| anyhow!("local pane {} is invalid", local_pane_id))
+    }
+
+    /// Must not fall back to the default, which would reorder only the local
+    /// mirror and leave the server, and so every other client, unchanged.
+    async fn move_pane_to_stack(
+        &self,
+        _tab_id: TabId,
+        pane_id: PaneId,
+        target_pane_id: PaneId,
+        index: usize,
+    ) -> anyhow::Result<()> {
+        let inner = self
+            .inner()
+            .ok_or_else(|| anyhow!("domain is not attached"))?;
+
+        inner
+            .client
+            .move_pane_to_stack(codec::MovePaneToStack {
+                pane_id: remote_pane_id_of(pane_id)?,
+                target_pane_id: remote_pane_id_of(target_pane_id)?,
+                index,
+            })
+            .await?;
+
+        self.resync().await
     }
 
     async fn attach(&self, window_id: Option<WindowId>) -> anyhow::Result<()> {
