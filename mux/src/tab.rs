@@ -1000,6 +1000,27 @@ impl Tab {
             .move_pane_to_stack(pane_id, target_pane_id, index)
     }
 
+    /// The stack that a pane moved from the active leaf in `direction` would
+    /// join: the id of the neighbouring leaf's visible member, and the index
+    /// right after it. None when there is no neighbour, for `Next`/`Prev`
+    /// (which are not spatial), and while zoomed.
+    pub fn neighbor_stack_target(&self, direction: PaneDirection) -> Option<(PaneId, usize)> {
+        if matches!(direction, PaneDirection::Next | PaneDirection::Prev) {
+            return None;
+        }
+        if self.get_zoomed_pane().is_some() {
+            return None;
+        }
+        let leaf = self.get_pane_direction(direction, false)?;
+        // Not zoomed, so the stack indices are the leaf indices.
+        let stack = self
+            .iter_stacks()
+            .into_iter()
+            .find(|stack| stack.index == leaf)?;
+        let visible = stack.panes.get(stack.visible)?;
+        Some((visible.pane_id(), stack.visible + 1))
+    }
+
     /// Assigns the root pane.
     /// This is suitable when creating a new tab and then assigning
     /// the initial pane
@@ -3364,6 +3385,22 @@ mod test {
         tab.add_pane_to_stack(1, None, Arc::clone(&p2)).unwrap();
         tab.add_pane_to_stack(2, None, Arc::clone(&p3)).unwrap();
         (tab, [p1, p2, p3])
+    }
+
+    #[test]
+    fn neighbor_stack_target_points_after_the_visible_member() {
+        let (tab, _) = stacked_tab(); // leaf 0: [1, 2, 3], pane 3 visible
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(0, horz).unwrap();
+        tab.split_and_insert(0, horz, FakePane::new(4, split.second))
+            .unwrap(); // leaf 1 active
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Left), Some((3, 3)));
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Right), None);
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Next), None);
+        assert_eq!(tab.neighbor_stack_target(PaneDirection::Prev), None);
     }
 
     fn entry(

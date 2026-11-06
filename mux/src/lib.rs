@@ -1379,6 +1379,81 @@ impl Mux {
         Ok((pane, size))
     }
 
+    /// Spawns a new pane as an extra member of the stack that holds
+    /// `target_pane_id`. Always uses the target's own domain.
+    pub async fn spawn_pane_in_stack(
+        &self,
+        target_pane_id: PaneId,
+        command: Option<CommandBuilder>,
+        command_dir: Option<String>,
+    ) -> anyhow::Result<(Arc<dyn Pane>, TerminalSize)> {
+        let (domain_id, window_id, tab_id) = self
+            .resolve_pane_id(target_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} invalid", target_pane_id))?;
+
+        let domain = self
+            .get_domain(domain_id)
+            .ok_or_else(|| anyhow!("domain {} of pane {} not found", domain_id, target_pane_id))?;
+
+        if domain.state() == DomainState::Detached {
+            domain.attach(Some(window_id)).await?;
+        }
+
+        let target_pane = self
+            .get_pane(target_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} is invalid", target_pane_id))?;
+        let term_config = target_pane.get_config();
+
+        let command_dir = self.resolve_cwd(
+            command_dir,
+            Some(Arc::clone(&target_pane)),
+            domain.domain_id(),
+            CachePolicy::FetchImmediate,
+        );
+
+        let pane = domain
+            .spawn_pane_in_stack(tab_id, target_pane_id, command, command_dir)
+            .await?;
+        if let Some(config) = term_config {
+            pane.set_config(config);
+        }
+
+        let dims = pane.get_dimensions();
+        let size = TerminalSize {
+            cols: dims.cols,
+            rows: dims.viewport_rows,
+            pixel_height: 0,
+            pixel_width: 0,
+            dpi: dims.dpi,
+        };
+
+        Ok((pane, size))
+    }
+
+    /// Moves `pane_id` into the stack that holds `target_pane_id`, which
+    /// must be in the same tab.
+    pub async fn move_pane_to_stack(
+        &self,
+        pane_id: PaneId,
+        target_pane_id: PaneId,
+        index: usize,
+    ) -> anyhow::Result<()> {
+        let (domain_id, _, tab_id) = self
+            .resolve_pane_id(pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} invalid", pane_id))?;
+        let (_, _, target_tab_id) = self
+            .resolve_pane_id(target_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} invalid", target_pane_id))?;
+        let tab_id = same_tab_or_err((pane_id, tab_id), (target_pane_id, target_tab_id))?;
+
+        let domain = self
+            .get_domain(domain_id)
+            .ok_or_else(|| anyhow!("domain {} of pane {} not found", domain_id, pane_id))?;
+        domain
+            .move_pane_to_stack(tab_id, pane_id, target_pane_id, index)
+            .await
+    }
+
     pub async fn move_pane_to_new_tab(
         &self,
         pane_id: PaneId,
@@ -1613,6 +1688,14 @@ impl wezterm_term::DownloadHandler for MuxDownloader {
     }
 }
 
+/// Both panes of a stack move must live in one tab; returns that tab.
+fn same_tab_or_err(a: (PaneId, TabId), b: (PaneId, TabId)) -> anyhow::Result<TabId> {
+    if a.1 != b.1 {
+        anyhow::bail!("pane {} and pane {} are in different tabs", a.0, b.0);
+    }
+    Ok(a.1)
+}
+
 #[cfg(test)]
 mod feishu_test {
     use super::*;
@@ -1682,5 +1765,19 @@ mod feishu_test {
         mux.set_pane_feishu(3, false);
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert!(!mux.pane_has_feishu(3));
+    }
+}
+
+#[cfg(test)]
+mod same_tab_test {
+    use super::*;
+
+    #[test]
+    fn same_tab_or_err_rejects_cross_tab() {
+        assert_eq!(same_tab_or_err((1, 7), (2, 7)).unwrap(), 7);
+        let err = same_tab_or_err((1, 7), (2, 8)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("pane 1 and pane 2 are in different tabs"));
     }
 }

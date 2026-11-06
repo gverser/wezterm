@@ -149,6 +149,61 @@ pub trait Domain: Downcast + Send + Sync {
         command_dir: Option<String>,
     ) -> anyhow::Result<Arc<dyn Pane>>;
 
+    /// Spawns a new pane and adds it to the stack holding `target_pane_id`.
+    /// The default works for domains whose `spawn_pane` adds the pane to the
+    /// mux itself; remote domains override this to ask their server.
+    async fn spawn_pane_in_stack(
+        &self,
+        tab_id: TabId,
+        target_pane_id: PaneId,
+        command: Option<CommandBuilder>,
+        command_dir: Option<String>,
+    ) -> anyhow::Result<Arc<dyn Pane>> {
+        let mux = Mux::get();
+        let tab = mux
+            .get_tab(tab_id)
+            .ok_or_else(|| anyhow::anyhow!("Invalid tab id {}", tab_id))?;
+        // Fail before spawning anything, so no process is left behind.
+        if tab.header_rows() == 0 {
+            anyhow::bail!("tab {} has no pane tab bar", tab_id);
+        }
+        let target = mux
+            .get_pane(target_pane_id)
+            .ok_or_else(|| anyhow::anyhow!("invalid pane id {}", target_pane_id))?;
+        // The target's size is already the member size.
+        let dims = target.get_dimensions();
+        let size = TerminalSize {
+            cols: dims.cols,
+            rows: dims.viewport_rows,
+            pixel_width: 0,
+            pixel_height: 0,
+            dpi: dims.dpi,
+        };
+
+        let pane = self.spawn_pane(size, command, command_dir).await?;
+        if let Err(err) = tab.add_pane_to_stack(target_pane_id, None, Arc::clone(&pane)) {
+            // Don't leave a live process that belongs to no tab.
+            mux.remove_pane(pane.pane_id());
+            return Err(err);
+        }
+        Ok(pane)
+    }
+
+    /// Moves `pane_id` into the stack holding `target_pane_id`, within one
+    /// tab.
+    async fn move_pane_to_stack(
+        &self,
+        tab_id: TabId,
+        pane_id: PaneId,
+        target_pane_id: PaneId,
+        index: usize,
+    ) -> anyhow::Result<()> {
+        let tab = Mux::get()
+            .get_tab(tab_id)
+            .ok_or_else(|| anyhow::anyhow!("Invalid tab id {}", tab_id))?;
+        tab.move_pane_to_stack(pane_id, target_pane_id, index)
+    }
+
     /// The mux will call this method on the domain of the pane that
     /// is being moved to give the domain a chance to handle the movement.
     /// If this method returns Ok(None), then the mux will handle the
