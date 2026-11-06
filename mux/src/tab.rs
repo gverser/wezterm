@@ -484,7 +484,7 @@ fn slot_geometry(cursor: &Cursor, root_size: TerminalSize) -> (usize, usize, Ter
 
 /// Computes the minimum (x, y) size based on the panes in this portion
 /// of the tree. A leaf needs one row for its members plus its header rows.
-fn compute_min_size(tree: &mut Tree, header_rows: usize) -> (usize, usize) {
+fn compute_min_size(tree: &Tree, header_rows: usize) -> (usize, usize) {
     match tree {
         Tree::Node { data: None, .. } | Tree::Empty => (1, 1),
         Tree::Node {
@@ -492,8 +492,8 @@ fn compute_min_size(tree: &mut Tree, header_rows: usize) -> (usize, usize) {
             right,
             data: Some(data),
         } => {
-            let (left_x, left_y) = compute_min_size(&mut *left, header_rows);
-            let (right_x, right_y) = compute_min_size(&mut *right, header_rows);
+            let (left_x, left_y) = compute_min_size(left, header_rows);
+            let (right_x, right_y) = compute_min_size(right, header_rows);
             match data.direction {
                 SplitDirection::Vertical => (left_x.max(right_x), left_y + right_y + 1),
                 SplitDirection::Horizontal => (left_x + right_x + 1, left_y.max(right_y)),
@@ -560,15 +560,14 @@ fn adjust_x_size(
                         // Only shrink a side that is above its own minimum:
                         // a nested subtree already at its minimum cannot
                         // absorb the -1, and asking it to would loop forever.
-                        if data.first.cols > compute_min_size(&mut *left, header_rows).0 {
+                        if data.first.cols > compute_min_size(left, header_rows).0 {
                             adjust_x_size(&mut *left, -1, cell_dimensions, header_rows);
                             data.first.cols -= 1;
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
                         }
-                        if x_adjust < 0
-                            && data.second.cols > compute_min_size(&mut *right, header_rows).0
+                        if x_adjust < 0 && data.second.cols > compute_min_size(right, header_rows).0
                         {
                             adjust_x_size(&mut *right, -1, cell_dimensions, header_rows);
                             data.second.cols -= 1;
@@ -642,15 +641,14 @@ fn adjust_y_size(
                         // (which includes header rows): a nested subtree
                         // already at its minimum cannot absorb the -1, and
                         // asking it to would loop forever.
-                        if data.first.rows > compute_min_size(&mut *left, header_rows).1 {
+                        if data.first.rows > compute_min_size(left, header_rows).1 {
                             adjust_y_size(&mut *left, -1, cell_dimensions, header_rows);
                             data.first.rows -= 1;
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
                         }
-                        if y_adjust < 0
-                            && data.second.rows > compute_min_size(&mut *right, header_rows).1
+                        if y_adjust < 0 && data.second.rows > compute_min_size(right, header_rows).1
                         {
                             adjust_y_size(&mut *right, -1, cell_dimensions, header_rows);
                             data.second.rows -= 1;
@@ -1638,7 +1636,7 @@ impl TabInner {
         } else {
             let dims = cell_dimensions(&size);
             let header_rows = self.header_rows;
-            let (min_x, min_y) = compute_min_size(self.pane.as_mut().unwrap(), header_rows);
+            let (min_x, min_y) = compute_min_size(self.pane.as_ref().unwrap(), header_rows);
             let current_size = self.size;
 
             // Constrain the new size to the minimum possible dimensions
@@ -1684,6 +1682,16 @@ impl TabInner {
             .pixel_height
             .checked_div(pane_size.rows)
             .unwrap_or(1);
+        // Floors for the two sides, only enforced with header rows so that
+        // header_rows = 0 keeps upstream's cascade exactly.
+        let (min_first, min_second) = match cursor.subtree() {
+            Tree::Node { left, right, .. } if self.header_rows > 0 => (
+                compute_min_size(left, self.header_rows),
+                compute_min_size(right, self.header_rows),
+            ),
+            _ => ((1, 1), (1, 1)),
+        };
+        let enforce_floors = self.header_rows > 0;
         if let Ok(Some(node)) = cursor.node_mut() {
             // Adjust the size of the node; we preserve the size of the first
             // child and adjust the second, so if we are split down the middle
@@ -1698,6 +1706,15 @@ impl TabInner {
                 node.first.cols = pane_size.cols;
                 node.second.cols = pane_size.cols;
 
+                if enforce_floors
+                    && pane_size.rows.saturating_sub(1 + node.first.rows) < min_second.1
+                {
+                    // Keeping the first child would squeeze the second below
+                    // its minimum, so give back rows from the first.
+                    node.first.rows = min_first
+                        .1
+                        .max(pane_size.rows.saturating_sub(1 + min_second.1));
+                }
                 node.second.rows = pane_size.rows.saturating_sub(1 + node.first.rows);
             }
             node.first.pixel_width = node.first.cols * cell_width;
@@ -1789,7 +1806,20 @@ impl TabInner {
 
     fn adjust_node_at_cursor(&mut self, cursor: &mut Cursor, delta: isize) {
         let cell_dimensions = self.cell_dimensions();
-        let min_rows = min_leaf_rows(self.header_rows) as isize;
+        let header_rows = self.header_rows;
+        // With header rows a side may itself be a nested split, so its floor
+        // is the whole subtree's minimum; otherwise the fixed floor of one
+        // row keeps upstream behaviour.
+        let (min_first, min_second) = match cursor.subtree() {
+            Tree::Node { left, right, .. } if header_rows > 0 => (
+                compute_min_size(left, header_rows).1 as isize,
+                compute_min_size(right, header_rows).1 as isize,
+            ),
+            _ => (
+                min_leaf_rows(header_rows) as isize,
+                min_leaf_rows(header_rows) as isize,
+            ),
+        };
         if let Ok(Some(node)) = cursor.node_mut() {
             match node.direction {
                 SplitDirection::Horizontal => {
@@ -1816,8 +1846,8 @@ impl TabInner {
                     let mut rows = node.first.rows as isize;
                     rows = rows
                         .saturating_add(delta)
-                        .max(min_rows)
-                        .min((height as isize).saturating_sub(1 + min_rows));
+                        .max(min_first)
+                        .min((height as isize).saturating_sub(1 + min_second));
                     node.first.rows = rows as usize;
                     node.first.pixel_height =
                         node.first.rows.saturating_mul(cell_dimensions.pixel_height);
@@ -3885,6 +3915,91 @@ mod test {
 
         tab.remove_pane(2);
         assert_eq!((resize_count(&p1), resize_count(&p2)), (4, 4));
+    }
+
+    #[test]
+    fn nested_drag_keeps_every_member_row() {
+        // slots 11 / (5 / 6) on an h = 1 tab: drag the root split far down.
+        let tab = vertical_pair(1);
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(1, vert).unwrap();
+        tab.split_and_insert(1, vert, FakePane::new(3, split.second))
+            .unwrap();
+        tab.resize_split_by(0, 100);
+        let p = tab.iter_panes();
+        assert_eq!(
+            p.iter().map(|p| p.height).collect::<Vec<_>>(),
+            vec![17, 1, 1]
+        );
+        assert_eq!(p.iter().map(|p| p.top).collect::<Vec<_>>(), vec![1, 20, 23]);
+    }
+
+    #[test]
+    fn nested_drag_is_unchanged_without_header_rows() {
+        // h = 0 must keep upstream's (overflowing) result, derived from mux/src/tab.rs at
+        // 80de2bac5: slots 11 / (5 / 6); the root's first becomes min(11+100, 24-2) = 22 and
+        // its second 1; apply_pane_size keeps the inner first at 5 and saturates the inner
+        // second to 0. So heights 22 / 5 / 0 at tops 0 / 23 / 29.
+        let tab = vertical_pair(0);
+        let vert = SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        };
+        let split = tab.compute_split_size(1, vert).unwrap();
+        tab.split_and_insert(1, vert, FakePane::new(3, split.second))
+            .unwrap();
+        tab.resize_split_by(0, 100);
+        let p = tab.iter_panes();
+        assert_eq!(
+            p.iter().map(|p| p.height).collect::<Vec<_>>(),
+            vec![22, 5, 0]
+        );
+        assert_eq!(p.iter().map(|p| p.top).collect::<Vec<_>>(), vec![0, 23, 29]);
+    }
+
+    #[test]
+    fn zoomed_iter_stacks_reports_real_leaf() {
+        let (tab, [.., p4]) = zoomable_tab();
+        let s = tab.iter_stacks();
+        assert_eq!((s.len(), s[0].index), (1, 0));
+        tab.set_pane_zoomed(&p4, true);
+        let s = tab.iter_stacks();
+        assert_eq!((s.len(), s[0].index), (1, 1));
+    }
+
+    #[test]
+    fn add_refused_resize_leaves_tab_unchanged() {
+        let (tab, _) = stacked_tab();
+        let before = ids(&tab.iter_all_panes());
+        let visible_before = tab.iter_panes()[0].pane.pane_id();
+        let refusing = FakePane::with_failing_resize(9, size(23, 80));
+        assert!(tab.add_pane_to_stack(1, None, refusing).is_err());
+        assert_eq!(ids(&tab.iter_all_panes()), before);
+        assert_eq!(tab.iter_panes()[0].pane.pane_id(), visible_before);
+    }
+
+    #[test]
+    fn zoom_handover_never_calls_set_zoomed() {
+        let (tab, [p1, p2, p3, p4]) = zoomable_tab();
+        let counts = |ps: &[&Arc<dyn Pane>]| -> Vec<usize> {
+            ps.iter().map(|p| set_zoomed_count(p)).collect()
+        };
+        let all = [&p1, &p2, &p3, &p4];
+        let base = counts(&all);
+
+        tab.set_active_pane(&p1); // switch inside the stack
+        assert_eq!(counts(&all), base);
+
+        tab.remove_pane(1); // close the visible member
+        assert_eq!(counts(&all), base);
+
+        let p5 = FakePane::new(5, size(23, 39));
+        tab.add_pane_to_stack(2, None, Arc::clone(&p5)).unwrap(); // add a new member
+        assert_eq!(counts(&all), base);
+        assert_eq!(set_zoomed_count(&p5), 0);
     }
 
     /// An 80x24 tab with one header row and leaves [1, 2] (pane 2 visible),

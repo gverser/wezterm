@@ -19,6 +19,7 @@ pub(crate) struct FakePane {
     focus: Mutex<Option<bool>>,
     fail_resize: bool,
     resizes: Mutex<usize>,
+    zooms: Mutex<usize>,
 }
 
 impl FakePane {
@@ -29,6 +30,7 @@ impl FakePane {
             focus: Mutex::new(None),
             fail_resize: false,
             resizes: Mutex::new(0),
+            zooms: Mutex::new(0),
         })
     }
 
@@ -40,6 +42,7 @@ impl FakePane {
             focus: Mutex::new(None),
             fail_resize: true,
             resizes: Mutex::new(0),
+            zooms: Mutex::new(0),
         })
     }
 }
@@ -82,6 +85,15 @@ pub(crate) fn resize_count(pane: &Arc<dyn Pane>) -> usize {
         .downcast_ref::<FakePane>()
         .expect("resize_count: not a FakePane");
     let count = *fake.resizes.lock();
+    count
+}
+
+/// How many times `set_zoomed` has been called on the pane.
+pub(crate) fn set_zoomed_count(pane: &Arc<dyn Pane>) -> usize {
+    let fake = pane
+        .downcast_ref::<FakePane>()
+        .expect("set_zoomed_count: not a FakePane");
+    let count = *fake.zooms.lock();
     count
 }
 
@@ -164,6 +176,9 @@ impl Pane for FakePane {
         }
         *self.size.lock() = size;
         Ok(())
+    }
+    fn set_zoomed(&self, _zoomed: bool) {
+        *self.zooms.lock() += 1;
     }
     fn focus_changed(&self, focused: bool) {
         *self.focus.lock() = Some(focused);
