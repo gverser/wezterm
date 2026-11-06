@@ -218,8 +218,9 @@ impl crate::TermWindow {
 
     /// Ends the unseen-output episode of panes that are no longer hidden
     /// members of the active tab, or have nothing unseen any more. Runs
-    /// after every frame, including frames that drew no strips (zoom, a tab
-    /// overlay, header_rows == 0), so that ids do not linger.
+    /// after every frame, including frames that drew only the zoomed strip
+    /// or none at all (tab overlay, header_rows == 0), so that ids do not
+    /// linger.
     pub fn prune_hidden_output(&mut self) {
         let mux = Mux::get();
         let tab = mux.get_active_tab_for_window(self.mux_window_id);
