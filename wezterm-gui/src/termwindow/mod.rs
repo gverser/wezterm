@@ -464,6 +464,10 @@ pub struct TermWindow {
 
     /// Keeps track of double and triple clicks
     last_mouse_click: Option<LastMouseClick>,
+    /// The pane tab strip item that the last press hit, or None if it hit
+    /// no strip. `last_mouse_click` only tells that two presses hit the
+    /// same cell, which after a close may hold a different strip item.
+    last_strip_press: Option<UIItemType>,
 
     /// The URL over which we are currently hovering
     current_highlight: Option<Arc<Hyperlink>>,
@@ -952,6 +956,7 @@ impl TermWindow {
             current_mouse_buttons: vec![],
             current_mouse_capture: None,
             last_mouse_click: None,
+            last_strip_press: None,
             current_highlight: None,
             quad_generation: 0,
             shape_generation: 0,
