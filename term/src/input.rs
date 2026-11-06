@@ -64,8 +64,10 @@ pub struct LastMouseClick {
     pub streak: usize,
 }
 
-/// The multi-click interval, measured in milliseconds
-const CLICK_INTERVAL: u64 = 500;
+/// The multi-click interval, measured in milliseconds.
+/// Public so that callers judging multi-clicks without a cell position
+/// (the GUI's pane tab strip) use the same interval.
+pub const CLICK_INTERVAL: u64 = 500;
 
 impl LastMouseClick {
     pub fn new(button: MouseButton, position: ClickPosition) -> Self {

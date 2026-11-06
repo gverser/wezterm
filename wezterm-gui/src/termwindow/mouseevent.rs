@@ -18,11 +18,11 @@ use std::convert::TryInto;
 use std::ops::Sub;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use termwiz::hyperlink::Hyperlink;
 use termwiz::surface::Line;
 use wezterm_dynamic::ToDynamic;
-use wezterm_term::input::{MouseButton, MouseEventKind as TMEK};
+use wezterm_term::input::{MouseButton, MouseEventKind as TMEK, CLICK_INTERVAL};
 use wezterm_term::{ClickPosition, LastMouseClick, StableRowIndex};
 
 impl super::TermWindow {
@@ -258,10 +258,9 @@ impl super::TermWindow {
             if !on_menu {
                 self.close_sidebar_menu();
             }
-            // The streak only knows that the presses hit the same cell, so
-            // mouse_event_pane_strip also compares the items they hit. A
-            // press elsewhere must not leave an old strip item behind for a
-            // later press to be compared against.
+            // mouse_event_pane_strip judges a strip press against the press
+            // before it. A press elsewhere must not leave an old strip press
+            // behind for a later one to be judged against.
             let on_strip = matches!(
                 ui_item.as_ref().map(|item| &item.item_type),
                 Some(
@@ -529,13 +528,28 @@ impl super::TermWindow {
         context: &dyn WindowOps,
     ) {
         if let WMEK::Press(press) = event.kind {
-            // mouse_event_impl has already counted this press into the streak.
-            let streak = self.last_mouse_click.as_ref().map_or(1, |c| c.streak);
-            // Every press either records its strip item here or clears it,
-            // so this is what the previous press hit, or None if that press
-            // was not on a strip.
-            let prev = self.last_strip_press.replace(item.clone());
-            let action = strip_click_action(&item, press, streak, prev.as_ref());
+            // Not the streak in last_mouse_click: that also wants both
+            // presses in the same cell, and the cell a pixel maps to changes
+            // when the active pane starts or stops grabbing the mouse, as
+            // the close confirmation does. Two presses at one pixel could
+            // then count as two single clicks and close twice.
+            let now = Instant::now();
+            // Every press either records itself here or clears this, so it
+            // is the previous press, if that one was on a strip.
+            let prev = self.last_strip_press.take().filter(|prev| {
+                now.duration_since(prev.at) <= Duration::from_millis(CLICK_INTERVAL)
+            });
+            let action = strip_click_action(
+                &item,
+                press,
+                prev.as_ref().map(|prev| (&prev.item, prev.action)),
+            );
+            log::trace!("strip press {press:?} on {item:?}: {action:?}");
+            self.last_strip_press = Some(StripPress {
+                item: item.clone(),
+                action: strip_press_memory(prev.map(|prev| prev.action), action),
+                at: now,
+            });
             if action != StripClickAction::Nothing {
                 self.perform_strip_click_action(&item, action, context);
             }
@@ -1277,7 +1291,7 @@ fn mouse_press_to_tmb(press: &MousePress) -> TMB {
 }
 
 /// What a press on a pane stack strip asks for. Kept apart from the window
-/// so that the mapping from button, streak and target can be tested.
+/// so that the mapping from button, target and previous press can be tested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StripClickAction {
     /// Bring this member to the front of its stack and focus it.
@@ -1291,221 +1305,265 @@ enum StripClickAction {
     Nothing,
 }
 
-/// The pane that `press` on `item` would close, if it is a close.
-fn strip_close_target(item: &UIItemType, press: MousePress) -> Option<PaneId> {
-    match (item, press) {
-        // The close button sits inside its tab, so a middle click on it is
-        // still a middle click on the tab.
-        (UIItemType::PaneTab { pane_id, .. }, MousePress::Middle)
-        | (UIItemType::PaneTabClose { pane_id, .. }, MousePress::Left | MousePress::Middle) => {
-            Some(*pane_id)
-        }
-        _ => None,
+impl StripClickAction {
+    /// A close or a spawn re-lays the strip out under the cursor: a tab
+    /// goes, comes, moves to the front or loses its unseen marker, so the
+    /// next press of the same double or triple click lands on whatever slid
+    /// there. Such presses are the rest of that click, not new ones; acting
+    /// on them would close a second pane, or open a second confirmation
+    /// that cancels the first.
+    fn swallows_followers(self) -> bool {
+        matches!(
+            self,
+            StripClickAction::Close(_) | StripClickAction::SpawnInLeaf(_)
+        )
     }
 }
 
-/// `prev` is the strip item that the previous press hit, if it hit one.
-/// The streak only says that the presses landed on the same cell, and a
-/// close re-lays the strip out, so the same cell may now hold another item.
+/// The previous press on a pane stack strip.
+pub(super) struct StripPress {
+    item: UIItemType,
+    /// See `strip_press_memory`.
+    action: StripClickAction,
+    at: Instant,
+}
+
+/// `prev` is the previous strip press and what it is remembered as, given
+/// only when it came within `CLICK_INTERVAL`; a press after a longer pause
+/// is a click of its own.
 fn strip_click_action(
     item: &UIItemType,
     press: MousePress,
-    streak: usize,
-    prev: Option<&UIItemType>,
+    prev: Option<(&UIItemType, StripClickAction)>,
 ) -> StripClickAction {
-    if let Some(pane_id) = strip_close_target(item, press) {
-        // A streak has one button throughout, so the previous press was a
-        // close exactly when it would be one with this button. Closing kills
-        // processes: a double click on × closes one pane, not the one that
-        // slid under the cursor too.
-        let repeated =
-            streak >= 2 && prev.map_or(false, |p| strip_close_target(p, press).is_some());
-        return if repeated {
-            StripClickAction::Nothing
-        } else {
-            StripClickAction::Close(pane_id)
-        };
+    if prev.map_or(false, |(_, action)| action.swallows_followers()) {
+        return StripClickAction::Nothing;
     }
     match (item, press) {
         (UIItemType::PaneTab { pane_id, .. }, MousePress::Left) => {
             StripClickAction::Activate(*pane_id)
         }
-        (UIItemType::PaneTabBar { leaf, .. }, MousePress::Left) => match streak {
-            1 => StripClickAction::ActivateLeaf(*leaf),
+        // The close button sits inside its tab, so a middle click on it is
+        // still a middle click on the tab.
+        (UIItemType::PaneTab { pane_id, .. }, MousePress::Middle)
+        | (UIItemType::PaneTabClose { pane_id, .. }, MousePress::Left | MousePress::Middle) => {
+            StripClickAction::Close(*pane_id)
+        }
+        (UIItemType::PaneTabBar { leaf, .. }, MousePress::Left) => match prev {
             // The first click of the pair has already focused the leaf. Only
             // a pair on this same stretch of empty strip is a double click
-            // on it; a first press that closed a tab merely uncovered it.
-            2 if prev == Some(item) => StripClickAction::SpawnInLeaf(*leaf),
-            2 => StripClickAction::ActivateLeaf(*leaf),
-            // The streak keeps counting while clicks keep coming; a third
-            // click must not spawn a second pane.
-            _ => StripClickAction::Nothing,
+            // on it.
+            Some((prev_item, StripClickAction::ActivateLeaf(_))) if prev_item == item => {
+                StripClickAction::SpawnInLeaf(*leaf)
+            }
+            _ => StripClickAction::ActivateLeaf(*leaf),
         },
         _ => StripClickAction::Nothing,
+    }
+}
+
+/// What a strip press is remembered as, for judging the press after it. A
+/// press swallowed after a close or a spawn passes that action on, so the
+/// whole run of quick presses is swallowed, not just the one right after
+/// it: the third press of a triple click on × must not close a second pane.
+fn strip_press_memory(
+    prev: Option<StripClickAction>,
+    action: StripClickAction,
+) -> StripClickAction {
+    match prev {
+        Some(prev) if prev.swallows_followers() => prev,
+        _ => action,
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use mux::tab::TabId;
+
+    fn tab_item(pane_id: PaneId) -> UIItemType {
+        UIItemType::PaneTab { tab_id: 1, pane_id }
+    }
+
+    fn close_item(pane_id: PaneId) -> UIItemType {
+        UIItemType::PaneTabClose { tab_id: 1, pane_id }
+    }
+
+    fn bar_item(tab_id: TabId, leaf: usize) -> UIItemType {
+        UIItemType::PaneTabBar { tab_id, leaf }
+    }
+
+    /// Feeds presses that each come within CLICK_INTERVAL of the one before
+    /// through the same steps as mouse_event_pane_strip.
+    fn quick_run(presses: &[(&UIItemType, MousePress)]) -> Vec<StripClickAction> {
+        let mut prev: Option<(UIItemType, StripClickAction)> = None;
+        let mut actions = vec![];
+        for &(item, press) in presses {
+            let action = strip_click_action(item, press, prev.as_ref().map(|(i, a)| (i, *a)));
+            let memory = strip_press_memory(prev.map(|(_, a)| a), action);
+            prev = Some((item.clone(), memory));
+            actions.push(action);
+        }
+        actions
+    }
 
     #[test]
     fn strip_click_actions_follow_the_spec_table() {
+        use MousePress::{Left, Middle, Right};
         use StripClickAction::*;
-        let tab = UIItemType::PaneTab {
-            tab_id: 1,
-            pane_id: 7,
-        };
-        let close = UIItemType::PaneTabClose {
-            tab_id: 1,
-            pane_id: 7,
-        };
-        let bar = UIItemType::PaneTabBar { tab_id: 1, leaf: 3 };
-        // What slides under the cursor once pane 7 is closed.
-        let next_tab = UIItemType::PaneTab {
-            tab_id: 1,
-            pane_id: 8,
-        };
-        let next_close = UIItemType::PaneTabClose {
-            tab_id: 1,
-            pane_id: 8,
-        };
-        let other_bar = UIItemType::PaneTabBar { tab_id: 1, leaf: 4 };
-        let other_tabs_bar = UIItemType::PaneTabBar { tab_id: 2, leaf: 3 };
+        // What slides under the cursor once pane 7 is closed is pane 8.
+        let (tab7, close7, tab8, close8) = (tab_item(7), close_item(7), tab_item(8), close_item(8));
+        let bar = bar_item(1, 3);
+        let other_bar = bar_item(1, 4);
+        let other_tabs_bar = bar_item(2, 3);
+        let strip = [&tab7, &close7, &tab8, &close8, &bar, &other_bar];
 
-        // The five rows of the table.
+        // A single click: no previous press, or none within CLICK_INTERVAL.
+        assert_eq!(strip_click_action(&tab7, Left, None), Activate(7));
+        assert_eq!(strip_click_action(&close7, Left, None), Close(7));
+        // A middle click on the close button is a middle click on its tab.
+        assert_eq!(strip_click_action(&tab7, Middle, None), Close(7));
+        assert_eq!(strip_click_action(&close7, Middle, None), Close(7));
+        assert_eq!(strip_click_action(&bar, Left, None), ActivateLeaf(3));
+        assert_eq!(strip_click_action(&bar, Middle, None), Nothing);
+        for item in strip {
+            assert_eq!(strip_click_action(item, Right, None), Nothing, "{item:?}");
+        }
+        // Items that are not part of a strip are not handled here.
         assert_eq!(
-            strip_click_action(&tab, MousePress::Left, 1, None),
-            Activate(7)
-        );
-        assert_eq!(
-            strip_click_action(&close, MousePress::Left, 1, None),
-            Close(7)
-        );
-        assert_eq!(
-            strip_click_action(&tab, MousePress::Middle, 1, None),
-            Close(7)
-        );
-        assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 2, Some(&bar)),
-            SpawnInLeaf(3)
-        );
-        assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 1, None),
-            ActivateLeaf(3)
+            strip_click_action(&UIItemType::ScrollThumb, Left, None),
+            Nothing
         );
 
-        // The right button does nothing anywhere on the strip.
-        for item in [&tab, &close, &bar] {
-            for streak in 1..=3 {
-                for prev in [None, Some(item)] {
-                    assert_eq!(
-                        strip_click_action(item, MousePress::Right, streak, prev),
-                        Nothing
-                    );
+        // Right after a close or a spawn, no strip press does anything,
+        // whatever it hits and whatever item the close or spawn came from.
+        for prev_action in [Close(7), SpawnInLeaf(3)] {
+            for prev_item in strip {
+                for item in strip {
+                    for press in [Left, Middle, Right] {
+                        assert_eq!(
+                            strip_click_action(item, press, Some((prev_item, prev_action))),
+                            Nothing,
+                            "{press:?} on {item:?} after {prev_action:?} on {prev_item:?}"
+                        );
+                    }
                 }
             }
         }
 
-        // A middle click on the close button is a middle click on its tab.
-        assert_eq!(
-            strip_click_action(&close, MousePress::Middle, 1, None),
-            Close(7)
-        );
-        // Only a single or a double click on empty strip space acts; a
-        // third click must not spawn a second pane.
-        assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 3, Some(&bar)),
-            Nothing
-        );
-        assert_eq!(
-            strip_click_action(&bar, MousePress::Middle, 1, None),
-            Nothing
-        );
-        // Items that are not part of a strip are not handled here.
-        assert_eq!(
-            strip_click_action(&UIItemType::ScrollThumb, MousePress::Left, 1, None),
-            Nothing
-        );
+        // A close that comes more than CLICK_INTERVAL after a previous close
+        // closes too: the caller passes no previous press then.
+        assert_eq!(strip_click_action(&close8, Left, None), Close(8));
+        assert_eq!(strip_click_action(&tab8, Middle, None), Close(8));
 
-        // A double click on × closes one pane. The second press does nothing
-        // whether it hits the same × (the close is still being confirmed) or
-        // the next tab's × that slid under the cursor.
-        assert_eq!(
-            strip_click_action(&close, MousePress::Left, 2, Some(&close)),
-            Nothing
-        );
-        assert_eq!(
-            strip_click_action(&next_close, MousePress::Left, 2, Some(&close)),
-            Nothing
-        );
-        assert_eq!(
-            strip_click_action(&next_close, MousePress::Left, 3, Some(&next_close)),
-            Nothing
-        );
-        // The same for middle clicks, on a tab or on its ×.
-        assert_eq!(
-            strip_click_action(&next_tab, MousePress::Middle, 2, Some(&tab)),
-            Nothing
-        );
-        assert_eq!(
-            strip_click_action(&next_tab, MousePress::Middle, 2, Some(&close)),
-            Nothing
-        );
-        assert_eq!(
-            strip_click_action(&next_close, MousePress::Middle, 2, Some(&tab)),
-            Nothing
-        );
-        // Separate clicks, too far apart to make a streak, close one tab
-        // each.
-        assert_eq!(
-            strip_click_action(&next_close, MousePress::Left, 1, Some(&close)),
-            Close(8)
-        );
-        assert_eq!(
-            strip_click_action(&next_tab, MousePress::Middle, 1, Some(&tab)),
-            Close(8)
-        );
-        // A close is held back only when the press before it in the streak
-        // was a close too.
-        assert_eq!(
-            strip_click_action(&close, MousePress::Left, 2, Some(&tab)),
-            Close(7)
-        );
-        assert_eq!(
-            strip_click_action(&close, MousePress::Left, 2, Some(&bar)),
-            Close(7)
-        );
-        assert_eq!(
-            strip_click_action(&close, MousePress::Left, 2, None),
-            Close(7)
-        );
+        // Right after a press that neither closed nor spawned, the remaining
+        // mappings hold as for a single click.
+        for prev in [
+            (&tab7, Activate(7)),
+            (&bar, ActivateLeaf(3)),
+            (&close7, Nothing),
+            (&bar, Nothing),
+        ] {
+            assert_eq!(strip_click_action(&close7, Left, Some(prev)), Close(7));
+            assert_eq!(strip_click_action(&close7, Middle, Some(prev)), Close(7));
+            assert_eq!(strip_click_action(&tab7, Middle, Some(prev)), Close(7));
+            assert_eq!(strip_click_action(&tab8, Left, Some(prev)), Activate(8));
+            assert_eq!(strip_click_action(&bar, Middle, Some(prev)), Nothing);
+            for item in strip {
+                assert_eq!(strip_click_action(item, Right, Some(prev)), Nothing);
+            }
+        }
 
-        // A double click whose first press closed a tab and whose second
-        // lands on the strip space that close uncovered is no double click
-        // on that space: it focuses the leaf and spawns nothing.
+        // A left press on empty strip spawns only as the second press of a
+        // pair on the same stretch of the same tab's strip, whose first
+        // press focused the leaf.
         assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 2, Some(&close)),
+            strip_click_action(&bar, Left, Some((&bar, ActivateLeaf(3)))),
+            SpawnInLeaf(3)
+        );
+        // Same stretch, but the first press did nothing (a middle click).
+        assert_eq!(
+            strip_click_action(&bar, Left, Some((&bar, Nothing))),
             ActivateLeaf(3)
         );
-        // Nor is one whose first press hit another leaf's strip, another
-        // tab's strip, or no strip at all.
+        // First press on another leaf's strip, another tab's strip, a tab.
         assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 2, Some(&other_bar)),
+            strip_click_action(&bar, Left, Some((&other_bar, ActivateLeaf(4)))),
             ActivateLeaf(3)
         );
         assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 2, Some(&other_tabs_bar)),
+            strip_click_action(&bar, Left, Some((&other_tabs_bar, ActivateLeaf(3)))),
             ActivateLeaf(3)
         );
         assert_eq!(
-            strip_click_action(&bar, MousePress::Left, 2, None),
+            strip_click_action(&bar, Left, Some((&tab7, Activate(7)))),
             ActivateLeaf(3)
         );
-        // A tab that slid under the second press is just clicked.
+    }
+
+    #[test]
+    fn quick_strip_presses_after_a_close_or_spawn_stay_swallowed() {
+        use MousePress::{Left, Middle};
+        use StripClickAction::*;
+        let (tab7, close7, tab8, close8) = (tab_item(7), close_item(7), tab_item(8), close_item(8));
+        let bar = bar_item(1, 3);
+        // The pane that a double click on the empty strip spawns.
+        let close9 = close_item(9);
+
+        // Double click on ×: the second press hits the same ×, or the next
+        // tab's × that slid under it.
         assert_eq!(
-            strip_click_action(&next_tab, MousePress::Left, 2, Some(&close)),
-            Activate(8)
+            quick_run(&[(&close7, Left), (&close7, Left)]),
+            [Close(7), Nothing]
+        );
+        assert_eq!(
+            quick_run(&[(&close7, Left), (&close8, Left)]),
+            [Close(7), Nothing]
+        );
+        // A tab with an unseen marker narrows when the close brings it to
+        // the front, and the second press hits the neighbour's body.
+        assert_eq!(
+            quick_run(&[(&close7, Left), (&tab8, Left)]),
+            [Close(7), Nothing]
+        );
+        // The second press hits the strip space that the close uncovered.
+        assert_eq!(
+            quick_run(&[(&close7, Left), (&bar, Left)]),
+            [Close(7), Nothing]
+        );
+        // Triple click on ×: the third press is swallowed too.
+        assert_eq!(
+            quick_run(&[(&close7, Left), (&close7, Left), (&close7, Left)]),
+            [Close(7), Nothing, Nothing]
+        );
+        assert_eq!(
+            quick_run(&[(&close7, Left), (&close8, Left), (&close8, Left)]),
+            [Close(7), Nothing, Nothing]
+        );
+        // Middle double click on a tab.
+        assert_eq!(
+            quick_run(&[(&tab7, Middle), (&tab8, Middle)]),
+            [Close(7), Nothing]
+        );
+        // Double click on the empty strip spawns one pane.
+        assert_eq!(
+            quick_run(&[(&bar, Left), (&bar, Left)]),
+            [ActivateLeaf(3), SpawnInLeaf(3)]
+        );
+        // Triple click on the empty strip spawns one pane, and the third
+        // press does not close the new pane whose × appeared under it.
+        assert_eq!(
+            quick_run(&[(&bar, Left), (&bar, Left), (&close9, Left)]),
+            [ActivateLeaf(3), SpawnInLeaf(3), Nothing]
+        );
+        assert_eq!(
+            quick_run(&[(&bar, Left), (&bar, Left), (&bar, Left), (&bar, Left)]),
+            [ActivateLeaf(3), SpawnInLeaf(3), Nothing, Nothing]
+        );
+        // Quick presses that neither close nor spawn swallow nothing.
+        assert_eq!(
+            quick_run(&[(&tab7, Left), (&tab8, Left), (&close8, Left)]),
+            [Activate(7), Activate(8), Close(8)]
         );
     }
 }

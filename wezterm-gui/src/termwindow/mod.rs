@@ -464,10 +464,10 @@ pub struct TermWindow {
 
     /// Keeps track of double and triple clicks
     last_mouse_click: Option<LastMouseClick>,
-    /// The pane tab strip item that the last press hit, or None if it hit
-    /// no strip. `last_mouse_click` only tells that two presses hit the
-    /// same cell, which after a close may hold a different strip item.
-    last_strip_press: Option<UIItemType>,
+    /// The last press, if it hit a pane tab strip; None if it hit anything
+    /// else. Strip multi-clicks are judged from this rather than from
+    /// `last_mouse_click`, see `mouse_event_pane_strip`.
+    last_strip_press: Option<mouseevent::StripPress>,
 
     /// The URL over which we are currently hovering
     current_highlight: Option<Arc<Hyperlink>>,
@@ -1716,12 +1716,35 @@ impl TermWindow {
 
         // Hidden stack members must not count: their output would otherwise
         // keep invalidating a window that can't show them.
-        tab.contains_visible_pane(pane_id)
+        if tab.contains_visible_pane(pane_id) {
+            return true;
+        }
+
+        // A pane-level overlay (the close confirmation, for one) is a mux
+        // pane of its own that no tab contains, and it is drawn in place of
+        // the pane it covers. Without this its output never repaints, and
+        // what it wrote after the last paint stays unseen until something
+        // else repaints. Look the id up among the few overlays first, so the
+        // tab is only asked again on a match.
+        let covered = self
+            .pane_state
+            .borrow()
+            .iter()
+            .find_map(|(covered, state)| {
+                state
+                    .overlay
+                    .as_ref()
+                    .filter(|overlay| overlay.pane.pane_id() == pane_id)
+                    .map(|_| *covered)
+            });
+        covered.map_or(false, |covered| tab.contains_visible_pane(covered))
     }
 
     fn mux_pane_output_event(&mut self, pane_id: PaneId) {
         metrics::histogram!("mux.pane_output_event.rate").record(1.);
-        if self.is_pane_visible(pane_id) || self.hidden_pane_output_needs_repaint(pane_id) {
+        let visible = self.is_pane_visible(pane_id);
+        log::trace!("mux_pane_output_event: pane {pane_id} visible={visible}");
+        if visible || self.hidden_pane_output_needs_repaint(pane_id) {
             if let Some(ref win) = self.window {
                 win.invalidate();
             }
