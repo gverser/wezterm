@@ -1,14 +1,16 @@
+use crate::spawn::SpawnWhere;
 use crate::tabbar::{tab_drop_index, TabBarItem};
 use crate::termwindow::{
-    GuiWin, MouseCapture, PositionedSplit, ScrollHit, TermWindowNotif, UIItem, UIItemType, TMB,
+    tab_member, GuiWin, MouseCapture, PositionedSplit, ScrollHit, TermWindowNotif, UIItem,
+    UIItemType, TMB,
 };
 use ::window::{
     MouseButtons as WMB, MouseCursor, MouseEvent, MouseEventKind as WMEK, MousePress,
     WindowDecorations, WindowOps, WindowState,
 };
-use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnTabDomain};
+use config::keyassignment::{KeyAssignment, MouseEventTrigger, SpawnCommand, SpawnTabDomain};
 use config::MouseEventAltScreen;
-use mux::pane::{Pane, WithPaneLines};
+use mux::pane::{Pane, PaneId, WithPaneLines};
 use mux::tab::SplitDirection;
 use mux::Mux;
 use mux_lua::MuxPane;
@@ -497,12 +499,85 @@ impl super::TermWindow {
             | UIItemType::SidebarCollapseToggle => {
                 self.mouse_event_sidebar(item, event, context);
             }
-            // Clicks on pane stack strips are not acted on yet; registering
-            // the items already keeps them from reaching the pane below.
             UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
-            | UIItemType::PaneTabBar { .. } => {}
+            | UIItemType::PaneTabBar { .. } => {
+                self.mouse_event_pane_strip(item.item_type, event, context);
+            }
         }
+    }
+
+    fn mouse_event_pane_strip(
+        &mut self,
+        item: UIItemType,
+        event: MouseEvent,
+        context: &dyn WindowOps,
+    ) {
+        if let WMEK::Press(press) = event.kind {
+            // mouse_event_impl has already counted this press into the streak.
+            let streak = self.last_mouse_click.as_ref().map_or(1, |c| c.streak);
+            let action = strip_click_action(&item, press, streak);
+            if action != StripClickAction::Nothing {
+                self.perform_strip_click_action(&item, action, context);
+            }
+        }
+        context.set_cursor(Some(MouseCursor::Arrow));
+    }
+
+    /// Each action changes the active pane at most once.
+    fn perform_strip_click_action(
+        &mut self,
+        item: &UIItemType,
+        action: StripClickAction,
+        context: &dyn WindowOps,
+    ) {
+        let item_tab_id = match item {
+            UIItemType::PaneTab { tab_id, .. }
+            | UIItemType::PaneTabClose { tab_id, .. }
+            | UIItemType::PaneTabBar { tab_id, .. } => *tab_id,
+            _ => return,
+        };
+        let tab = match Mux::get().get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+        // Hit regions are registered while painting, so they describe the
+        // previous frame; if another tab has become active since, they are
+        // stale and their ids may not belong to this tab.
+        if tab.tab_id() != item_tab_id {
+            return;
+        }
+        // While zoomed, iter_stacks holds only the zoomed leaf, so the leaf
+        // has to be found by its index and not by its position in the list.
+        let visible_member_of = |leaf: usize| {
+            tab.iter_stacks()
+                .into_iter()
+                .find(|stack| stack.index == leaf)
+                .and_then(|stack| stack.panes.get(stack.visible).cloned())
+        };
+        match action {
+            StripClickAction::Activate(pane_id) => {
+                if let Some(pane) = tab_member(&tab, pane_id) {
+                    tab.set_active_pane(&pane);
+                }
+            }
+            StripClickAction::Close(pane_id) => self.close_pane_by_id(pane_id, true),
+            StripClickAction::ActivateLeaf(leaf) => {
+                if let Some(pane) = visible_member_of(leaf) {
+                    tab.set_active_pane(&pane);
+                }
+            }
+            StripClickAction::SpawnInLeaf(leaf) => {
+                if let Some(pane) = visible_member_of(leaf) {
+                    self.spawn_command(
+                        &SpawnCommand::default(),
+                        SpawnWhere::PaneStack(pane.pane_id()),
+                    );
+                }
+            }
+            StripClickAction::Nothing => {}
+        }
+        context.invalidate();
     }
 
     pub fn mouse_event_close_tab(
@@ -1185,5 +1260,94 @@ fn mouse_press_to_tmb(press: &MousePress) -> TMB {
         MousePress::Left => TMB::Left,
         MousePress::Right => TMB::Right,
         MousePress::Middle => TMB::Middle,
+    }
+}
+
+/// What a press on a pane stack strip asks for. Kept apart from the window
+/// so that the mapping from button, streak and target can be tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StripClickAction {
+    /// Bring this member to the front of its stack and focus it.
+    Activate(PaneId),
+    /// Close this member, asking first if it wants to be asked.
+    Close(PaneId),
+    /// Focus the visible member of the leaf with this index.
+    ActivateLeaf(usize),
+    /// Spawn a new member into the leaf with this index.
+    SpawnInLeaf(usize),
+    Nothing,
+}
+
+fn strip_click_action(item: &UIItemType, press: MousePress, streak: usize) -> StripClickAction {
+    match (item, press) {
+        (UIItemType::PaneTab { pane_id, .. }, MousePress::Left) => {
+            StripClickAction::Activate(*pane_id)
+        }
+        // The close button sits inside its tab, so a middle click on it is
+        // still a middle click on the tab.
+        (UIItemType::PaneTab { pane_id, .. }, MousePress::Middle)
+        | (UIItemType::PaneTabClose { pane_id, .. }, MousePress::Left | MousePress::Middle) => {
+            StripClickAction::Close(*pane_id)
+        }
+        (UIItemType::PaneTabBar { leaf, .. }, MousePress::Left) => match streak {
+            1 => StripClickAction::ActivateLeaf(*leaf),
+            // The first click of the pair has already focused the leaf.
+            2 => StripClickAction::SpawnInLeaf(*leaf),
+            // The streak keeps counting while clicks keep coming; a third
+            // click must not spawn a second pane.
+            _ => StripClickAction::Nothing,
+        },
+        _ => StripClickAction::Nothing,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn strip_click_actions_follow_the_spec_table() {
+        use StripClickAction::*;
+        let tab = UIItemType::PaneTab {
+            tab_id: 1,
+            pane_id: 7,
+        };
+        let close = UIItemType::PaneTabClose {
+            tab_id: 1,
+            pane_id: 7,
+        };
+        let bar = UIItemType::PaneTabBar { tab_id: 1, leaf: 3 };
+
+        // The five rows of the table.
+        assert_eq!(strip_click_action(&tab, MousePress::Left, 1), Activate(7));
+        assert_eq!(strip_click_action(&close, MousePress::Left, 1), Close(7));
+        assert_eq!(strip_click_action(&tab, MousePress::Middle, 1), Close(7));
+        assert_eq!(
+            strip_click_action(&bar, MousePress::Left, 2),
+            SpawnInLeaf(3)
+        );
+        assert_eq!(
+            strip_click_action(&bar, MousePress::Left, 1),
+            ActivateLeaf(3)
+        );
+
+        // The right button does nothing anywhere on the strip.
+        for item in [&tab, &close, &bar] {
+            for streak in 1..=3 {
+                assert_eq!(strip_click_action(item, MousePress::Right, streak), Nothing);
+            }
+        }
+
+        // A middle click on the close button is a middle click on its tab.
+        assert_eq!(strip_click_action(&close, MousePress::Middle, 1), Close(7));
+        // Only a single or a double click on empty strip space acts; a
+        // third click must not spawn a second pane.
+        assert_eq!(strip_click_action(&bar, MousePress::Left, 3), Nothing);
+        assert_eq!(strip_click_action(&bar, MousePress::Middle, 1), Nothing);
+        // Items that are not part of a strip are not handled here.
+        assert_eq!(
+            strip_click_action(&UIItemType::ScrollThumb, MousePress::Left, 1),
+            Nothing
+        );
     }
 }

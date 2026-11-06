@@ -110,6 +110,16 @@ pub fn get_window_class() -> String {
     WINDOW_CLASS.lock().unwrap().clone()
 }
 
+/// `pane_id` if it is a member of `tab`, visible or hidden. Taking it from
+/// the tab rather than the mux matters to `Tab::set_active_pane`: called
+/// with a pane outside the zoomed leaf it may unzoom (unzoom_on_switch_pane)
+/// before finding that the pane is not in the tab at all.
+fn tab_member(tab: &Tab, pane_id: PaneId) -> Option<Arc<dyn Pane>> {
+    tab.iter_all_panes()
+        .into_iter()
+        .find(|pane| pane.pane_id() == pane_id)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MouseCapture {
     UI,
@@ -3581,9 +3591,8 @@ impl TermWindow {
         }
     }
     fn close_current_pane(&mut self, confirm: bool) {
-        let mux_window_id = self.mux_window_id;
         let mux = Mux::get();
-        let tab = match mux.get_active_tab_for_window(mux_window_id) {
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
             Some(tab) => tab,
             None => return,
         };
@@ -3591,9 +3600,37 @@ impl TermWindow {
             Some(p) => p,
             None => return,
         };
+        self.close_pane_by_id(pane.pane_id(), confirm);
+    }
 
-        let pane_id = pane.pane_id();
+    /// Closes a pane of the active tab, visible or hidden, first asking if
+    /// `confirm` is set and the pane wants to be asked about.
+    fn close_pane_by_id(&mut self, pane_id: PaneId, confirm: bool) {
+        let mux_window_id = self.mux_window_id;
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(mux_window_id) {
+            Some(tab) => tab,
+            None => return,
+        };
+        // confirm_close_pane kills the pane through the active tab, so a
+        // pane from anywhere else cannot be closed this way.
+        let pane = match tab_member(&tab, pane_id) {
+            Some(p) => p,
+            None => return,
+        };
+
         if confirm && !pane.can_close_without_prompting(CloseReason::Pane) {
+            // The prompt is drawn in place of the pane, and gets keys only
+            // while that pane is the active one. A hidden stack member is not
+            // drawn at all, and one in another split would leave the keys
+            // going to the current pane, so either is brought forward first;
+            // set_active_pane does both in a single focus change.
+            let is_active = tab
+                .get_active_pane()
+                .map_or(false, |active| active.pane_id() == pane_id);
+            if !is_active {
+                tab.set_active_pane(&pane);
+            }
             let window = self.window.clone().unwrap();
             let (overlay, future) = start_overlay_pane(self, &pane, move |pane_id, term| {
                 confirm_close_pane(pane_id, term, mux_window_id, window)
