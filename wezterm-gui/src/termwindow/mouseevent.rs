@@ -49,7 +49,10 @@ impl super::TermWindow {
             | UIItemType::SidebarSearch
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
-            | UIItemType::SidebarCollapseToggle => {}
+            | UIItemType::SidebarCollapseToggle
+            | UIItemType::PaneTab { .. }
+            | UIItemType::PaneTabClose { .. }
+            | UIItemType::PaneTabBar { .. } => {}
         }
     }
 
@@ -66,7 +69,10 @@ impl super::TermWindow {
             | UIItemType::SidebarSearch
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
-            | UIItemType::SidebarCollapseToggle => {}
+            | UIItemType::SidebarCollapseToggle
+            | UIItemType::PaneTab { .. }
+            | UIItemType::PaneTabClose { .. }
+            | UIItemType::PaneTabBar { .. } => {}
         }
     }
 
@@ -491,6 +497,11 @@ impl super::TermWindow {
             | UIItemType::SidebarCollapseToggle => {
                 self.mouse_event_sidebar(item, event, context);
             }
+            // Clicks on pane stack strips are not acted on yet; registering
+            // the items already keeps them from reaching the pane below.
+            UIItemType::PaneTab { .. }
+            | UIItemType::PaneTabClose { .. }
+            | UIItemType::PaneTabBar { .. } => {}
         }
     }
 

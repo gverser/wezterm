@@ -40,6 +40,7 @@ pub mod draw;
 pub mod fancy_tab_bar;
 pub mod paint;
 pub mod pane;
+pub mod pane_strip;
 pub mod screen_line;
 pub mod sidebar;
 pub mod split;
@@ -393,6 +394,27 @@ impl crate::TermWindow {
         };
 
         (padding_left + left_gap, padding_top + top_gap)
+    }
+
+    /// Pixel position of cell (0, 0) of the tab's grid: padding, the OS and
+    /// window frame border (whose left edge also holds the sidebar) and the
+    /// tab bar when it sits at the top. This is the origin `paint_pane` uses
+    /// for pane content; `pane.rs` and `split.rs` keep their own inline
+    /// copies so that merging upstream stays easy, which means a change to
+    /// that arithmetic has to be made in all three places.
+    pub fn content_origin_pixels(&self) -> anyhow::Result<(f32, f32)> {
+        let (padding_left, padding_top) = self.padding_left_top();
+        let top_bar_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {
+            self.tab_bar_pixel_height()
+                .context("tab_bar_pixel_height")?
+        } else {
+            0.
+        };
+        let border = self.get_os_border();
+        Ok((
+            padding_left + border.left.get() as f32,
+            top_bar_height + padding_top + border.top.get() as f32,
+        ))
     }
 
     fn resolve_lock_glyph(

@@ -2,11 +2,9 @@
 //! one `Line` of cells plus hit regions out. Rendering and mouse
 //! registration live elsewhere; keeping this free of GUI state makes the
 //! width arithmetic unit-testable.
-// Not called until the strip renderer lands; drop this allow then.
-#![allow(dead_code)]
 use finl_unicode::grapheme_clusters::Graphemes;
 use mux::pane::PaneId;
-use termwiz::cell::{unicode_column_width, Cell, CellAttributes};
+use termwiz::cell::{Cell, CellAttributes};
 use termwiz::surface::SEQ_ZERO;
 use wezterm_term::Line;
 
@@ -189,6 +187,7 @@ fn tab_cells(tab: &StripTab, w: usize, attrs: &CellAttributes) -> Vec<Cell> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use termwiz::cell::unicode_column_width;
     use termwiz::color::AnsiColor;
 
     fn attrs(color: AnsiColor) -> CellAttributes {

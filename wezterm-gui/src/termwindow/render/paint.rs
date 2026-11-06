@@ -103,6 +103,7 @@ impl crate::TermWindow {
                 }
             }
         }
+        self.prune_hidden_output();
         log::debug!("paint_impl before call_draw elapsed={:?}", start.elapsed());
 
         self.call_draw(frame).ok();
@@ -259,6 +260,12 @@ impl crate::TermWindow {
             }
             self.paint_pane(&pos, &mut layers).context("paint_pane")?;
         }
+
+        // After the panes, so the strip covers the half cell of background
+        // that a pane spills above its first row; before the splits, so a
+        // split's hit region beats the strip's where they touch.
+        self.paint_pane_strips(&mut layers)
+            .context("paint_pane_strips")?;
 
         if let Some(pane) = self.get_active_pane_or_overlay() {
             let splits = self.get_splits();

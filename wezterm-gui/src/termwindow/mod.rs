@@ -21,6 +21,7 @@ use crate::termwindow::background::{
 use crate::termwindow::keyevent::{KeyTableArgs, KeyTableState};
 use crate::termwindow::modal::Modal;
 use crate::termwindow::render::paint::AllowImage;
+use crate::termwindow::render::pane_strip::HiddenOutputTracker;
 use crate::termwindow::render::{
     CachedLineState, LineQuadCacheKey, LineQuadCacheValue, LineToEleShapeCacheKey,
     LineToElementShapeItem,
@@ -170,6 +171,23 @@ pub enum UIItemType {
     SidebarMenuItem(crate::termwindow::sidebar::MenuAction),
     /// The chevron that collapses the sidebar to a rail and back.
     SidebarCollapseToggle,
+    /// A tab in a pane stack's strip.
+    PaneTab {
+        tab_id: TabId,
+        pane_id: PaneId,
+    },
+    /// The close button on a tab in a pane stack's strip.
+    PaneTabClose {
+        tab_id: TabId,
+        pane_id: PaneId,
+    },
+    /// A whole pane stack strip; tabs and close buttons are registered on
+    /// top of it, so this only catches the empty area. `leaf` is the
+    /// topological leaf index, as in `PositionedStack::index`.
+    PaneTabBar {
+        tab_id: TabId,
+        leaf: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -463,6 +481,9 @@ pub struct TermWindow {
     /// Per-window UI state for the session sidebar. The tree it displays is
     /// process-wide; see `crate::sessions::store::with_store`.
     pub sidebar: crate::termwindow::sidebar::SidebarState,
+
+    /// Rate-limits repaints for output from hidden pane stack members.
+    hidden_output: HiddenOutputTracker,
 
     modal: RefCell<Option<Rc<dyn Modal>>>,
 
@@ -980,6 +1001,7 @@ impl TermWindow {
             ui_items: vec![],
             dragging: None,
             sidebar: Default::default(),
+            hidden_output: HiddenOutputTracker::default(),
             last_ui_item: None,
             is_click_to_focus_window: false,
             key_table_state: KeyTableState::default(),
@@ -1684,11 +1706,40 @@ impl TermWindow {
 
     fn mux_pane_output_event(&mut self, pane_id: PaneId) {
         metrics::histogram!("mux.pane_output_event.rate").record(1.);
-        if self.is_pane_visible(pane_id) {
+        if self.is_pane_visible(pane_id) || self.hidden_pane_output_needs_repaint(pane_id) {
             if let Some(ref win) = self.window {
                 win.invalidate();
             }
         }
+    }
+
+    /// A hidden stack member is not drawn, but its strip tab shows an
+    /// unseen marker; see `HiddenOutputTracker` for why this repaints once
+    /// per unseen episode rather than per output.
+    fn hidden_pane_output_needs_repaint(&mut self, pane_id: PaneId) -> bool {
+        let mux = Mux::get();
+        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) => tab,
+            None => return false,
+        };
+        // Every window hears every pane's output, so most calls are for
+        // panes in other tabs or windows; skip the rest of the lookups then.
+        let in_active_tab = tab.contains_pane(pane_id);
+        let (visible, unseen) = if in_active_tab {
+            // `visible` is asked of the tab rather than taken from
+            // is_pane_visible: under a tab overlay that is false for every
+            // pane, and the visible members it covers would then repaint on
+            // each output, since prune drops visible members every frame.
+            (
+                tab.contains_visible_pane(pane_id),
+                mux.get_pane(pane_id)
+                    .map_or(false, |pane| pane.has_unseen_output()),
+            )
+        } else {
+            (false, false)
+        };
+        self.hidden_output
+            .on_output(pane_id, in_active_tab, visible, unseen)
     }
 
     fn mux_pane_output_event_callback(
