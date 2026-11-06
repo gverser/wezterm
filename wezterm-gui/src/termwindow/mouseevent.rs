@@ -566,14 +566,6 @@ impl super::TermWindow {
         if tab.tab_id() != item_tab_id {
             return;
         }
-        // While zoomed, iter_stacks holds only the zoomed leaf, so the leaf
-        // has to be found by its index and not by its position in the list.
-        let visible_member_of = |leaf: usize| {
-            tab.iter_stacks()
-                .into_iter()
-                .find(|stack| stack.index == leaf)
-                .and_then(|stack| stack.panes.get(stack.visible).cloned())
-        };
         match action {
             StripClickAction::Activate(pane_id) => {
                 if let Some(pane) = tab_member(&tab, pane_id) {
@@ -581,13 +573,15 @@ impl super::TermWindow {
                 }
             }
             StripClickAction::Close(pane_id) => self.close_pane_by_id(pane_id, true),
+            // The strip names its leaf by the real leaf index, which is what
+            // visible_pane_of_leaf takes, also while zoomed.
             StripClickAction::ActivateLeaf(leaf) => {
-                if let Some(pane) = visible_member_of(leaf) {
+                if let Some(pane) = tab.visible_pane_of_leaf(leaf) {
                     tab.set_active_pane(&pane);
                 }
             }
             StripClickAction::SpawnInLeaf(leaf) => {
-                if let Some(pane) = visible_member_of(leaf) {
+                if let Some(pane) = tab.visible_pane_of_leaf(leaf) {
                     self.spawn_command(
                         &SpawnCommand::default(),
                         SpawnWhere::PaneStack(pane.pane_id()),

@@ -3326,65 +3326,54 @@ impl TermWindow {
                 }
             }
             SpawnCommandInPaneStack(spawn) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                let tab = match self.pane_stack_tab("SpawnCommandInPaneStack") {
                     Some(tab) => tab,
                     None => return Ok(PerformAssignmentResult::Handled),
                 };
-                if self.tab_state(tab.tab_id()).overlay.is_some() {
-                    return Ok(PerformAssignmentResult::Handled);
-                }
-                if tab.header_rows() == 0 {
-                    log::info!("SpawnCommandInPaneStack requires enable_pane_tab_bar");
-                    return Ok(PerformAssignmentResult::Handled);
-                }
                 if let Some(pane) = tab.get_active_pane() {
                     self.spawn_command(spawn, SpawnWhere::PaneStack(pane.pane_id()));
                 }
             }
             ActivatePaneStackRelative(n) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                let tab = match self.pane_stack_tab("ActivatePaneStackRelative") {
                     Some(tab) => tab,
                     None => return Ok(PerformAssignmentResult::Handled),
                 };
-                if self.tab_state(tab.tab_id()).overlay.is_some() {
-                    return Ok(PerformAssignmentResult::Handled);
-                }
-                if tab.header_rows() == 0 {
-                    log::info!("ActivatePaneStackRelative requires enable_pane_tab_bar");
-                    return Ok(PerformAssignmentResult::Handled);
-                }
                 tab.activate_stack_relative(*n);
                 if let Some(window) = self.window.as_ref() {
                     window.invalidate();
                 }
             }
             MovePaneToStack(direction) => {
-                let mux = Mux::get();
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                let tab = match self.pane_stack_tab("MovePaneToStack") {
                     Some(tab) => tab,
                     None => return Ok(PerformAssignmentResult::Handled),
                 };
-                if self.tab_state(tab.tab_id()).overlay.is_some() {
-                    return Ok(PerformAssignmentResult::Handled);
-                }
-                if tab.header_rows() == 0 {
-                    log::info!("MovePaneToStack requires enable_pane_tab_bar");
-                    return Ok(PerformAssignmentResult::Handled);
-                }
-                if let (Some(pane), Some((target, index))) =
-                    (tab.get_active_pane(), tab.neighbor_stack_target(*direction))
-                {
-                    let pane_id = pane.pane_id();
-                    promise::spawn::spawn(async move {
-                        let mux = Mux::get();
-                        if let Err(err) = mux.move_pane_to_stack(pane_id, target, index).await {
-                            log::error!("MovePaneToStack failed: {:#}", err);
-                        }
-                    })
-                    .detach();
-                }
+                let pane = match tab.get_active_pane() {
+                    Some(pane) => pane,
+                    None => return Ok(PerformAssignmentResult::Handled),
+                };
+                let (target, index) = match tab.neighbor_stack_target(*direction) {
+                    Some(target) => target,
+                    None => {
+                        // Otherwise a binding that does nothing gives no clue
+                        // why.
+                        log::debug!(
+                            "MovePaneToStack({:?}): no neighbouring pane stack \
+                             (none that way, Next/Prev, or zoomed)",
+                            direction
+                        );
+                        return Ok(PerformAssignmentResult::Handled);
+                    }
+                };
+                let pane_id = pane.pane_id();
+                promise::spawn::spawn(async move {
+                    let mux = Mux::get();
+                    if let Err(err) = mux.move_pane_to_stack(pane_id, target, index).await {
+                        log::error!("MovePaneToStack failed: {:#}", err);
+                    }
+                })
+                .detach();
             }
             ActivatePaneDirection(direction) => {
                 let mux = Mux::get();
@@ -3552,6 +3541,22 @@ impl TermWindow {
         Ok(PerformAssignmentResult::Handled)
     }
 
+    /// The active tab for the pane stack key action named `action`, or None
+    /// if the action is to do nothing: there is no active tab, an overlay
+    /// covers it, or it has no pane tab bar. The last is logged because the
+    /// binding otherwise looks broken.
+    fn pane_stack_tab(&self, action: &str) -> Option<Arc<Tab>> {
+        let tab = Mux::get().get_active_tab_for_window(self.mux_window_id)?;
+        if self.tab_state(tab.tab_id()).overlay.is_some() {
+            return None;
+        }
+        if tab.header_rows() == 0 {
+            log::info!("{} requires enable_pane_tab_bar", action);
+            return None;
+        }
+        Some(tab)
+    }
+
     fn do_open_link_at_mouse_cursor(&self, pane: &Arc<dyn Pane>) {
         // They clicked on a link, so let's open it!
         // We need to ensure that we spawn the `open` call outside of the context
@@ -3629,13 +3634,9 @@ impl TermWindow {
             // while that pane is the active one. A hidden stack member is not
             // drawn at all, and one in another split would leave the keys
             // going to the current pane, so either is brought forward first;
-            // set_active_pane does both in a single focus change.
-            let is_active = tab
-                .get_active_pane()
-                .map_or(false, |active| active.pane_id() == pane_id);
-            if !is_active {
-                tab.set_active_pane(&pane);
-            }
+            // set_active_pane does both in a single focus change, and does
+            // nothing at all for the pane that is already active.
+            tab.set_active_pane(&pane);
             let window = self.window.clone().unwrap();
             let (overlay, future) = start_overlay_pane(self, &pane, move |pane_id, term| {
                 confirm_close_pane(pane_id, term, mux_window_id, window)
