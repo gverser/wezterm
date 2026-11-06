@@ -3259,6 +3259,67 @@ impl TermWindow {
                     }
                 }
             }
+            SpawnCommandInPaneStack(spawn) => {
+                let mux = Mux::get();
+                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                    Some(tab) => tab,
+                    None => return Ok(PerformAssignmentResult::Handled),
+                };
+                if self.tab_state(tab.tab_id()).overlay.is_some() {
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                if tab.header_rows() == 0 {
+                    log::info!("SpawnCommandInPaneStack requires enable_pane_tab_bar");
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                if let Some(pane) = tab.get_active_pane() {
+                    self.spawn_command(spawn, SpawnWhere::PaneStack(pane.pane_id()));
+                }
+            }
+            ActivatePaneStackRelative(n) => {
+                let mux = Mux::get();
+                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                    Some(tab) => tab,
+                    None => return Ok(PerformAssignmentResult::Handled),
+                };
+                if self.tab_state(tab.tab_id()).overlay.is_some() {
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                if tab.header_rows() == 0 {
+                    log::info!("ActivatePaneStackRelative requires enable_pane_tab_bar");
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                tab.activate_stack_relative(*n);
+                if let Some(window) = self.window.as_ref() {
+                    window.invalidate();
+                }
+            }
+            MovePaneToStack(direction) => {
+                let mux = Mux::get();
+                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+                    Some(tab) => tab,
+                    None => return Ok(PerformAssignmentResult::Handled),
+                };
+                if self.tab_state(tab.tab_id()).overlay.is_some() {
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                if tab.header_rows() == 0 {
+                    log::info!("MovePaneToStack requires enable_pane_tab_bar");
+                    return Ok(PerformAssignmentResult::Handled);
+                }
+                if let (Some(pane), Some((target, index))) =
+                    (tab.get_active_pane(), tab.neighbor_stack_target(*direction))
+                {
+                    let pane_id = pane.pane_id();
+                    promise::spawn::spawn(async move {
+                        let mux = Mux::get();
+                        if let Err(err) = mux.move_pane_to_stack(pane_id, target, index).await {
+                            log::error!("MovePaneToStack failed: {:#}", err);
+                        }
+                    })
+                    .detach();
+                }
+            }
             ActivatePaneDirection(direction) => {
                 let mux = Mux::get();
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {

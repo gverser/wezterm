@@ -596,7 +596,8 @@ fn spawn_command_from_action(action: &KeyAssignment) -> Option<&SpawnCommand> {
         SplitHorizontal(command)
         | SplitVertical(command)
         | SpawnCommandInNewWindow(command)
-        | SpawnCommandInNewTab(command) => Some(command),
+        | SpawnCommandInNewTab(command)
+        | SpawnCommandInPaneStack(command) => Some(command),
         _ => None,
     }
 }
@@ -1590,6 +1591,38 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_down"),
         },
+        SpawnCommandInPaneStack(_) => CommandDef {
+            brief: "Spawn a new pane in this pane stack".into(),
+            doc: "Spawns a new pane as a member of the current pane's stack".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window"],
+            icon: None,
+        },
+        ActivatePaneStackRelative(n) => CommandDef {
+            brief: match *n {
+                1 => "Activate the next pane in this stack".into(),
+                -1 => "Activate the previous pane in this stack".into(),
+                n => format!("Activate the pane {n} places along in this stack").into(),
+            },
+            doc: "Changes which member of the current pane stack is visible".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window"],
+            icon: None,
+        },
+        MovePaneToStack(direction) => CommandDef {
+            brief: format!(
+                "Move pane into the {} pane stack",
+                format!("{direction:?}").to_lowercase()
+            )
+            .into(),
+            doc: "Moves the active pane into the neighbouring pane stack in that direction".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["Window"],
+            icon: None,
+        },
         TogglePaneZoomState => CommandDef {
             brief: "Toggle Pane Zoom".into(),
             doc: "Toggles the zoom state for the current pane".into(),
@@ -2056,7 +2089,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
 /// included in the default key assignments and command palette.
 fn compute_default_actions() -> Vec<KeyAssignment> {
     // These are ordered by their position within the various menus
-    return vec![
+    let mut actions = vec![
         // ----------------- WezTerm
         ReloadConfiguration,
         #[cfg(target_os = "macos")]
@@ -2186,4 +2219,19 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         // ----------------- Misc
         OpenLinkAtMouseCursor,
     ];
+
+    // Pane stack commands do nothing unless the pane tab bar is on, so keep
+    // them out of the palette and menubar while the feature is disabled.
+    if config::configuration().enable_pane_tab_bar {
+        actions.extend([
+            SpawnCommandInPaneStack(SpawnCommand::default()),
+            ActivatePaneStackRelative(1),
+            ActivatePaneStackRelative(-1),
+            MovePaneToStack(PaneDirection::Left),
+            MovePaneToStack(PaneDirection::Right),
+            MovePaneToStack(PaneDirection::Up),
+            MovePaneToStack(PaneDirection::Down),
+        ]);
+    }
+    actions
 }

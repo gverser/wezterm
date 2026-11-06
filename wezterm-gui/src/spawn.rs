@@ -3,6 +3,7 @@ use config::keyassignment::SpawnCommand;
 use config::TermConfig;
 use mux::activity::Activity;
 use mux::domain::SplitSource;
+use mux::pane::PaneId;
 use mux::tab::SplitRequest;
 use mux::window::WindowId as MuxWindowId;
 use mux::Mux;
@@ -15,6 +16,8 @@ pub enum SpawnWhere {
     NewWindow,
     NewTab,
     SplitPane(SplitRequest),
+    /// Add a new member to the pane stack that contains this pane.
+    PaneStack(PaneId),
 }
 
 pub fn spawn_command_impl(
@@ -121,6 +124,23 @@ pub async fn spawn_command_internal(
             } else {
                 bail!("there is no active tab while splitting pane!?");
             }
+        }
+        SpawnWhere::PaneStack(target) => {
+            // The new member shares the target's leaf, so it must live in the
+            // same domain as the target; anything else cannot be honoured.
+            let domain = mux.resolve_spawn_tab_domain(Some(target), &spawn.domain)?;
+            let target_pane = mux
+                .get_pane(target)
+                .ok_or_else(|| anyhow!("pane {} not found", target))?;
+            if domain.domain_id() != target_pane.domain_id() {
+                bail!("SpawnCommandInPaneStack only spawns into the current pane's domain");
+            }
+
+            let (pane, _size) = mux
+                .spawn_pane_in_stack(target, cmd_builder, cwd)
+                .await
+                .context("spawn_pane_in_stack")?;
+            pane.set_config(term_config);
         }
         _ => {
             let (_tab, pane, window_id) = mux

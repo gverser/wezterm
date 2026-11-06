@@ -636,6 +636,9 @@ pub enum KeyAssignment {
     CopyMode(CopyModeAssignment),
     RotatePanes(RotationDirection),
     SplitPane(SplitPane),
+    SpawnCommandInPaneStack(SpawnCommand),
+    ActivatePaneStackRelative(isize),
+    MovePaneToStack(PaneDirection),
     PaneSelect(PaneSelectArguments),
     CharSelect(CharSelectArguments),
 
@@ -739,4 +742,24 @@ pub struct KeyTables {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyTableEntry {
     pub action: KeyAssignment,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn pane_stack_actions_round_trip_through_dynamic() {
+        let actions = vec![
+            KeyAssignment::SpawnCommandInPaneStack(SpawnCommand::default()),
+            KeyAssignment::ActivatePaneStackRelative(-1),
+            KeyAssignment::MovePaneToStack(PaneDirection::Left),
+        ];
+        for action in actions {
+            let value = action.to_dynamic();
+            let back = KeyAssignment::from_dynamic(&value, FromDynamicOptions::default())
+                .unwrap_or_else(|e| panic!("{:?} failed to round trip: {:#}", action, e));
+            assert_eq!(action, back);
+        }
+    }
 }
