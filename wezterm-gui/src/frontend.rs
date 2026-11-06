@@ -83,7 +83,32 @@ impl GuiFrontEnd {
                 }
                 MuxNotification::PaneFocused(pane_id) => {
                     promise::spawn::spawn_into_main_thread(async move {
+                        // This runs some time after the focus change that
+                        // produced the notification, and the tab may have
+                        // moved on since: two focus changes within one
+                        // main-thread task (eg: a `Multiple` action) queue
+                        // two of these, and only the last one still
+                        // describes the tab. Replaying a stale one would
+                        // focus that pane again, which emits a fresh
+                        // PaneFocused and queues another replay; the two
+                        // replays then take turns forever, the spawn queue
+                        // never drains and the window stops responding.
+                        // So drop a notification whose pane is no longer
+                        // its tab's active pane. For one that is, the pane
+                        // already has focus, and the call below only
+                        // brings its tab and window to the front.
                         let mux = Mux::get();
+                        let still_active = mux
+                            .resolve_pane_id(pane_id)
+                            .and_then(|(_domain, _window, tab_id)| mux.get_tab(tab_id))
+                            .and_then(|tab| tab.get_active_pane())
+                            .map_or(false, |active| active.pane_id() == pane_id);
+                        log::trace!(
+                            "deferred PaneFocused({pane_id}): still active in its tab: {still_active}"
+                        );
+                        if !still_active {
+                            return;
+                        }
                         if let Err(err) = mux.focus_pane_and_containing_tab(pane_id) {
                             log::error!("Error reconciling PaneFocused notification: {err:#}");
                         }

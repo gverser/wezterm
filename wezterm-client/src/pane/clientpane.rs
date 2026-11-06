@@ -226,8 +226,30 @@ impl ClientPane {
                 // it here.
                 log::trace!("advised of remote pane focus: {pane_id}");
 
+                // This is the server reporting what it has focused, not a
+                // new choice made here, so it must not be reported back.
+                // advise_focus reports whenever the pane differs from the
+                // last one we asked the server to focus. After two switches
+                // within one round trip, the late echo of the first switch
+                // differs from that, so reporting it would pull the server
+                // back to the earlier pane; that echo then pulls it forward
+                // again, and the two requests chase each other forever.
+                // Recording the server's choice first lets advise_focus see
+                // that the server already has it.
+                //
+                // The guard must be gone before focusing: that path calls
+                // advise_focus on this same thread, which locks this
+                // std::sync::Mutex again and would deadlock.
+                let prior = {
+                    let mut focused = self.client.focused_remote_pane_id.lock().unwrap();
+                    focused.replace(self.remote_pane_id)
+                };
+
                 let mux = Mux::get();
                 if let Err(err) = mux.focus_pane_and_containing_tab(self.local_pane_id) {
+                    // Local focus did not move, so the last pane we asked
+                    // for is still what this GUI really has focused.
+                    *self.client.focused_remote_pane_id.lock().unwrap() = prior;
                     log::error!("Error reconciling remote PaneFocused notification: {err:#}");
                 }
             }
@@ -608,6 +630,7 @@ impl Pane for ClientPane {
             focused_pane.replace(self.remote_pane_id);
             let client = Arc::clone(&self.client);
             let remote_pane_id = self.remote_pane_id;
+            log::trace!("advise_focus: sending SetFocusedPane for remote pane {remote_pane_id}");
             promise::spawn::spawn(async move {
                 client
                     .client
