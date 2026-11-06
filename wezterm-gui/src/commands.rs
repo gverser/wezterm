@@ -1592,7 +1592,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("fa_long_arrow_down"),
         },
         SpawnCommandInPaneStack(_) => CommandDef {
-            brief: "Spawn a new pane in this pane stack".into(),
+            brief: label_string(action, "Spawn a new pane in this pane stack".to_string()).into(),
             doc: "Spawns a new pane as a member of the current pane's stack".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],

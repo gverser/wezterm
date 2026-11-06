@@ -399,9 +399,10 @@ impl crate::TermWindow {
     /// Pixel position of cell (0, 0) of the tab's grid: padding, the OS and
     /// window frame border (whose left edge also holds the sidebar) and the
     /// tab bar when it sits at the top. This is the origin `paint_pane` uses
-    /// for pane content; `pane.rs` and `split.rs` keep their own inline
-    /// copies so that merging upstream stays easy, which means a change to
-    /// that arithmetic has to be made in all three places.
+    /// for pane content; `pane.rs`, `split.rs` and `mouseevent.rs`
+    /// (`mouse_event_impl`) keep their own inline copies so that merging
+    /// upstream stays easy, which means a change to that arithmetic has to
+    /// be made in all four places.
     pub fn content_origin_pixels(&self) -> anyhow::Result<(f32, f32)> {
         let (padding_left, padding_top) = self.padding_left_top();
         let top_bar_height = if self.show_tab_bar && !self.config.tab_bar_at_bottom {

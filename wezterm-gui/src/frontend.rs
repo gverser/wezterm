@@ -95,8 +95,9 @@ impl GuiFrontEnd {
                         // never drains and the window stops responding.
                         // So drop a notification whose pane is no longer
                         // its tab's active pane. For one that is, the pane
-                        // already has focus, and the call below only
-                        // brings its tab and window to the front.
+                        // already has focus, and the call below only makes
+                        // its tab the active tab of its mux window; it does
+                        // not raise the OS window.
                         let mux = Mux::get();
                         let still_active = mux
                             .resolve_pane_id(pane_id)

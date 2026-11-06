@@ -133,12 +133,20 @@ fn natural_width(tab: &StripTab) -> usize {
         + marker_width(tab)
 }
 
-/// Width of a grapheme as `Cell` will actually store it. Measuring with
-/// anything else (e.g. `unicode_column_width`) disagrees for zero-width
-/// graphemes and control chars, which `Cell` still gives one column, and
-/// that would push the trailing " × " out of its hit region.
+/// Columns that `push_text` writes for a grapheme: 2 for a wide one and 1
+/// for anything else. Measuring with anything else (e.g.
+/// `unicode_column_width`) disagrees for zero-width graphemes and control
+/// chars, and that would push the trailing " × " out of its hit region.
+/// Even `Cell::width` reports 0 for a zero-width grapheme of 8 bytes or
+/// more, which it keeps on the heap with its raw width, so it is only
+/// asked whether the grapheme is wide; that width is capped at 2.
 fn grapheme_width(g: &str) -> usize {
-    Cell::new_grapheme(g, CellAttributes::default(), None).width()
+    let w = Cell::new_grapheme(g, CellAttributes::default(), None).width();
+    if w == 2 {
+        2
+    } else {
+        1
+    }
 }
 
 /// Append `s` grapheme by grapheme. A wide grapheme is followed by a blank
@@ -358,18 +366,33 @@ mod test {
 
     #[test]
     fn strip_narrow_keeps_visible_tab_with_markers() {
-        let tabs: Vec<_> = (0..10).map(|i| tab(i, "t", i == 6, false)).collect();
+        let tabs: Vec<_> = (0..10)
+            .map(|i| tab(i, &format!("t{i}"), i == 6, false))
+            .collect();
         let s = layout_strip(&tabs, true, 30, &style());
         assert_eq!(s.line.len(), 30);
         assert_eq!(s.line.get_cell(0).unwrap().str(), "‹");
         assert_eq!(s.line.get_cell(29).unwrap().str(), "›");
         assert_eq!(s.line.get_cell(0).unwrap().attrs(), &style().hidden);
         assert_eq!(s.line.get_cell(29).unwrap().attrs(), &style().hidden);
-        assert!(s
+        // 30 cells hold 3 tabs of MIN_TAB = 8. The window starts
+        // (3 - 1) / 2 = 1 tab before the visible tab 6, so tab 6 is the
+        // middle one, drawn with its own title.
+        assert_eq!(s.line.as_str(), "‹t5   ×  t6   ×  t7   ×      ›");
+        let tab_hits: Vec<_> = s
             .hits
             .iter()
-            .any(|h| h.kind == StripHitKind::Tab(6) && h.width == 8));
-        assert!(!s.hits.is_empty());
+            .filter(|h| matches!(h.kind, StripHitKind::Tab(_)))
+            .map(|h| (h.kind, h.x, h.width))
+            .collect();
+        assert_eq!(
+            tab_hits,
+            vec![
+                (StripHitKind::Tab(5), 0, 8),
+                (StripHitKind::Tab(6), 8, 8),
+                (StripHitKind::Tab(7), 16, 8),
+            ]
+        );
         for h in &s.hits {
             assert!(h.x + h.width <= 30, "{:?}", h);
         }
@@ -383,6 +406,8 @@ mod test {
             "a\tb",
             "\u{0301}ab",
             "a\u{200E}b",
+            // One grapheme of 8 bytes, which Cell stores on the heap.
+            "\u{0301}\u{0301}\u{0301}\u{0301}ab",
         ] {
             for width in [20, 12, 9] {
                 let s = layout_strip(
