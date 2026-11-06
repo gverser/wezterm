@@ -1203,7 +1203,9 @@ async fn spawn_pane_in_stack(
         .await?;
 
     // Report where the new pane actually is rather than where the target
-    // was before the await, since the client maps its mirror from these ids.
+    // was before the await, which may have moved since. `ClientDomain` only
+    // takes `pane_id` from this reply and rebuilds its mirror by resyncing,
+    // so the other ids are not what it relies on, but they should be true.
     let pane_id = pane.pane_id();
     let (_domain_id, window_id, tab_id) = mux
         .resolve_pane_id(pane_id)
