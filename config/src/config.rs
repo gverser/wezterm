@@ -179,6 +179,11 @@ pub struct Config {
     #[dynamic(default = "default_true")]
     pub session_sidebar_enabled: bool,
 
+    /// Show a status bar with the server's CPU, memory, network, uptime,
+    /// users and disks under panes opened from a sidebar ssh session.
+    #[dynamic(default = "default_true")]
+    pub ssh_status_bar_enabled: bool,
+
     /// How wide the session sidebar should be
     #[dynamic(
         try_from = "crate::units::PixelUnit",

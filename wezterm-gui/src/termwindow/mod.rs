@@ -491,6 +491,13 @@ pub struct TermWindow {
     /// Set by `ToggleKeywordHighlight`; overrides `keyword_highlight_enabled`
     /// for this window until the next toggle.
     keyword_highlight_override: Option<bool>,
+
+    /// Whether the ssh status bar's height is currently folded into
+    /// `border.bottom`. Changed only between frames; see `sync_status_bar`.
+    status_bar_shown: bool,
+    status_bar_pending: bool,
+    /// The drawn status bar, keyed by what it said and where.
+    status_bar_computed: Option<(String, Vec<box_model::ComputedElement>)>,
     highlight_rules: Rc<Vec<crate::highlight::CompiledRule>>,
     /// Recoloured copies of lines, by the original's shape hash and the shape
     /// generation they were made under.
@@ -907,12 +914,14 @@ impl TermWindow {
             0.
         };
 
+        // No status bar yet: the window opens before any ssh pane can be active.
         let border = Self::get_os_border_impl(
             &None,
             &config,
             &dimensions,
             &render_metrics,
             initial_sidebar_width,
+            0.,
         );
 
         dimensions.pixel_height += (border.top + border.bottom).get() as usize;
@@ -1005,6 +1014,9 @@ impl TermWindow {
                 &config,
             )),
             keyword_highlight_override: None,
+            status_bar_shown: false,
+            status_bar_pending: false,
+            status_bar_computed: None,
             highlight_rules: Rc::new(crate::highlight::compile_rules(
                 &config.keyword_highlight_rules,
             )),
@@ -1636,6 +1648,9 @@ impl TermWindow {
                         self.update_title_post_status();
                     }
                     MuxNotification::PaneRemoved(_) => {
+                        // An ssh connection whose last pane this was keeps
+                        // running only for its background channel; let it go.
+                        crate::sessions::monitor::prune_monitors();
                         // Losing the last pane changes what the title should
                         // say, and in a window that is deliberately left empty
                         // nothing else ever comes along to correct it -- the
@@ -2130,6 +2145,55 @@ impl TermWindow {
         let result = crate::highlight::highlight_line(line, &self.highlight_rules).map(Rc::new);
         self.highlight_cache.borrow_mut().put(key, result.clone());
         result
+    }
+
+    /// The sidebar ssh domain whose status the bar should show: that of the
+    /// active pane, when the bar is enabled.
+    pub fn status_bar_domain(&self) -> Option<mux::domain::DomainId> {
+        if !self.config.ssh_status_bar_enabled {
+            return None;
+        }
+        let pane = self.get_active_pane_no_overlay()?;
+        crate::sessions::ssh::ssh_domain_of_pane(&*pane).map(|(_, domain)| domain)
+    }
+
+    /// Height of the status bar band, or 0 while it is hidden.
+    pub fn status_bar_pixel_height(&self) -> f32 {
+        if self.status_bar_shown {
+            self.render_metrics.cell_size.height as f32
+        } else {
+            0.
+        }
+    }
+
+    /// Show or hide the status bar to match the active pane.
+    ///
+    /// Called at the start of each paint, but the change itself is deferred to
+    /// the event loop: it resizes every tab in the window, which has no
+    /// business happening in the middle of drawing them.
+    fn sync_status_bar(&mut self) {
+        let wanted = crate::sessions::monitor::wants_status_bar(
+            self.config.ssh_status_bar_enabled,
+            self.status_bar_domain().is_some(),
+        );
+        if wanted == self.status_bar_shown || self.status_bar_pending {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        self.status_bar_pending = true;
+        window.notify(TermWindowNotif::Apply(Box::new(|tw| {
+            tw.status_bar_pending = false;
+            let wanted = crate::sessions::monitor::wants_status_bar(
+                tw.config.ssh_status_bar_enabled,
+                tw.status_bar_domain().is_some(),
+            );
+            if wanted != tw.status_bar_shown {
+                tw.status_bar_shown = wanted;
+                tw.apply_chrome_geometry_change();
+            }
+        })));
     }
 
     pub fn toggle_keyword_highlight(&mut self) {

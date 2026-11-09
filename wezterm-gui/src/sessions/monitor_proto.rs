@@ -376,8 +376,20 @@ pub fn level_for(pct: f32) -> Level {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentKind {
+    Host,
+    Cpu,
+    Mem,
+    Net,
+    Uptime,
+    Users,
+    Disks,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
+    pub kind: SegmentKind,
     pub text: String,
     pub level: Level,
 }
@@ -407,62 +419,50 @@ fn pct(used: u64, total: u64) -> f32 {
 /// the users, uptime, network and host go in that order. CPU and memory always
 /// stay, even if that overflows.
 pub fn status_segments(s: &ServerStatus, max_cells: usize) -> Vec<Segment> {
-    #[derive(PartialEq)]
-    enum Kind {
-        Host,
-        Cpu,
-        Mem,
-        Net,
-        Uptime,
-        Users,
-        Disks,
-    }
-    let normal = |text: String| Segment {
+    use SegmentKind as Kind;
+    let normal = |kind: Kind, text: String| Segment {
+        kind,
         text,
         level: Level::Normal,
     };
 
-    let mut segments: Vec<(Kind, Segment)> = vec![];
+    let mut segments: Vec<Segment> = vec![];
     if !s.host.is_empty() {
-        segments.push((Kind::Host, normal(s.host.clone())));
+        segments.push(normal(Kind::Host, s.host.clone()));
     }
-    segments.push((
-        Kind::Cpu,
-        match s.cpu_pct {
-            Some(p) => Segment {
-                text: format!("CPU {p:.0}%"),
-                level: level_for(p),
-            },
-            None => normal("CPU --".to_string()),
+    segments.push(match s.cpu_pct {
+        Some(p) => Segment {
+            kind: Kind::Cpu,
+            text: format!("CPU {p:.0}%"),
+            level: level_for(p),
         },
-    ));
+        None => normal(Kind::Cpu, "CPU --".to_string()),
+    });
     let (unit, div) = unit_for(s.mem_total_kb as f64 * 1024.);
-    segments.push((
-        Kind::Mem,
-        Segment {
-            text: format!(
-                "内存 {}/{}{}",
-                number(s.mem_used_kb as f64 * 1024. / div),
-                number(s.mem_total_kb as f64 * 1024. / div),
-                UNITS[unit]
-            ),
-            level: level_for(pct(s.mem_used_kb, s.mem_total_kb)),
-        },
-    ));
+    segments.push(Segment {
+        kind: Kind::Mem,
+        text: format!(
+            "内存 {}/{}{}",
+            number(s.mem_used_kb as f64 * 1024. / div),
+            number(s.mem_total_kb as f64 * 1024. / div),
+            UNITS[unit]
+        ),
+        level: level_for(pct(s.mem_used_kb, s.mem_total_kb)),
+    });
     let rate = |r: Option<f64>| match r {
         Some(r) => format!("{}/s", human_bytes(r.max(0.) as u64)),
         None => "--".to_string(),
     };
-    segments.push((
+    segments.push(normal(
         Kind::Net,
-        normal(format!("↓{} ↑{}", rate(s.rx_bps), rate(s.tx_bps))),
+        format!("↓{} ↑{}", rate(s.rx_bps), rate(s.tx_bps)),
     ));
-    segments.push((
+    segments.push(normal(
         Kind::Uptime,
-        normal(format!("运行 {}", human_uptime(s.uptime_secs))),
+        format!("运行 {}", human_uptime(s.uptime_secs)),
     ));
     if !s.users.is_empty() {
-        segments.push((Kind::Users, normal(format!("用户 {}", s.users.join(",")))));
+        segments.push(normal(Kind::Users, format!("用户 {}", s.users.join(","))));
     }
     let disk_level = s
         .disks
@@ -472,22 +472,17 @@ pub fn status_segments(s: &ServerStatus, max_cells: usize) -> Vec<Segment> {
         .unwrap_or(Level::Normal);
     let disk_text = |d: &DiskUsage| format!("{} {:.0}%", d.mount, pct(d.used_kb, d.size_kb));
     if !s.disks.is_empty() {
-        segments.push((
-            Kind::Disks,
-            Segment {
-                text: s.disks.iter().map(disk_text).collect::<Vec<_>>().join("  "),
-                level: disk_level,
-            },
-        ));
+        segments.push(Segment {
+            kind: Kind::Disks,
+            text: s.disks.iter().map(disk_text).collect::<Vec<_>>().join("  "),
+            level: disk_level,
+        });
     }
 
-    let fits = |segments: &[(Kind, Segment)]| {
-        let plain: Vec<Segment> = segments.iter().map(|(_, s)| s.clone()).collect();
-        segments_width(&plain) <= max_cells
-    };
+    let fits = |segments: &[Segment]| segments_width(segments) <= max_cells;
 
     if !fits(&segments) && s.disks.len() > 1 {
-        if let Some((_, seg)) = segments.iter_mut().find(|(k, _)| *k == Kind::Disks) {
+        if let Some(seg) = segments.iter_mut().find(|seg| seg.kind == Kind::Disks) {
             seg.text = format!("{} +{}", disk_text(&s.disks[0]), s.disks.len() - 1);
         }
     }
@@ -502,10 +497,10 @@ pub fn status_segments(s: &ServerStatus, max_cells: usize) -> Vec<Segment> {
         if fits(&segments) {
             break;
         }
-        segments.retain(|(k, _)| *k != drop);
+        segments.retain(|seg| seg.kind != drop);
     }
 
-    segments.into_iter().map(|(_, s)| s).collect()
+    segments
 }
 
 #[cfg(test)]

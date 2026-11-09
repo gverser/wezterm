@@ -16,6 +16,7 @@ pub enum AllowImage {
 impl crate::TermWindow {
     pub fn paint_impl(&mut self, frame: &mut RenderFrame) {
         self.num_frames += 1;
+        self.sync_status_bar();
         // If nothing on screen needs animating, then we can avoid
         // invalidating as frequently
         *self.has_animation.borrow_mut() = None;
@@ -295,6 +296,10 @@ impl crate::TermWindow {
             // `palette()` needs &mut self to populate its cache.
             let palette = self.palette().clone();
             self.paint_sidebar(&palette).context("paint_sidebar")?;
+        }
+
+        if self.status_bar_shown {
+            self.paint_status_bar().context("paint_status_bar")?;
         }
 
         self.paint_modal().context("paint_modal")?;

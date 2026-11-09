@@ -49,7 +49,10 @@ impl crate::TermWindow {
                 )?;
             }
 
-            let border_bottom = border_dimensions.bottom.get() as f32;
+            // `border.bottom` also carries the status bar, which paints its
+            // own band; the frame border is only the part below it.
+            let border_bottom =
+                border_dimensions.bottom.get() as f32 - self.status_bar_pixel_height();
             if border_bottom > 0.0 {
                 self.filled_rectangle(
                     layers,
@@ -94,6 +97,7 @@ impl crate::TermWindow {
         dimensions: &crate::Dimensions,
         render_metrics: &RenderMetrics,
         sidebar_width: f32,
+        status_bar_height: f32,
     ) -> window::parameters::Border {
         let mut border = os_parameters
             .as_ref()
@@ -146,6 +150,10 @@ impl crate::TermWindow {
         );
 
         border.left += ULength::new(sidebar_width.max(0.).ceil() as usize);
+        // Likewise the status bar along the bottom of the content area: the
+        // terminal rows, the scrollbar and a bottom tab bar all measure from
+        // `border.bottom`.
+        border.bottom += ULength::new(status_bar_height.max(0.).ceil() as usize);
 
         border
     }
@@ -157,6 +165,7 @@ impl crate::TermWindow {
             &self.dimensions,
             &self.render_metrics,
             self.sidebar_width(),
+            self.status_bar_pixel_height(),
         )
     }
 }

@@ -46,12 +46,13 @@ impl crate::TermWindow {
     pub fn sidebar_bounds(&self) -> RectF {
         let border = self.get_os_border();
         let width = self.sidebar_width();
+        // The status bar sits to the right of the sidebar, not under it.
+        let bottom = border.bottom.get() as f32 - self.status_bar_pixel_height();
         euclid::rect(
             (border.left.get() as f32 - width).max(0.),
             border.top.get() as f32,
             width,
-            (self.dimensions.pixel_height as f32 - (border.top + border.bottom).get() as f32)
-                .max(0.),
+            (self.dimensions.pixel_height as f32 - border.top.get() as f32 - bottom).max(0.),
         )
     }
 

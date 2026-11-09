@@ -96,6 +96,10 @@ As features stabilize some brief notes about them will accumulate here.
   [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),
   [ActivatePaneStackRelative](config/lua/keyassignment/ActivatePaneStackRelative.md)
   and [MovePaneToStack](config/lua/keyassignment/MovePaneToStack.md).
+* SSH status bar: under panes opened from a sidebar ssh session, a row shows
+  the server's CPU, memory, network, uptime, users and disks, collected over
+  the same connection without installing anything on the server. See
+  [ssh_status_bar_enabled](config/lua/config/ssh_status_bar_enabled.md).
 * Keyword highlighting: words such as `error`, `warning` and `ok`, and IPv4
   addresses, are coloured in terminal output wherever the program left them in
   the default colour, after MobaXterm's syntax highlighting. It only changes

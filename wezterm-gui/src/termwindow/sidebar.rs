@@ -218,7 +218,7 @@ impl super::TermWindow {
             self.release_sidebar_focus();
             self.sidebar.menu = None;
         }
-        self.apply_sidebar_geometry_change();
+        self.apply_chrome_geometry_change();
     }
 
     pub fn focus_session_sidebar_search(&mut self) {
@@ -227,14 +227,15 @@ impl super::TermWindow {
         }
         if self.sidebar.collapsed {
             self.sidebar.collapsed = false;
-            self.apply_sidebar_geometry_change();
+            self.apply_chrome_geometry_change();
         }
         self.sidebar.focus = Some(SidebarFocus::Search);
         self.invalidate_sidebar();
     }
 
-    /// Re-run the window geometry now that the sidebar's width has changed.
-    fn apply_sidebar_geometry_change(&mut self) {
+    /// Re-run the window geometry now that the sidebar's width or the status
+    /// bar has changed.
+    pub(crate) fn apply_chrome_geometry_change(&mut self) {
         if let Some(window) = self.window.as_ref().map(|w| w.clone()) {
             let dimensions = self.dimensions;
             self.apply_dimensions(&dimensions, None, &window);
@@ -326,9 +327,7 @@ impl super::TermWindow {
         if row_height <= 0. {
             return 0;
         }
-        let border = self.get_os_border();
-        let available = (self.dimensions.pixel_height as f32)
-            - (border.top + border.bottom).get() as f32
+        let available = self.sidebar_bounds().height()
             // the search box occupies one row
             - row_height;
         (available / row_height).floor().max(0.) as usize
@@ -1064,7 +1063,7 @@ impl super::TermWindow {
             // the width and stop it following the configured value.
             if (width - self.sidebar_width()).abs() >= 1. {
                 self.sidebar.width = Some(width);
-                self.apply_sidebar_geometry_change();
+                self.apply_chrome_geometry_change();
             }
         }
         context.invalidate();
