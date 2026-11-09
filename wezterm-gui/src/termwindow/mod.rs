@@ -74,6 +74,7 @@ pub mod box_model;
 pub mod charselect;
 pub mod clipboard;
 pub mod feishu_panel;
+pub mod form;
 pub mod keyevent;
 mod modal;
 mod mouseevent;
@@ -199,6 +200,9 @@ pub enum UIItemType {
         tab_id: TabId,
         leaf: usize,
     },
+    /// An element of the current modal; the index means whatever that modal
+    /// says it means.
+    ModalItem(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1242,6 +1246,17 @@ impl TermWindow {
                 // the keyboard. When that is a sidebar field, keeping it in
                 // `dead_key_status` would draw the half-typed text in the
                 // terminal instead.
+                let modal_took_it = !self.sidebar_has_keyboard_focus()
+                    && match self.get_modal() {
+                        Some(modal) => modal.set_composing(
+                            match &status {
+                                DeadKeyStatus::Composing(text) => Some(text.clone()),
+                                DeadKeyStatus::None => None,
+                            },
+                            self,
+                        ),
+                        None => false,
+                    };
                 if self.sidebar_has_keyboard_focus() {
                     self.sidebar.composing = match &status {
                         DeadKeyStatus::Composing(text) => Some(text.clone()),
@@ -1249,6 +1264,9 @@ impl TermWindow {
                     };
                     self.dead_key_status = DeadKeyStatus::None;
                     self.invalidate_sidebar();
+                } else if modal_took_it {
+                    self.sidebar.composing = None;
+                    self.dead_key_status = DeadKeyStatus::None;
                 } else {
                     self.sidebar.composing = None;
                     self.dead_key_status = status;

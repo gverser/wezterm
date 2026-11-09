@@ -157,6 +157,13 @@ impl crate::TermWindow {
 
                 self.ui_items.append(&mut ui_items);
             }
+            // The panes have just placed the IME candidate window at a
+            // terminal cursor; a modal with a text field takes it back.
+            if let Some(rect) = modal.text_cursor_rect(self) {
+                if let Some(win) = self.window.as_ref() {
+                    win.set_text_cursor_position(rect);
+                }
+            }
         }
 
         Ok(())

@@ -834,6 +834,14 @@ impl super::TermWindow {
                     return;
                 }
 
+                // Likewise a modal with text fields.
+                if let Some(modal) = self.get_modal() {
+                    if modal.insert_text(&s, self) {
+                        context.invalidate();
+                        return;
+                    }
+                }
+
                 if self.config.debug_key_events {
                     log::info!("send to pane string={:?}", s);
                 }

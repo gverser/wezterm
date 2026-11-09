@@ -54,7 +54,8 @@ impl super::TermWindow {
             | UIItemType::SidebarCollapseToggle
             | UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
-            | UIItemType::PaneTabBar { .. } => {}
+            | UIItemType::PaneTabBar { .. }
+            | UIItemType::ModalItem(_) => {}
         }
     }
 
@@ -74,7 +75,8 @@ impl super::TermWindow {
             | UIItemType::SidebarCollapseToggle
             | UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
-            | UIItemType::PaneTabBar { .. } => {}
+            | UIItemType::PaneTabBar { .. }
+            | UIItemType::ModalItem(_) => {}
         }
     }
 
@@ -280,6 +282,19 @@ impl super::TermWindow {
             );
             if !on_strip {
                 self.last_strip_press = None;
+            }
+        }
+
+        // A modal that owns the mouse lets nothing through to what is
+        // underneath it: a click beside a dialog must not land in the
+        // terminal or open a sidebar session.
+        if let Some(modal) = self.get_modal() {
+            let on_modal = matches!(
+                ui_item.as_ref().map(|item| &item.item_type),
+                Some(UIItemType::ModalItem(_))
+            );
+            if modal.captures_mouse() && !on_modal {
+                return;
             }
         }
 
@@ -529,6 +544,11 @@ impl super::TermWindow {
             | UIItemType::PaneTabClose { .. }
             | UIItemType::PaneTabBar { .. } => {
                 self.mouse_event_pane_strip(item, event, context);
+            }
+            UIItemType::ModalItem(index) => {
+                if let Some(modal) = self.get_modal() {
+                    modal.ui_item_event(index, &event, self);
+                }
             }
         }
     }

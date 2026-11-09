@@ -101,7 +101,7 @@ impl crate::TermWindow {
         ))
     }
 
-    fn sidebar_colors(&self) -> TabBarColors {
+    pub(crate) fn sidebar_colors(&self) -> TabBarColors {
         // The sidebar deliberately reuses the tab bar palette rather than
         // introducing a dozen colour options of its own.
         self.config
