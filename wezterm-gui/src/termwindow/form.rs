@@ -269,6 +269,18 @@ impl FormState {
         }
     }
 
+    /// The IME's uncommitted text as field `i` shows it: masked like the
+    /// value in a password field.
+    pub fn display_composing(&self, i: usize) -> String {
+        let composing = self.composing.clone().unwrap_or_default();
+        match self.fields.get(i).map(|f| &f.kind) {
+            Some(FieldKind::Password) if !self.reveal_password => {
+                "•".repeat(composing.chars().count())
+            }
+            _ => composing,
+        }
+    }
+
     pub fn error_for(&self, i: usize) -> Option<&str> {
         self.errors
             .iter()
@@ -596,7 +608,7 @@ impl FormModal {
                     let mut shown = state.display_value(i);
                     if focused && field.enabled {
                         let at = FormState::byte_offset(&shown, state.cursor);
-                        let composing = state.composing.clone().unwrap_or_default();
+                        let composing = state.display_composing(i);
                         shown.insert_str(at, &format!("{composing}\u{258f}"));
                     }
                     let c = if !field.enabled {
@@ -787,7 +799,7 @@ impl FormModal {
                 .find(|item| item.item_type == UIItemType::ModalItem(index))?;
             let shown = state.display_value(state.focus);
             let prefix: String = shown.chars().take(state.cursor).collect();
-            let composing = state.composing.clone().unwrap_or_default();
+            let composing = state.display_composing(state.focus);
             let cells =
                 unicode_column_width(&prefix, None) + unicode_column_width(&composing, None);
             Some(::window::Rect::new(
@@ -1035,6 +1047,20 @@ mod test {
         f.reveal_password = true;
         assert_eq!(f.display_value(1), "secret");
         assert_eq!(f.display_value(0), "ab");
+    }
+
+    #[test]
+    fn password_composition_is_masked_until_revealed() {
+        // An IME composes ASCII too when it is in its native mode; what is
+        // being typed into a password must not show.
+        let mut f = form();
+        f.composing = Some("pass".into());
+        assert_eq!(f.display_composing(1), "••••");
+        assert_eq!(f.display_composing(0), "pass");
+        f.reveal_password = true;
+        assert_eq!(f.display_composing(1), "pass");
+        f.composing = None;
+        assert_eq!(f.display_composing(1), "");
     }
 
     #[test]
