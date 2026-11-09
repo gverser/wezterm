@@ -10,6 +10,7 @@ pub use wezterm_sessions::{
     store, NodeId, NodeKind, Placement, RowKind, SessionNode, SessionSpawn, VisibleRow,
 };
 
+pub mod forms;
 pub mod ssh;
 
 use std::ops::Range;

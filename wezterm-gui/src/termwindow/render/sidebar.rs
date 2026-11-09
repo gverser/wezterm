@@ -121,7 +121,10 @@ impl crate::TermWindow {
         // cheap; the fancy tab bar caches its computed element for the same
         // reason. The generation guards against edits made from an overlay,
         // which never reach `invalidate_sidebar`.
-        let generation = with_store(|store| store.generation());
+        let generation = (
+            with_store(|store| store.generation()),
+            crate::sessions::ssh::with_ssh_hosts(|store| store.generation()),
+        );
         let stale = match &self.sidebar_computed {
             Some((cached, _)) => *cached != generation,
             None => true,
@@ -504,6 +507,11 @@ impl crate::TermWindow {
         let prefix = match row.kind {
             RowKind::Folder { expanded: true } => "\u{25be} ",
             RowKind::Folder { expanded: false } => "\u{25b8} ",
+            RowKind::Session
+                if crate::sessions::ssh::with_ssh_hosts(|store| store.get(row.id).is_some()) =>
+            {
+                "\u{21c4} "
+            }
             RowKind::Session => "\u{2022} ",
         };
 

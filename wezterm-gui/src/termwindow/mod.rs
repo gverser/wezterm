@@ -442,7 +442,8 @@ pub struct TermWindow {
     /// Cached sidebar geometry, paired with the session store generation it was
     /// built from. Rebuilding it every frame means re-shaping every row's text,
     /// which roughly doubled frame time; see `invalidate_sidebar`.
-    sidebar_computed: Option<(u64, Vec<box_model::ComputedElement>)>,
+    /// Keyed by the generations of the session store and the ssh host store.
+    sidebar_computed: Option<((u64, u64), Vec<box_model::ComputedElement>)>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,

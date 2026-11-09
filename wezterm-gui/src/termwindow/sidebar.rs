@@ -7,7 +7,9 @@
 //! Drawing lives in `termwindow::render::sidebar`; the tree itself lives in
 //! `crate::sessions`.
 
+use crate::sessions::forms;
 use crate::sessions::ssh::{ssh_domain_name, with_ssh_hosts};
+use crate::termwindow::form::FormModal;
 use crate::sessions::store::with_store;
 use crate::sessions::{
     clamp_scroll, clamp_width, drop_placement, NodeId, NodeKind, Placement, SessionNode,
@@ -45,6 +47,7 @@ pub enum SidebarFocus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     NewSession,
+    NewSshSession,
     NewFolder,
     Rename,
     Edit,
@@ -55,12 +58,22 @@ impl MenuAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::NewSession => "New Session",
+            Self::NewSshSession => "New SSH Session",
             Self::NewFolder => "New Folder",
             Self::Rename => "Rename",
             Self::Edit => "Edit...",
             Self::Delete => "Delete",
         }
     }
+}
+
+/// Which ssh session the form edits: a node that exists, or one to be
+/// created under `parent` when the form is saved (so that cancelling leaves
+/// nothing behind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshEditTarget {
+    New { parent: Option<NodeId> },
+    Existing(NodeId),
 }
 
 /// A right-click menu. We draw this ourselves because there is no native
@@ -555,13 +568,18 @@ impl super::TermWindow {
         let items = match target {
             Some(_) => vec![
                 MenuAction::NewSession,
+                MenuAction::NewSshSession,
                 MenuAction::NewFolder,
                 MenuAction::Rename,
                 MenuAction::Edit,
                 MenuAction::Delete,
             ],
             // Nothing to rename, edit or delete in empty space.
-            None => vec![MenuAction::NewSession, MenuAction::NewFolder],
+            None => vec![
+                MenuAction::NewSession,
+                MenuAction::NewSshSession,
+                MenuAction::NewFolder,
+            ],
         };
         self.sidebar.menu = Some(ContextMenu {
             target,
@@ -636,6 +654,10 @@ impl super::TermWindow {
                     (None, _) => {}
                 }
             }
+            MenuAction::NewSshSession => {
+                let parent = self.insertion_parent(target);
+                self.show_ssh_editor(SshEditTarget::New { parent });
+            }
             MenuAction::Rename => {
                 if let Some(id) = target {
                     self.begin_rename(id);
@@ -676,17 +698,95 @@ impl super::TermWindow {
             return;
         }
 
-        let tab = match Mux::get().get_active_tab_for_window(self.mux_window_id) {
-            Some(tab) => tab,
-            None => return,
-        };
-
-        let (overlay, future) = crate::overlay::start_overlay(self, &tab, move |_tab_id, term| {
-            crate::overlay::session_edit::edit_session_node(term, id, name, spawn)
-        });
-        self.assign_overlay(tab.tab_id(), overlay);
-        promise::spawn::spawn(future).detach();
+        if with_ssh_hosts(|store| store.get(id).is_some()) {
+            self.show_ssh_editor(SshEditTarget::Existing(id));
+        } else {
+            self.show_local_editor(id, name, spawn);
+        }
     }
+
+    /// Put a form up in place of whatever the sidebar was doing. A form is a
+    /// modal rather than an overlay, so it needs no tab: it works in the empty
+    /// window the user starts with.
+    fn open_form(&mut self, form: FormModal) {
+        self.release_sidebar_focus();
+        self.close_sidebar_menu();
+        self.set_modal(std::rc::Rc::new(form));
+    }
+
+    fn show_local_editor(&mut self, id: NodeId, name: String, spawn: SessionSpawn) {
+        let old = spawn.clone();
+        let form = FormModal::new(forms::local_form(&name, &spawn))
+            .validate(forms::validate_local_form)
+            .on_submit(move |state, tw| {
+                let (name, spawn) = forms::local_form_values(state, &old);
+                with_store(|store| {
+                    store.mutate(|tree| {
+                        if let Some(node) = tree.find_mut(id) {
+                            if !name.is_empty() {
+                                node.name = name;
+                            }
+                            if let NodeKind::Session { spawn: s } = &mut node.kind {
+                                *s = spawn;
+                            }
+                        }
+                    })
+                });
+                tw.invalidate_sidebar();
+            });
+        self.open_form(form);
+    }
+
+    pub fn show_ssh_editor(&mut self, target: SshEditTarget) {
+        let (name, host) = match target {
+            SshEditTarget::New { .. } => (String::new(), None),
+            SshEditTarget::Existing(id) => {
+                let name = with_store(|store| store.tree().find(id).map(|n| n.name.clone()));
+                let Some(name) = name else {
+                    return;
+                };
+                (name, with_ssh_hosts(|store| store.get(id).cloned()))
+            }
+        };
+        let form = FormModal::new(forms::ssh_form(&name, host.as_ref()))
+            .on_change(forms::apply_auth_choice)
+            .validate(forms::validate_ssh_form)
+            .on_extra(|field, tw| tw.browse_for_form_field(field))
+            .on_submit(move |state, tw| {
+                let (name, host) = forms::ssh_form_values(state);
+                let id = match target {
+                    SshEditTarget::Existing(id) => {
+                        with_store(|store| store.mutate(|tree| tree.rename(id, name.clone())));
+                        id
+                    }
+                    SshEditTarget::New { parent } => with_store(|store| {
+                        store.mutate(|tree| {
+                            let id = tree.alloc_id();
+                            let spawn = SessionSpawn {
+                                // Recorded so that an older build, which knows
+                                // nothing of ssh_hosts.json, fails to open this
+                                // node rather than opening a local shell.
+                                domain: SpawnTabDomain::DomainName(ssh_domain_name(id)),
+                                ..SessionSpawn::default()
+                            };
+                            let node = SessionNode::session(id, name.clone(), spawn);
+                            if !tree.insert(parent, node.clone()) {
+                                tree.insert(None, node);
+                            }
+                            id
+                        })
+                    }),
+                };
+                with_ssh_hosts(|store| store.set(id, host));
+                tw.sidebar.selected = Some(id);
+                tw.sidebar.failed.remove(&id);
+                tw.invalidate_sidebar();
+            });
+        self.open_form(form);
+    }
+
+    /// The "浏览…" button of a form field. Filled in by the file picker.
+    fn browse_for_form_field(&mut self, _field: usize) {}
 
     fn confirm_delete_session_node(&mut self, id: NodeId) {
         let name = match with_store(|store| store.tree().find(id).map(|node| node.name.clone())) {
@@ -717,6 +817,7 @@ impl super::TermWindow {
             self.confirm_delete_session_node(id);
         } else {
             with_store(|store| store.mutate(|tree| tree.remove(id)));
+            crate::sessions::ssh::forget_deleted_nodes();
             if self.sidebar.selected == Some(id) {
                 self.sidebar.selected = None;
             }

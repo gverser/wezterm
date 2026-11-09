@@ -188,6 +188,21 @@ pub fn ensure_ssh_domain(id: NodeId) -> anyhow::Result<Arc<dyn Domain>> {
 /// reached by name (`wezterm cli spawn --domain-name sidebar-ssh:12`), and
 /// forget hosts whose node has been deleted.
 pub fn register_all_ssh_domains() {
+    for id in forget_deleted_nodes() {
+        if with_ssh_hosts(|store| store.get(id).is_some()) {
+            if let Err(err) = ensure_ssh_domain(id) {
+                log::error!("registering ssh domain for session {id}: {err:#}");
+            }
+        }
+    }
+}
+
+/// Drop the saved hosts of nodes that are no longer in the session tree, and
+/// return the session nodes that are.
+///
+/// Called after anything that removes nodes; deleting a folder takes every
+/// session inside it along.
+pub fn forget_deleted_nodes() -> HashSet<NodeId> {
     let alive: HashSet<NodeId> = with_store(|store| {
         store
             .tree()
@@ -197,13 +212,7 @@ pub fn register_all_ssh_domains() {
             .collect()
     });
     with_ssh_hosts(|store| store.retain_ids(&alive));
-    for id in alive {
-        if with_ssh_hosts(|store| store.get(id).is_some()) {
-            if let Err(err) = ensure_ssh_domain(id) {
-                log::error!("registering ssh domain for session {id}: {err:#}");
-            }
-        }
-    }
+    alive
 }
 
 /// The sidebar node and domain behind a pane, if it is one of ours.

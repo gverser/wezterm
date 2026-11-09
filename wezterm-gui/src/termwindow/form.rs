@@ -63,6 +63,8 @@ pub enum FormButton {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormState {
     pub title: String,
+    /// Lines of text shown under the title, e.g. the question a confirmation asks.
+    pub message: Vec<String>,
     pub fields: Vec<Field>,
     pub buttons: Vec<FormButton>,
     pub focus: usize,
@@ -79,6 +81,7 @@ impl FormState {
     pub fn new(title: &str, fields: Vec<Field>, buttons: Vec<FormButton>) -> Self {
         let mut state = Self {
             title: title.to_string(),
+            message: vec![],
             fields,
             buttons,
             focus: 0,
@@ -300,6 +303,7 @@ use config::Dimension;
 use std::cell::{Ref, RefCell};
 use termwiz::cell::unicode_column_width;
 use wezterm_term::color::ColorAttribute;
+use window::color::LinearRgba;
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
 
 /// What a `UIItemType::ModalItem(n)` index refers to.
@@ -461,18 +465,33 @@ impl FormModal {
             .resolve_fg(ColorAttribute::PaletteIndex(1))
             .to_linear();
 
+        let accent = term_window
+            .palette()
+            .resolve_fg(ColorAttribute::PaletteIndex(12))
+            .to_linear();
+
         let panel_bg_linear = term_window.config.command_palette_bg_color.to_linear();
         let text_linear = term_window.config.command_palette_fg_color.to_linear();
         let panel_bg: InheritableColor = panel_bg_linear.into();
         let text_color: InheritableColor = text_linear.into();
-        let idle = colors.inactive_tab();
-        let active = colors.active_tab();
-        let hover = colors.inactive_tab_hover();
-        let box_colors = |c: &config::TabBarColor| ElementColors {
-            border: BorderColor::default(),
-            bg: c.bg_color.to_linear().into(),
-            text: c.fg_color.to_linear().into(),
+        let dim_text = colors.inactive_tab().fg_color.to_linear();
+        let shade = |c: LinearRgba, f: f32| LinearRgba(c.0 * f, c.1 * f, c.2 * f, c.3);
+        // Input boxes are a darker well in the panel, so that an empty one
+        // still shows where it is; the focused one is darker still and ringed
+        // in the accent colour.
+        let well = shade(panel_bg_linear, 0.55);
+        let focus_well = shade(panel_bg_linear, 0.2);
+        let hover_well = shade(panel_bg_linear, 1.6);
+        let colors_of = |bg: LinearRgba, fg: LinearRgba, border: LinearRgba| ElementColors {
+            border: BorderColor::new(border),
+            bg: bg.into(),
+            text: fg.into(),
         };
+        let idle_box = colors_of(well, text_linear, well);
+        let focus_box = colors_of(focus_well, text_linear, accent);
+        let hover_box = colors_of(hover_well, text_linear, hover_well);
+        let primary_box = colors_of(accent, LinearRgba(1., 1., 1., 1.), accent);
+        let disabled_box = colors_of(well, well, well);
 
         let state = self.state.borrow();
         let mut targets = vec![];
@@ -504,26 +523,34 @@ impl FormModal {
             Element::new(&font, ElementContent::Children(children))
                 .display(DisplayType::Block)
                 .min_width(Some(Dimension::Percent(1.)))
-        };
-        let pad_to = |text: &str, cells: usize| {
-            let w = unicode_column_width(text, None);
-            format!("{text}{}", " ".repeat(cells.saturating_sub(w)))
+                .margin(BoxDimension {
+                    left: Dimension::Cells(0.),
+                    right: Dimension::Cells(0.),
+                    top: Dimension::Cells(0.),
+                    bottom: Dimension::Cells(0.15),
+                })
         };
 
         let mut rows = vec![];
         rows.push(block(vec![plain(state.title.clone())]));
         rows.push(block(vec![plain(String::new())]));
+        for line in &state.message {
+            rows.push(block(vec![plain(line.clone())]));
+        }
 
         for (i, field) in state.fields.iter().enumerate() {
             let focused = i == state.focus;
             let mut row = vec![];
-            let label_text = pad_to(&field.label, label_cells);
-            let mut label = plain(label_text);
+            // Widths are set in cells rather than by padding with spaces: a
+            // CJK glyph from a fallback font need not be exactly two cells
+            // wide, and padding would then leave the boxes ragged.
+            let mut label =
+                plain(field.label.clone()).min_width(Some(Dimension::Cells(label_cells as f32)));
             if !field.enabled {
                 label = label.colors(ElementColors {
                     border: BorderColor::default(),
                     bg: InheritableColor::Inherited,
-                    text: idle.fg_color.to_linear().into(),
+                    text: dim_text.into(),
                 });
             }
             row.push(label);
@@ -534,12 +561,15 @@ impl FormModal {
                         let selected = *option == field.value;
                         let text = format!(" {} {} ", if selected { "●" } else { "○" }, option);
                         let c = if selected && focused {
-                            &active
+                            focus_box.clone()
+                        } else if selected {
+                            colors_of(well, accent, well)
                         } else {
-                            &idle
+                            idle_box.clone()
                         };
                         let mut e = Element::new(&font, ElementContent::Text(text))
-                            .colors(box_colors(c))
+                            .colors(c)
+                            .border(BoxDimension::new(Dimension::Pixels(1.)))
                             .margin(BoxDimension {
                                 left: Dimension::Cells(0.),
                                 right: Dimension::Cells(1.),
@@ -549,7 +579,7 @@ impl FormModal {
                         if field.enabled {
                             e = e
                                 .item_type(tag(Target::Choice(i, option.clone())))
-                                .hover_colors(Some(box_colors(&hover)));
+                                .hover_colors(Some(hover_box.clone()));
                         }
                         row.push(e);
                     }
@@ -561,23 +591,17 @@ impl FormModal {
                         let composing = state.composing.clone().unwrap_or_default();
                         shown.insert_str(at, &format!("{composing}\u{258f}"));
                     }
-                    let shown = pad_to(&shown, value_cells);
-                    let c = if focused && field.enabled {
-                        &active
+                    let c = if !field.enabled {
+                        disabled_box.clone()
+                    } else if focused {
+                        focus_box.clone()
                     } else {
-                        &idle
+                        idle_box.clone()
                     };
-                    let mut e = Element::new(&font, ElementContent::Text(shown)).colors(
-                        if field.enabled {
-                            box_colors(c)
-                        } else {
-                            ElementColors {
-                                border: BorderColor::default(),
-                                bg: idle.bg_color.to_linear().into(),
-                                text: idle.bg_color.to_linear().into(),
-                            }
-                        },
-                    );
+                    let mut e = Element::new(&font, ElementContent::Text(shown))
+                        .colors(c)
+                        .min_width(Some(Dimension::Cells(value_cells as f32)))
+                        .border(BoxDimension::new(Dimension::Pixels(1.)));
                     if field.enabled {
                         e = e.item_type(tag(Target::Field(i)));
                     }
@@ -591,8 +615,8 @@ impl FormModal {
                         };
                         row.push(
                             Element::new(&font, ElementContent::Text(text.to_string()))
-                                .colors(box_colors(&idle))
-                                .hover_colors(Some(box_colors(&hover)))
+                                .colors(idle_box.clone())
+                                .hover_colors(Some(hover_box.clone()))
                                 .margin(BoxDimension {
                                     left: Dimension::Cells(1.),
                                     right: Dimension::Cells(0.),
@@ -610,8 +634,8 @@ impl FormModal {
                     if *f == i && field.enabled {
                         row.push(
                             Element::new(&font, ElementContent::Text(format!(" {label} ")))
-                                .colors(box_colors(&idle))
-                                .hover_colors(Some(box_colors(&hover)))
+                                .colors(idle_box.clone())
+                                .hover_colors(Some(hover_box.clone()))
                                 .margin(BoxDimension {
                                     left: Dimension::Cells(1.),
                                     right: Dimension::Cells(0.),
@@ -628,8 +652,14 @@ impl FormModal {
             if let Some(error) = state.error_for(i) {
                 rows.push(block(vec![Element::new(
                     &font,
-                    ElementContent::Text(format!("{}{error}", " ".repeat(label_cells))),
+                    ElementContent::Text(error.to_string()),
                 )
+                .margin(BoxDimension {
+                    left: Dimension::Cells(label_cells as f32),
+                    right: Dimension::Cells(0.),
+                    top: Dimension::Cells(0.),
+                    bottom: Dimension::Cells(0.),
+                })
                 .colors(ElementColors {
                     border: BorderColor::default(),
                     bg: InheritableColor::Inherited,
@@ -642,14 +672,14 @@ impl FormModal {
         let mut buttons = vec![];
         for (b, button) in state.buttons.iter().enumerate() {
             let (label, c) = match button {
-                FormButton::Primary(l) => (l, &active),
-                FormButton::Cancel(l) => (l, &idle),
+                FormButton::Primary(l) => (l, primary_box.clone()),
+                FormButton::Cancel(l) => (l, idle_box.clone()),
                 FormButton::Extra(..) => continue,
             };
             buttons.push(
                 Element::new(&font, ElementContent::Text(format!("  {label}  ")))
-                    .colors(box_colors(c))
-                    .hover_colors(Some(box_colors(&hover)))
+                    .colors(c)
+                    .hover_colors(Some(hover_box.clone()))
                     .margin(BoxDimension {
                         left: Dimension::Cells(0.),
                         right: Dimension::Cells(2.),
@@ -666,7 +696,7 @@ impl FormModal {
         .colors(ElementColors {
             border: BorderColor::default(),
             bg: InheritableColor::Inherited,
-            text: idle.fg_color.to_linear().into(),
+            text: dim_text.into(),
         })]));
 
         let corner = |poly| SizedPoly {
