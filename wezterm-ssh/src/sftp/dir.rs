@@ -21,6 +21,11 @@ impl fmt::Debug for Dir {
 pub(crate) enum DirRequest {
     Close(DirId, Sender<SftpChannelResult<()>>),
     ReadDir(DirId, Sender<SftpChannelResult<(Utf8PathBuf, Metadata)>>),
+    ReadDirMany(
+        DirId,
+        usize,
+        Sender<SftpChannelResult<Vec<(Utf8PathBuf, Metadata)>>>,
+    ),
 }
 
 impl Drop for Dir {
@@ -65,6 +70,28 @@ impl Dir {
                 self.dir_id,
                 reply,
             ))))
+            .await?;
+        let result = rx.recv().await??;
+        Ok(result)
+    }
+
+    /// Up to `max` entries, as [`Dir::read_dir`] returns them, in one
+    /// request; an empty list once the directory has no more.
+    ///
+    /// Each request is a full turn of the session thread, which costs about
+    /// half a millisecond whatever the link: reading a directory of 20000
+    /// files an entry at a time took eleven seconds even on a local network.
+    /// A batch of about a hundred -- what an OpenSSH server sends per
+    /// READDIR reply -- keeps that small while still letting the session's
+    /// other channels in between batches.
+    pub async fn read_dir_many(&self, max: usize) -> anyhow::Result<Vec<(Utf8PathBuf, Metadata)>> {
+        let (reply, rx) = bounded(1);
+        self.tx
+            .as_ref()
+            .unwrap()
+            .send(SessionRequest::Sftp(SftpRequest::Dir(
+                DirRequest::ReadDirMany(self.dir_id, max, reply),
+            )))
             .await?;
         let result = rx.recv().await??;
         Ok(result)

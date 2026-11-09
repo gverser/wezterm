@@ -722,16 +722,15 @@ impl SessionInner {
                         )
                     }
                     SessionRequest::Sftp(SftpRequest::Dir(DirRequest::Close(dir_id, reply))) => {
-                        dispatch(
-                            reply,
-                            || {
-                                self.dirs
-                                    .remove(&dir_id)
-                                    .ok_or_else(|| anyhow!("invalid dir_id"))?;
-                                Ok(())
-                            },
-                            "close_dir",
-                        )
+                        // Sent by Dir's Drop, which doesn't wait for the
+                        // reply: nobody listening is the normal case here,
+                        // not an error worth logging.
+                        let result: SftpChannelResult<()> = match self.dirs.remove(&dir_id) {
+                            Some(_) => Ok(()),
+                            None => Err(anyhow!("invalid dir_id").into()),
+                        };
+                        let _ = reply.try_send(result);
+                        Ok(true)
                     }
                     SessionRequest::Sftp(SftpRequest::Dir(DirRequest::ReadDir(dir_id, reply))) => {
                         dispatch(
@@ -746,6 +745,21 @@ impl SessionInner {
                             "read_dir",
                         )
                     }
+                    SessionRequest::Sftp(SftpRequest::Dir(DirRequest::ReadDirMany(
+                        dir_id,
+                        max,
+                        reply,
+                    ))) => dispatch(
+                        reply,
+                        || {
+                            let dir = self
+                                .dirs
+                                .get_mut(&dir_id)
+                                .ok_or_else(|| anyhow!("invalid dir_id"))?;
+                            dir.read_dir_many(max)
+                        },
+                        "read_dir_many",
+                    ),
                     SessionRequest::Sftp(SftpRequest::File(FileRequest::Flush(file_id, reply))) => {
                         dispatch(
                             reply,

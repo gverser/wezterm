@@ -78,6 +78,50 @@ fn read_dir_should_return_list_of_directories_files_and_symlinks(
     })
 }
 
+/// A name that isn't UTF-8 can't be returned as a `Utf8PathBuf`. It used to
+/// panic the session thread, taking every channel on the connection with it.
+/// Linux only: APFS refuses names that aren't UTF-8.
+#[cfg(target_os = "linux")]
+#[rstest]
+fn read_dir_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSshd) {
+    use std::os::unix::ffi::OsStrExt;
+    if !sshd_available() {
+        return;
+    }
+    smol::block_on(async {
+        let session: SessionWithSshd = session.await;
+
+        let temp = TempDir::new().unwrap();
+        let good = temp.child("good");
+        good.touch().unwrap();
+        // "测试" in GBK
+        let bad = temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"\xb2\xe2\xca\xd4.txt"));
+        std::fs::write(&bad, b"x").unwrap();
+
+        let contents = session
+            .sftp()
+            .read_dir(temp.path().to_path_buf())
+            .await
+            .expect("Failed to read directory")
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect::<Vec<Utf8PathBuf>>();
+        assert_eq!(
+            contents,
+            vec![good.path().to_path_buf().try_into().unwrap()]
+        );
+
+        // The session is still usable afterwards.
+        session
+            .sftp()
+            .read_dir(temp.path().to_path_buf())
+            .await
+            .expect("session survived");
+    })
+}
+
 #[rstest]
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
 fn create_dir_should_create_a_directory_on_the_remote_filesystem(
