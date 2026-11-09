@@ -3402,14 +3402,7 @@ impl TermWindow {
                         return Ok(PerformAssignmentResult::Handled);
                     }
                 };
-                let pane_id = pane.pane_id();
-                promise::spawn::spawn(async move {
-                    let mux = Mux::get();
-                    if let Err(err) = mux.move_pane_to_stack(pane_id, target, index).await {
-                        log::error!("MovePaneToStack failed: {:#}", err);
-                    }
-                })
-                .detach();
+                self.spawn_move_pane_to_stack(pane.pane_id(), target, index);
             }
             ActivatePaneDirection(direction) => {
                 let mux = Mux::get();
@@ -3591,6 +3584,37 @@ impl TermWindow {
             return None;
         }
         Some(tab)
+    }
+
+    /// Moves `pane_id` into the stack of `target_pane_id` at `index`, for the
+    /// MovePaneToStack key assignment and for a strip tab drag alike.
+    fn spawn_move_pane_to_stack(&self, pane_id: PaneId, target_pane_id: PaneId, index: usize) {
+        let window = self.window.clone();
+        promise::spawn::spawn(async move {
+            if let Err(err) = Mux::get()
+                .move_pane_to_stack(pane_id, target_pane_id, index)
+                .await
+            {
+                log::error!(
+                    "moving pane {} to index {} of the stack of pane {}: {:#}",
+                    pane_id,
+                    index,
+                    target_pane_id,
+                    err
+                );
+            }
+            // Connected to a mux server, the local copy only takes the new
+            // order in the resync at the end of the await, and nothing
+            // repaints for that: TabResized only updates the title, and a
+            // reorder, or a move between leaves of equal width, makes no
+            // output. Without this the strip would show the old order until
+            // something else repainted, and the next drag would be measured
+            // against the old frame's positions with the new order.
+            if let Some(window) = window {
+                window.invalidate();
+            }
+        })
+        .detach();
     }
 
     fn do_open_link_at_mouse_cursor(&self, pane: &Arc<dyn Pane>) {

@@ -217,34 +217,7 @@ impl crate::TermWindow {
             None => return,
         };
 
-        let pane_id = drag.pane_id;
-        let target_pane_id = target.target_pane_id;
-        let window = self.window.clone();
-        promise::spawn::spawn(async move {
-            if let Err(err) = Mux::get()
-                .move_pane_to_stack(pane_id, target_pane_id, index)
-                .await
-            {
-                log::error!(
-                    "moving pane {} to index {} of the stack of pane {}: {:#}",
-                    pane_id,
-                    index,
-                    target_pane_id,
-                    err
-                );
-            }
-            // Connected to a mux server, the local copy only takes the new
-            // order in the resync at the end of the await, and nothing
-            // repaints for that: TabResized only updates the title, and a
-            // reorder, or a move between leaves of equal width, makes no
-            // output. Without this the strip would show the old order until
-            // the pointer next moved, and the next drag would be measured
-            // against the old frame's positions with the new order.
-            if let Some(window) = window {
-                window.invalidate();
-            }
-        })
-        .detach();
+        self.spawn_move_pane_to_stack(drag.pane_id, target.target_pane_id, index);
     }
 }
 
