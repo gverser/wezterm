@@ -96,6 +96,18 @@ As features stabilize some brief notes about them will accumulate here.
   [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),
   [ActivatePaneStackRelative](config/lua/keyassignment/ActivatePaneStackRelative.md)
   and [MovePaneToStack](config/lua/keyassignment/MovePaneToStack.md).
+* SSH sessions in the session sidebar, after MobaXterm: *New SSH Session* saves
+  a host, port, user and password or key file, edited in a form; a double click
+  connects, and the tabs opened from one entry share a connection. A password
+  typed at the first login can be saved (in plain text, in `ssh_hosts.json`)
+  so that later logins are automatic. See
+  [session_sidebar_enabled](config/lua/config/session_sidebar_enabled.md#ssh-sessions).
+* Sidebar file page: a column of page tabs down the sidebar's left edge switches
+  between the session tree and a file browser for the active ssh pane's server,
+  over sftp on the same connection. It follows the shell's directory, and can
+  create folders, rename, delete, download, and upload by button or by dropping
+  files on it, with transfers queued in the background. See
+  [session_sidebar_enabled](config/lua/config/session_sidebar_enabled.md#the-file-page).
 * SSH status bar: under panes opened from a sidebar ssh session, a row shows
   the server's CPU, memory, network, uptime, users and disks, collected over
   the same connection without installing anything on the server. See
