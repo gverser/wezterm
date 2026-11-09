@@ -301,7 +301,10 @@ mod test {
         let errors = validate_ssh_form(&state);
         assert_eq!(
             errors,
-            vec![(state.index_of("私钥文件").unwrap(), "私钥文件不能为空".to_string())]
+            vec![(
+                state.index_of("私钥文件").unwrap(),
+                "私钥文件不能为空".to_string()
+            )]
         );
     }
 
@@ -353,7 +356,9 @@ mod test {
             domain: SpawnTabDomain::DomainName("main".to_string()),
             cwd: Some(PathBuf::from("D:/work")),
             args: Some(vec!["bash".to_string()]),
-            env: vec![("A".to_string(), "1".to_string())].into_iter().collect(),
+            env: vec![("A".to_string(), "1".to_string())]
+                .into_iter()
+                .collect(),
         };
         let mut state = local_form("casb", &old);
         assert_eq!(state.value("Domain"), "main");
@@ -388,7 +393,10 @@ mod test {
     fn confirm_form_has_message_and_two_buttons() {
         let state = confirm_form("覆盖文件", "远端已有同名文件「a」，覆盖吗？", "覆盖");
         assert!(state.fields.is_empty());
-        assert_eq!(state.message, vec!["远端已有同名文件「a」，覆盖吗？".to_string()]);
+        assert_eq!(
+            state.message,
+            vec!["远端已有同名文件「a」，覆盖吗？".to_string()]
+        );
         assert_eq!(
             state.buttons,
             vec![

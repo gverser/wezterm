@@ -242,10 +242,7 @@ impl FormState {
             return;
         }
         let n = options.len() as isize;
-        let current = options
-            .iter()
-            .position(|o| *o == field.value)
-            .unwrap_or(0) as isize;
+        let current = options.iter().position(|o| *o == field.value).unwrap_or(0) as isize;
         field.value = options[(current + delta).rem_euclid(n) as usize].clone();
         self.edited();
     }
@@ -267,9 +264,7 @@ impl FormState {
             return String::new();
         };
         match field.kind {
-            FieldKind::Password if !self.reveal_password => {
-                "•".repeat(field.value.chars().count())
-            }
+            FieldKind::Password if !self.reveal_password => "•".repeat(field.value.chars().count()),
             _ => field.value.clone(),
         }
     }
@@ -303,8 +298,8 @@ use config::Dimension;
 use std::cell::{Ref, RefCell};
 use termwiz::cell::unicode_column_width;
 use wezterm_term::color::ColorAttribute;
-use window::color::LinearRgba;
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
+use window::color::LinearRgba;
 
 /// What a `UIItemType::ModalItem(n)` index refers to.
 #[derive(Debug, Clone, PartialEq)]
@@ -767,7 +762,11 @@ impl FormModal {
         // Put the IME candidate window at the text cursor of the focused field.
         let state = self.state.borrow();
         let focus_target = Target::Field(state.focus);
-        let index = self.targets.borrow().iter().position(|t| *t == focus_target);
+        let index = self
+            .targets
+            .borrow()
+            .iter()
+            .position(|t| *t == focus_target);
         *self.cursor_rect.borrow_mut() = index.and_then(|index| {
             let item = computed
                 .ui_items()
@@ -776,7 +775,8 @@ impl FormModal {
             let shown = state.display_value(state.focus);
             let prefix: String = shown.chars().take(state.cursor).collect();
             let composing = state.composing.clone().unwrap_or_default();
-            let cells = unicode_column_width(&prefix, None) + unicode_column_width(&composing, None);
+            let cells =
+                unicode_column_width(&prefix, None) + unicode_column_width(&composing, None);
             Some(::window::Rect::new(
                 ::window::Point::new(
                     item.x as isize + (cells as f32 * cell_w) as isize,
@@ -841,7 +841,8 @@ impl Modal for FormModal {
             (KeyCode::LeftArrow, KeyModifiers::NONE) if is_choice => {
                 self.state.borrow_mut().choice_step(-1)
             }
-            (KeyCode::RightArrow, KeyModifiers::NONE) | (KeyCode::Char(' '), KeyModifiers::NONE)
+            (KeyCode::RightArrow, KeyModifiers::NONE)
+            | (KeyCode::Char(' '), KeyModifiers::NONE)
                 if is_choice =>
             {
                 self.state.borrow_mut().choice_step(1)
@@ -932,7 +933,10 @@ mod test {
                 Field::choice("认证方式", &["密码", "私钥"], "密码"),
                 Field::text("私钥文件", ""),
             ],
-            vec![FormButton::Primary("保存".into()), FormButton::Cancel("取消".into())],
+            vec![
+                FormButton::Primary("保存".into()),
+                FormButton::Cancel("取消".into()),
+            ],
         )
     }
 

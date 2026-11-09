@@ -7,15 +7,14 @@
 //! Drawing lives in `termwindow::render::sidebar`; the tree itself lives in
 //! `crate::sessions`.
 
-use crate::sessions::forms;
 use crate::sessions::ssh::{ssh_domain_name, with_ssh_hosts};
-use crate::termwindow::form::FormModal;
 use crate::sessions::store::with_store;
 use crate::sessions::{
-    clamp_scroll, clamp_width, drop_placement, NodeId, NodeKind, Placement, SessionNode,
+    clamp_scroll, clamp_width, drop_placement, forms, NodeId, NodeKind, Placement, SessionNode,
     SessionSpawn,
 };
 use crate::spawn::SpawnWhere;
+use crate::termwindow::form::FormModal;
 use crate::termwindow::{UIItem, UIItemType};
 use ::window::{MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps};
 use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};

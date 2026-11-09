@@ -7,7 +7,9 @@
 
 pub use wezterm_sessions::ssh::*;
 
-use crate::sessions::{store::with_store, NodeId};
+use crate::sessions::store::with_store;
+use crate::sessions::NodeId;
+use ::window::WindowOps;
 use config::{Shell, SshDomain, SshMultiplexing};
 use mux::domain::{Domain, DomainId};
 use mux::pane::Pane;
@@ -17,7 +19,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use ::window::WindowOps;
 
 pub const SSH_DOMAIN_PREFIX: &str = "sidebar-ssh:";
 

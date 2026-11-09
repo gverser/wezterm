@@ -13,8 +13,8 @@ use smol::channel::{bounded, Receiver as AsyncReceiver};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufWriter, Read, Write};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use termwiz::cell::{unicode_column_width, AttributeChange, Intensity};
@@ -1427,7 +1427,10 @@ mod autofill_test {
         let mut fill = PasswordAutofill::new(None, false);
         assert_eq!(fill.auto_answer(&password()), None);
         fill.record_typed(&password(), "pw");
-        assert_eq!(fill.offer_after_success(), Some(SaveOffer::Save("pw".to_string())));
+        assert_eq!(
+            fill.offer_after_success(),
+            Some(SaveOffer::Save("pw".to_string()))
+        );
     }
 
     #[test]
