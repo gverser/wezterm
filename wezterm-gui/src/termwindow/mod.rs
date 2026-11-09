@@ -736,6 +736,10 @@ impl TermWindow {
 
         if self.focused.is_none() {
             self.last_mouse_click = None;
+            // Not cleared on mouse leave: a real double click may produce a
+            // leave between its presses, and clearing then would let a
+            // double click on × close two panes.
+            self.last_strip_press = None;
             self.current_mouse_buttons.clear();
             self.current_mouse_capture = None;
             self.is_click_to_focus_window = false;
