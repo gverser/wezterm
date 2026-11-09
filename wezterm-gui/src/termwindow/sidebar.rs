@@ -42,6 +42,8 @@ pub const SIDEBAR_LINE_HEIGHT: f64 = 1.25;
 pub enum SidebarFocus {
     Search,
     Rename(NodeId),
+    /// The file page's path bar; its text is `TermWindow.files.path_edit`.
+    FilesPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,9 +573,10 @@ impl super::TermWindow {
     }
 
     /// Hand the keyboard back to the terminal.
-    fn release_sidebar_focus(&mut self) {
+    pub(crate) fn release_sidebar_focus(&mut self) {
         self.sidebar.focus = None;
         self.sidebar.composing = None;
+        self.files.path_edit = None;
     }
 
     /// Insert committed text into whichever sidebar field has focus.
@@ -589,6 +592,7 @@ impl super::TermWindow {
                 self.sidebar.scroll_offset = 0;
             }
             Some(SidebarFocus::Rename(_)) => self.sidebar.edit_buffer.push_str(text),
+            Some(SidebarFocus::FilesPath) => self.files_path_type(text),
             None => return,
         }
         self.sidebar.composing = None;
@@ -745,7 +749,7 @@ impl super::TermWindow {
     /// Put a form up in place of whatever the sidebar was doing. A form is a
     /// modal rather than an overlay, so it needs no tab: it works in the empty
     /// window the user starts with.
-    fn open_form(&mut self, form: FormModal) {
+    pub(crate) fn open_form(&mut self, form: FormModal) {
         self.release_sidebar_focus();
         self.close_sidebar_menu();
         self.set_modal(std::rc::Rc::new(form));
@@ -874,6 +878,7 @@ impl super::TermWindow {
         match focus {
             SidebarFocus::Search => self.search_key_down(key, mods),
             SidebarFocus::Rename(id) => self.rename_key_down(id, key, mods),
+            SidebarFocus::FilesPath => self.files_path_key_down(key, mods),
         }
     }
 

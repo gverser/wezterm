@@ -86,6 +86,7 @@ pub mod render;
 pub mod resize;
 mod selection;
 pub mod sidebar;
+pub mod sidebar_files;
 pub mod spawn;
 pub mod webgpu;
 use crate::spawn::SpawnWhere;
@@ -185,6 +186,15 @@ pub enum UIItemType {
     SidebarCollapseToggle,
     /// A page tab on the sidebar's rail.
     SidebarPageTab(crate::sessions::SidebarPage),
+    /// A row of the file page's listing, by index into it.
+    FilesRow(usize),
+    FilesToolbar(crate::sftp::FilesAction),
+    FilesPath,
+    FilesFollow,
+    FilesMenuItem(crate::sftp::FilesMenuAction),
+    /// The file page itself; rows are drawn on top of it, so this only
+    /// catches clicks in the empty area below the list.
+    FilesBackground,
     /// A tab in a pane stack's strip.
     PaneTab {
         tab_id: TabId,
@@ -445,7 +455,7 @@ pub struct TermWindow {
     /// built from. Rebuilding it every frame means re-shaping every row's text,
     /// which roughly doubled frame time; see `invalidate_sidebar`.
     /// Keyed by the generations of the session store and the ssh host store.
-    sidebar_computed: Option<((u64, u64), Vec<box_model::ComputedElement>)>,
+    sidebar_computed: Option<((u64, u64, u64), Vec<box_model::ComputedElement>)>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -521,6 +531,7 @@ pub struct TermWindow {
     /// Per-window UI state for the session sidebar. The tree it displays is
     /// process-wide; see `crate::sessions::store::with_store`.
     pub sidebar: crate::termwindow::sidebar::SidebarState,
+    pub files: crate::sftp::FilesUi,
 
     /// Rate-limits repaints for output from hidden pane stack members.
     hidden_output: HiddenOutputTracker,
@@ -1068,6 +1079,7 @@ impl TermWindow {
             dragging: None,
             pane_tab_drag: None,
             sidebar: Default::default(),
+            files: Default::default(),
             hidden_output: HiddenOutputTracker::default(),
             last_ui_item: None,
             is_click_to_focus_window: false,

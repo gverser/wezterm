@@ -43,6 +43,7 @@ pub mod pane;
 pub mod pane_strip;
 pub mod screen_line;
 pub mod sidebar;
+pub mod sidebar_files;
 pub mod split;
 pub mod status_bar;
 pub mod tab_bar;

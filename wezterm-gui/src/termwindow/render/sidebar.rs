@@ -12,6 +12,7 @@ use crate::utilsprites::RenderMetrics;
 use ::window::{Rect, RectF};
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
+use termwiz::cell::unicode_column_width;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::ColorPalette;
 
@@ -22,7 +23,7 @@ const RESIZE_HANDLE_WIDTH: f32 = 4.;
 const INDENT_CELLS: f32 = 1.5;
 
 impl crate::TermWindow {
-    fn sidebar_font(&self) -> anyhow::Result<(Rc<LoadedFont>, RenderMetrics)> {
+    pub(crate) fn sidebar_font(&self) -> anyhow::Result<(Rc<LoadedFont>, RenderMetrics)> {
         let font = self.fonts.title_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         Ok((font, metrics))
@@ -86,7 +87,9 @@ impl crate::TermWindow {
     /// Returns None when the sidebar does not own the keyboard, which is the
     /// signal to fall back to the terminal cursor.
     pub fn sidebar_text_cursor_rect(&self) -> Option<Rect> {
-        if !self.sidebar_is_expanded() || self.sidebar.page != SidebarPage::Sessions {
+        // Only the page that is showing can hold the focus: switching pages
+        // releases it.
+        if !self.sidebar_is_expanded() {
             return None;
         }
 
@@ -96,7 +99,7 @@ impl crate::TermWindow {
 
         // Row 0 is the search box; the tree starts below it.
         let row = match focus {
-            SidebarFocus::Search => 0,
+            SidebarFocus::Search | SidebarFocus::FilesPath => 0,
             SidebarFocus::Rename(id) => {
                 let search = self.sidebar.search.clone();
                 let index = with_store(|store| {
@@ -149,6 +152,7 @@ impl crate::TermWindow {
         let generation = (
             with_store(|store| store.generation()),
             crate::sessions::ssh::with_ssh_hosts(|store| store.generation()),
+            self.files.generation,
         );
         let stale = match &self.sidebar_computed {
             Some((cached, _)) => *cached != generation,
@@ -298,13 +302,14 @@ impl crate::TermWindow {
         }
 
         if self.sidebar.page == SidebarPage::Files {
-            // Filled in by the file browser.
-            let hint = self.sidebar_hint_element("文件", &font, &colors, bounds.width(), pad);
-            return Ok(vec![
+            let mut computed = vec![
                 rail,
-                self.sidebar_panel(vec![hint], None, &font, &metrics, &colors, bounds)?,
+                self.build_files_page(&font, &metrics, &colors, palette, bounds, pad)?,
                 self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?,
-            ]);
+            ];
+            // Last, so that it takes clicks ahead of the rows under it.
+            computed.extend(self.files_menu_element(&font, &metrics, &colors)?);
+            return Ok(computed);
         }
 
         let mut children = vec![self.sidebar_search_element(&font, &colors, bounds.width(), pad)];
@@ -587,7 +592,7 @@ impl crate::TermWindow {
     }
 
     /// A non-interactive line of explanatory text.
-    fn sidebar_hint_element(
+    pub(crate) fn sidebar_hint_element(
         &self,
         text: &str,
         font: &Rc<LoadedFont>,
@@ -765,30 +770,47 @@ impl crate::TermWindow {
         metrics: &RenderMetrics,
         colors: &TabBarColors,
     ) -> anyhow::Result<ComputedElement> {
+        let items = menu
+            .items
+            .iter()
+            .map(|action| (action.label(), UIItemType::SidebarMenuItem(*action)))
+            .collect();
+        self.sidebar_popup(items, menu.x, menu.y, font, metrics, colors)
+    }
+
+    /// A pop-up menu at (x, y), kept on screen; one row per (label, item).
+    pub(crate) fn sidebar_popup(
+        &self,
+        items: Vec<(&str, UIItemType)>,
+        x: f32,
+        y: f32,
+        font: &Rc<LoadedFont>,
+        metrics: &RenderMetrics,
+        colors: &TabBarColors,
+    ) -> anyhow::Result<ComputedElement> {
         let cell_width = metrics.cell_size.width as f32;
         let pad = cell_width;
         let row_height = self.sidebar_row_height();
 
-        let widest = menu
-            .items
+        // In columns: a CJK label is twice as wide as its character count.
+        let widest = items
             .iter()
-            .map(|action| action.label().chars().count())
+            .map(|(label, _)| unicode_column_width(label, None))
             .max()
             .unwrap_or(0) as f32;
         let menu_width = widest * cell_width + pad * 2.;
-        let menu_height = menu.items.len() as f32 * row_height;
+        let menu_height = items.len() as f32 * row_height;
 
         let normal = colors.inactive_tab();
         let hover = colors.inactive_tab_hover();
 
-        let items = menu
-            .items
-            .iter()
-            .map(|action| {
-                Element::new(font, ElementContent::Text(action.label().to_string()))
+        let items = items
+            .into_iter()
+            .map(|(label, item_type)| {
+                Element::new(font, ElementContent::Text(label.to_string()))
                     .display(DisplayType::Block)
                     .line_height(Some(SIDEBAR_LINE_HEIGHT))
-                    .item_type(UIItemType::SidebarMenuItem(*action))
+                    .item_type(item_type)
                     .padding(BoxDimension {
                         left: Dimension::Pixels(pad),
                         right: Dimension::Pixels(pad),
@@ -812,8 +834,8 @@ impl crate::TermWindow {
         // Keep the menu on screen when it is opened near an edge.
         let window_width = self.dimensions.pixel_width as f32;
         let window_height = self.dimensions.pixel_height as f32;
-        let x = menu.x.min((window_width - menu_width).max(0.));
-        let y = menu.y.min((window_height - menu_height).max(0.));
+        let x = x.min((window_width - menu_width).max(0.));
+        let y = y.min((window_height - menu_height).max(0.));
         let bounds = euclid::rect(x, y, menu_width, menu_height);
 
         let element = Element::new(font, ElementContent::Children(items))

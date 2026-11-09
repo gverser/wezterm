@@ -51,6 +51,7 @@ mod scripting;
 mod scrollbar;
 mod selection;
 mod sessions;
+mod sftp;
 mod shapecache;
 mod spawn;
 mod stats;

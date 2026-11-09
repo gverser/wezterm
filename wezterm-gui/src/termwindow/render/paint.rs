@@ -17,6 +17,7 @@ impl crate::TermWindow {
     pub fn paint_impl(&mut self, frame: &mut RenderFrame) {
         self.num_frames += 1;
         self.sync_status_bar();
+        self.files_tick_follow();
         // If nothing on screen needs animating, then we can avoid
         // invalidating as frequently
         *self.has_animation.borrow_mut() = None;

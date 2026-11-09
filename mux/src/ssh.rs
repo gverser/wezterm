@@ -370,6 +370,19 @@ impl RemoteSshDomain {
     /// Channels opened on it (exec, sftp) share the connection with the
     /// panes. Note that a `Session` only keeps the connection alive while it
     /// has channels open; sftp alone does not count.
+    /// The counter `authenticated_session` would return, without cloning the
+    /// session: dropping a clone wakes the session thread, which is not
+    /// something to do on every paint just to find nothing has changed.
+    pub fn authenticated_generation(&self) -> Option<u64> {
+        let slot = self.session.lock().unwrap();
+        let slot = slot.as_ref()?;
+        if slot.authenticated.load(Ordering::SeqCst) {
+            Some(slot.generation)
+        } else {
+            None
+        }
+    }
+
     pub fn authenticated_session(&self) -> Option<(u64, Session)> {
         let slot = self.session.lock().unwrap();
         let slot = slot.as_ref()?;

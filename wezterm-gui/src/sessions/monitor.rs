@@ -85,16 +85,16 @@ pub fn ensure_monitor(domain_id: DomainId) {
     let Some(ssh) = domain.downcast_ref::<RemoteSshDomain>() else {
         return;
     };
-    let Some((generation, session)) = ssh.authenticated_session() else {
-        return;
-    };
     let current = MONITORS.with(|m| m.borrow().get(&domain_id).map(|m| m.generation));
-    if current == Some(generation) {
+    if current.is_some() && current == ssh.authenticated_generation() {
         // Running, starting, or given up on for this connection. A failed
         // channel is not retried on every paint; a reconnect brings a new
         // generation and a fresh try.
         return;
     }
+    let Some((generation, session)) = ssh.authenticated_session() else {
+        return;
+    };
 
     MONITORS.with(|m| {
         m.borrow_mut().insert(

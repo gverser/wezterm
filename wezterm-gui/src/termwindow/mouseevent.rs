@@ -53,6 +53,12 @@ impl super::TermWindow {
             | UIItemType::SidebarMenuItem(_)
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
+            | UIItemType::FilesRow(_)
+            | UIItemType::FilesToolbar(_)
+            | UIItemType::FilesPath
+            | UIItemType::FilesFollow
+            | UIItemType::FilesMenuItem(_)
+            | UIItemType::FilesBackground
             | UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
             | UIItemType::PaneTabBar { .. }
@@ -75,6 +81,12 @@ impl super::TermWindow {
             | UIItemType::SidebarMenuItem(_)
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
+            | UIItemType::FilesRow(_)
+            | UIItemType::FilesToolbar(_)
+            | UIItemType::FilesPath
+            | UIItemType::FilesFollow
+            | UIItemType::FilesMenuItem(_)
+            | UIItemType::FilesBackground
             | UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
             | UIItemType::PaneTabBar { .. }
@@ -266,10 +278,11 @@ impl super::TermWindow {
             // the press really is on it.
             let on_menu = matches!(
                 ui_item.as_ref().map(|item| &item.item_type),
-                Some(UIItemType::SidebarMenuItem(_))
+                Some(UIItemType::SidebarMenuItem(_) | UIItemType::FilesMenuItem(_))
             );
             if !on_menu {
                 self.close_sidebar_menu();
+                self.close_files_menu();
             }
             // mouse_event_pane_strip judges a strip press against the press
             // before it. A press elsewhere must not leave an old strip press
@@ -542,6 +555,14 @@ impl super::TermWindow {
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_) => {
                 self.mouse_event_sidebar(item, event, context);
+            }
+            UIItemType::FilesRow(_)
+            | UIItemType::FilesToolbar(_)
+            | UIItemType::FilesPath
+            | UIItemType::FilesFollow
+            | UIItemType::FilesMenuItem(_)
+            | UIItemType::FilesBackground => {
+                self.mouse_event_files(item, event, context);
             }
             UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
