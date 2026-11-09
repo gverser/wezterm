@@ -11,12 +11,70 @@ pub mod dialogs;
 pub mod model;
 pub mod transfer;
 
-use crate::sftp::model::FileEntry;
+use crate::sftp::model::{explain_sftp_error, FileEntry};
 use crate::sftp::transfer::{TransferJob, TransferQueue};
 use mux::domain::DomainId;
 use mux::pane::PaneId;
 use std::collections::{HashMap, VecDeque};
 use wezterm_ssh::Sftp;
+
+fn describe(err: impl std::fmt::Display) -> String {
+    explain_sftp_error(&err.to_string())
+}
+
+/// How many entries to ask the session thread for at a time.
+const LIST_BATCH: usize = 100;
+
+/// The entries of `path`, a batch at a time.
+///
+/// `Sftp::read_dir` reads a whole directory in one request, and the session
+/// thread serves nothing else while it does: over a 50ms link, a directory of
+/// 20000 files froze every terminal on the connection for ten seconds.
+/// Between batches the terminals' traffic gets through.
+pub async fn list_dir(sftp: &Sftp, path: &str) -> Result<Vec<FileEntry>, String> {
+    let dir = sftp.open_dir(path).await.map_err(describe)?;
+    let mut entries = vec![];
+    loop {
+        let batch = dir.read_dir_many(LIST_BATCH).await.map_err(describe)?;
+        if batch.is_empty() {
+            return Ok(entries);
+        }
+        for (name, meta) in batch {
+            let name = name
+                .file_name()
+                .map(str::to_string)
+                .unwrap_or_else(|| name.to_string());
+            if name == "." || name == ".." {
+                continue;
+            }
+            entries.push(FileEntry {
+                name,
+                is_dir: meta.ty.is_dir(),
+                is_link: meta.ty.is_symlink(),
+                size: if meta.ty.is_dir() { None } else { meta.size },
+            });
+        }
+    }
+}
+
+/// Whether `path` has nothing in it but `.` and `..`; stops at the first
+/// entry rather than reading the whole directory.
+pub async fn dir_is_empty(sftp: &Sftp, path: &str) -> Result<bool, String> {
+    let dir = sftp.open_dir(path).await.map_err(describe)?;
+    loop {
+        let batch = dir.read_dir_many(3).await.map_err(describe)?;
+        if batch.is_empty() {
+            return Ok(true);
+        }
+        let only_dots = batch.iter().all(|(name, _)| {
+            let name = name.file_name().unwrap_or(name.as_str());
+            name == "." || name == ".."
+        });
+        if !only_dots {
+            return Ok(false);
+        }
+    }
+}
 
 /// The buttons along the top of the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

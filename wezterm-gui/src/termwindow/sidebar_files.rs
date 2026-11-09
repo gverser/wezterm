@@ -258,8 +258,13 @@ impl crate::TermWindow {
             return;
         };
         if conn.cwd != dir {
+            // Another directory's entries under this path would be acted on
+            // as if they were here; a big listing can take seconds to come.
+            conn.entries.clear();
+            conn.error = None;
             conn.selected = None;
             conn.scroll = 0;
+            self.files.menu = None;
         }
         conn.cwd = dir.clone();
         conn.loading = true;
@@ -270,24 +275,7 @@ impl crate::TermWindow {
         self.files_spawn(
             domain_id,
             generation,
-            async move {
-                sftp.read_dir(dir.as_str())
-                    .await
-                    .map(|list| {
-                        list.into_iter()
-                            .map(|(path, meta)| FileEntry {
-                                name: path
-                                    .file_name()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| path.to_string()),
-                                is_dir: meta.ty.is_dir(),
-                                is_link: meta.ty.is_symlink(),
-                                size: if meta.ty.is_dir() { None } else { meta.size },
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .map_err(describe)
-            },
+            async move { crate::sftp::list_dir(&sftp, &dir).await },
             move |tw, result| tw.files_listing_done(domain_id, seq, result),
         );
         self.files_changed();
@@ -832,8 +820,10 @@ impl crate::TermWindow {
                         format!("删除失败：{}", describe(err))
                     }
                     if is_dir {
-                        let inside = sftp.read_dir(path.as_str()).await.map_err(failed)?;
-                        if !inside.is_empty() {
+                        let empty = crate::sftp::dir_is_empty(&sftp, &path)
+                            .await
+                            .map_err(|err| format!("删除失败：{err}"))?;
+                        if !empty {
                             return Err(format!("目录不为空：{path}"));
                         }
                         sftp.remove_dir(path.as_str()).await.map_err(failed)
