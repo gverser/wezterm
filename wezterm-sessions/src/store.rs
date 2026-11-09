@@ -13,11 +13,11 @@ pub fn sessions_file_name() -> PathBuf {
     config::DATA_DIR.join("sessions.json")
 }
 
-fn temp_file_name(path: &Path) -> PathBuf {
+pub(crate) fn temp_file_name(path: &Path) -> PathBuf {
     path.with_extension("json.tmp")
 }
 
-fn quarantine_file_name(path: &Path) -> PathBuf {
+pub(crate) fn quarantine_file_name(path: &Path) -> PathBuf {
     path.with_extension("json.bad")
 }
 
