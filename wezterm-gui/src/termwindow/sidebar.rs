@@ -7,6 +7,7 @@
 //! Drawing lives in `termwindow::render::sidebar`; the tree itself lives in
 //! `crate::sessions`.
 
+use crate::sessions::ssh::{ssh_domain_name, with_ssh_hosts};
 use crate::sessions::store::with_store;
 use crate::sessions::{
     clamp_scroll, clamp_width, drop_placement, NodeId, NodeKind, Placement, SessionNode,
@@ -15,7 +16,7 @@ use crate::sessions::{
 use crate::spawn::SpawnWhere;
 use crate::termwindow::{UIItem, UIItemType};
 use ::window::{MouseEvent, MouseEventKind as WMEK, MousePress, WindowOps};
-use config::keyassignment::{KeyAssignment, SpawnCommand};
+use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};
 use config::{DimensionContext, TermConfig};
 use mux::Mux;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -420,7 +421,7 @@ impl super::TermWindow {
             None => Target::Gone,
         });
 
-        let command = match target {
+        let mut command = match target {
             Target::Gone => {
                 log::warn!("session node {id} no longer exists");
                 return;
@@ -433,6 +434,23 @@ impl super::TermWindow {
             }
             Target::Session(command) => command,
         };
+
+        // An ssh node connects through its own runtime domain, whatever its
+        // stored spawn says; the domain is (re)registered here so that an
+        // edit made since the last connection takes effect.
+        if with_ssh_hosts(|store| store.get(id).is_some()) {
+            match crate::sessions::ssh::ensure_ssh_domain(id) {
+                Ok(_) => {
+                    command.domain = SpawnTabDomain::DomainName(ssh_domain_name(id));
+                }
+                Err(err) => {
+                    log::error!("failed to prepare ssh session {id}: {err:#}");
+                    self.sidebar.failed.insert(id);
+                    self.invalidate_sidebar();
+                    return;
+                }
+            }
+        }
 
         self.sidebar.selected = Some(id);
 

@@ -10,6 +10,8 @@ pub use wezterm_sessions::{
     store, NodeId, NodeKind, Placement, RowKind, SessionNode, SessionSpawn, VisibleRow,
 };
 
+pub mod ssh;
+
 use std::ops::Range;
 
 /// Where a node dragged over `rows[index]` would be put, given how far down
