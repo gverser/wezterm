@@ -840,31 +840,17 @@ fn connect_ssh_session(
                 shim.render(&message)?;
             }
             SessionEvent::Authenticated => {
-                authenticated.store(true, Ordering::SeqCst);
-
-                if let (Some(helper), Some(offer)) =
-                    (&password_helper, autofill.offer_after_success())
-                {
-                    let (question, password) = match offer {
-                        SaveOffer::Save(pw) => ("保存密码，下次自动登录？(y/N) ", pw),
-                        SaveOffer::Update(pw) => ("更新已存的密码？(y/N) ", pw),
-                    };
-                    let mut editor = LineEditor::new(&mut shim);
-                    let mut host = PasswordPromptHost::default();
-                    host.echo = true;
-                    editor.set_prompt(question);
-                    if let Some(line) = editor.read_line(&mut host)? {
-                        if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
-                            helper.save_password(password);
-                        }
-                    }
-                }
+                // Taken out first: a lock in the match's scrutinee would be
+                // held through its arms, and the question asked in the Ok
+                // arm below reads the size through `shim`, which would then
+                // wait on this thread's own lock.
+                let pty_size = crate::terminal_size_to_pty_size(*size.lock().unwrap())?;
 
                 // Our session has been authenticated: we can now
                 // set up the real pty for the pane
                 match smol::block_on(session.request_pty(
                     &config::configuration().term,
-                    crate::terminal_size_to_pty_size(*size.lock().unwrap())?,
+                    pty_size,
                     command_line.as_ref().map(|s| s.as_str()),
                     Some(env),
                 )) {
@@ -873,6 +859,35 @@ fn connect_ssh_session(
                         break;
                     }
                     Ok((pty, child)) => {
+                        // Only now may others use the session. The session
+                        // thread stops once it has no channels and any clone
+                        // of the Session has been dropped, so a clone taken
+                        // and released before this pty existed -- by the
+                        // file page, say, while the question below waits for
+                        // an answer -- would take the connection down.
+                        authenticated.store(true, Ordering::SeqCst);
+
+                        // Asked with the shell already running behind it; its
+                        // output waits in the channel until the pane is wired
+                        // up below.
+                        if let (Some(helper), Some(offer)) =
+                            (&password_helper, autofill.offer_after_success())
+                        {
+                            let (question, password) = match offer {
+                                SaveOffer::Save(pw) => ("保存密码，下次自动登录？(y/N) ", pw),
+                                SaveOffer::Update(pw) => ("更新已存的密码？(y/N) ", pw),
+                            };
+                            let mut editor = LineEditor::new(&mut shim);
+                            let mut host = PasswordPromptHost::default();
+                            host.echo = true;
+                            editor.set_prompt(question);
+                            if let Some(line) = editor.read_line(&mut host)? {
+                                if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
+                                    helper.save_password(password);
+                                }
+                            }
+                        }
+
                         drop(shim);
 
                         // Obtain the real stdin/stdout for the pty
