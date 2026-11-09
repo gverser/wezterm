@@ -60,8 +60,9 @@
   `wezterm-mux-server.exe`、`wezterm.exe` 要一起换，旧的 mux-server 得先停掉。
 - **`6562fecb7` gui: 修焦点乒乓——丢掉过时的 PaneFocused 重放，client 不再回报
   server 的焦点回声**
-  上游原有的 bug：开着多个 pane 来回切焦点会无限循环，GUI 卡死，本地 domain
-  上不需要 server 就能复现。两条回路：`frontend.rs` 重放过时的本地
+  上游原有的 bug：同一个主线程任务里连切两次焦点（如 `Multiple { Left, Left }`）
+  会无限乒乓，GUI 卡死；平时手动切换不会卡。本地 domain 上不需要 server 就能
+  复现。两条回路：`frontend.rs` 重放过时的本地
   `PaneFocused`；`ClientPane` 把 server 迟到的焦点回声当成新的选择又报回去。
   修复接受三个代价：
   1. 高延迟连接上连续切换时，本地焦点会短暂把中间经过的 pane 重放一遍，这段
@@ -91,7 +92,8 @@
   重画（上游原有的缺口：overlay 的 id 不在 tab 里，输出从不重画）。
 - **`fcb8d1ce8` mux: 叶可见成员与 pane 尺寸各收成一份，钳住拖分隔条的行数**
   **`7ca67d93d` mux-server: 改正 `spawn_pane_in_stack` 回包注释里的理由**
-  整理，不改行为。
+  整理，基本不改行为；另在 `adjust_node_at_cursor` 加了 `.max(0)` 下限，防的是
+  已经非法的树。
 
 ## 2026-11-05
 
@@ -109,7 +111,8 @@
   header_rows**
   **`30980b887` client: `ClientDomain::spawn` 先钳位 server 给的 header_rows
   再使用**
-  升级注意：`CODEC_VERSION` 从 48 涨到 49。
+  升级注意：`CODEC_VERSION` 从 48 涨到 49，`wezterm-gui.exe`、
+  `wezterm-mux-server.exe`、`wezterm.exe` 要一起换，旧的 mux-server 得先停掉。
 - **`0937d2717` mux: 加 `enable_pane_tab_bar` 配置项**
   默认 `false`，只决定新建标签页的 `header_rows`；连 mux server 时以 server 端
   配置为准。`tab.rs` 以外的调用点改用整叠 API。

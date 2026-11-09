@@ -90,7 +90,7 @@ As features stabilize some brief notes about them will accumulate here.
   [enable_pane_tab_bar](config/lua/config/enable_pane_tab_bar.md) on, every
   split of a newly created window tab gets a one-row tab strip, and one split
   can hold several terminals stacked behind each other. Click a tab to show it,
-  click its `x` or middle click to close it, double click empty space on the
+  click its `×` or middle click to close it, double click empty space on the
   strip to start a new terminal, and drag a tab to reorder the stack or onto the
   strip of another split to move it there. The keyboard equivalents are
   [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),

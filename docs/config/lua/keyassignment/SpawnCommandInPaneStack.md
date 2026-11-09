@@ -16,8 +16,8 @@ The new terminal can only be started in the domain of the current pane, since
 it shares the pane's split. A `domain` in the `SpawnCommand` that names another
 domain makes the action fail with an error in the log and spawns nothing.
 
-There is no default key assignment. The command is available from the command
-palette, or you can bind it yourself:
+There is no default key assignment. Once that option is on, the command is
+available from the command palette, or you can bind it yourself:
 
 ```lua
 local wezterm = require 'wezterm'

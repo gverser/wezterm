@@ -12,7 +12,7 @@ was created. Without a strip this action does nothing beyond writing a line to
 the log.
 
 There is no default key assignment. The commands for `1` and `-1` are available
-from the command palette, or you can bind them yourself:
+from the command palette once that option is on, or you can bind them yourself:
 
 ```lua
 local wezterm = require 'wezterm'
