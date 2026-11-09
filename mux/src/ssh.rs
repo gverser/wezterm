@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufWriter, Read, Write};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use termwiz::cell::{unicode_column_width, AttributeChange, Intensity};
@@ -54,6 +55,104 @@ impl LineEditorHost for PasswordPromptHost {
                 unicode_column_width(placeholder, None) * cursor_position,
             )
         }
+    }
+}
+
+/// Lets the embedder supply and keep a password for a [`RemoteSshDomain`],
+/// so that a saved host can be connected to without typing it again.
+///
+/// Methods are called from the connection thread, not the GUI thread.
+pub trait SshPasswordHelper: Send + Sync {
+    /// The password to offer automatically, or None if there is none or it
+    /// has already been rejected in this process.
+    fn saved_password(&self) -> Option<String>;
+    /// Whether any password is on file at all. Decides whether a password the
+    /// user typed by hand is offered for saving or for updating.
+    fn has_saved_password(&self) -> bool;
+    /// The password from `saved_password` did not get the user in.
+    fn saved_password_rejected(&self);
+    /// The user typed this password, logged in with it, and agreed to keep it.
+    fn save_password(&self, password: String);
+}
+
+/// Does this prompt ask for a password (as opposed to a one time code, a
+/// key passphrase or a visible question)?
+pub fn is_password_prompt(prompt: &wezterm_ssh::AuthenticationPrompt) -> bool {
+    !prompt.echo && {
+        let text = prompt.prompt.to_lowercase();
+        text.contains("password") || text.contains("密码")
+    }
+}
+
+/// What to ask the user once they are in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOffer {
+    Save(String),
+    Update(String),
+}
+
+/// The decisions around filling in a saved password, kept apart from the
+/// terminal UI so that they can be tested.
+///
+/// The saved password is tried exactly once. If another password prompt
+/// follows it, or the connection fails before authenticating, it was wrong:
+/// we never retry it automatically, because repeating a wrong password is how
+/// accounts get locked.
+pub(crate) struct PasswordAutofill {
+    saved: Option<String>,
+    has_saved: bool,
+    auto_used: bool,
+    typed: Option<String>,
+    rejected: bool,
+}
+
+impl PasswordAutofill {
+    pub fn new(saved: Option<String>, has_saved: bool) -> Self {
+        Self {
+            saved,
+            has_saved,
+            auto_used: false,
+            typed: None,
+            rejected: false,
+        }
+    }
+
+    pub fn auto_answer(&mut self, prompt: &wezterm_ssh::AuthenticationPrompt) -> Option<String> {
+        if !is_password_prompt(prompt) {
+            return None;
+        }
+        if self.auto_used {
+            self.rejected = true;
+            return None;
+        }
+        let saved = self.saved.clone()?;
+        self.auto_used = true;
+        Some(saved)
+    }
+
+    pub fn record_typed(&mut self, prompt: &wezterm_ssh::AuthenticationPrompt, answer: &str) {
+        if is_password_prompt(prompt) {
+            self.typed = Some(answer.to_string());
+        }
+    }
+
+    pub fn note_error(&mut self) {
+        if self.auto_used {
+            self.rejected = true;
+        }
+    }
+
+    pub fn rejected(&self) -> bool {
+        self.rejected
+    }
+
+    pub fn offer_after_success(&self) -> Option<SaveOffer> {
+        let typed = self.typed.clone()?;
+        Some(if self.has_saved {
+            SaveOffer::Update(typed)
+        } else {
+            SaveOffer::Save(typed)
+        })
     }
 }
 
@@ -178,10 +277,24 @@ fn format_host_verification_for_terminal(failed: HostVerificationFailed) -> Vec<
 /// and the reader and writer instances so that we can inject the
 /// interactive setup.  The bulk of that is driven by `connect_ssh_session`.
 pub struct RemoteSshDomain {
-    session: Mutex<Option<Session>>,
+    session: Mutex<Option<SessionSlot>>,
+    /// Bumped each time a new connection replaces the previous one.
+    generation: AtomicU64,
+    password_helper: Option<Arc<dyn SshPasswordHelper>>,
     dom: SshDomain,
     id: DomainId,
     name: String,
+}
+
+/// The current connection, and whether it has finished authenticating.
+///
+/// The session is stored before authentication so that a second pane can
+/// queue a pty request on it, but callers outside this module only get to
+/// see it once `authenticated` is set.
+struct SessionSlot {
+    session: Session,
+    generation: u64,
+    authenticated: Arc<AtomicBool>,
 }
 
 pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap> {
@@ -231,13 +344,40 @@ pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap
 
 impl RemoteSshDomain {
     pub fn with_ssh_domain(dom: &SshDomain) -> anyhow::Result<Self> {
+        Self::with_ssh_domain_and_helper(dom, None)
+    }
+
+    /// As [`Self::with_ssh_domain`], with a helper that can fill in and keep
+    /// the password.
+    pub fn with_ssh_domain_and_helper(
+        dom: &SshDomain,
+        password_helper: Option<Arc<dyn SshPasswordHelper>>,
+    ) -> anyhow::Result<Self> {
         let id = alloc_domain_id();
         Ok(Self {
             id,
             name: dom.name.clone(),
             session: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            password_helper,
             dom: dom.clone(),
         })
+    }
+
+    /// The live connection, once it has authenticated, along with a counter
+    /// that changes whenever the connection is replaced by a new one.
+    ///
+    /// Channels opened on it (exec, sftp) share the connection with the
+    /// panes. Note that a `Session` only keeps the connection alive while it
+    /// has channels open; sftp alone does not count.
+    pub fn authenticated_session(&self) -> Option<(u64, Session)> {
+        let slot = self.session.lock().unwrap();
+        let slot = slot.as_ref()?;
+        if slot.authenticated.load(Ordering::SeqCst) {
+            Some((slot.generation, slot.session.clone()))
+        } else {
+            None
+        }
     }
 
     pub fn ssh_config(&self) -> anyhow::Result<ConfigMap> {
@@ -332,7 +472,14 @@ impl RemoteSshDomain {
     ) -> anyhow::Result<StartNewSessionResult> {
         let (session, events) = Session::connect(self.ssh_config().context("obtain ssh config")?)
             .context("connect to ssh server")?;
-        self.session.lock().unwrap().replace(session.clone());
+        let authenticated = Arc::new(AtomicBool::new(false));
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.session.lock().unwrap().replace(SessionSlot {
+            session: session.clone(),
+            generation,
+            authenticated: Arc::clone(&authenticated),
+        });
+        let password_helper = self.password_helper.clone();
 
         // We get to establish the session!
         //
@@ -400,6 +547,8 @@ impl RemoteSshDomain {
                 size,
                 command_line,
                 env,
+                password_helper,
+                authenticated,
             ) {
                 let _ = write!(stdout_write, "{:#}", err);
                 log::error!("Failed to connect ssh: {:#}", err);
@@ -430,6 +579,8 @@ fn connect_ssh_session(
     size: Arc<Mutex<TerminalSize>>,
     command_line: Option<String>,
     env: HashMap<String, String>,
+    password_helper: Option<Arc<dyn SshPasswordHelper>>,
+    authenticated: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     struct StdoutShim<'a> {
         size: Arc<Mutex<TerminalSize>>,
@@ -589,6 +740,26 @@ fn connect_ssh_session(
         }
     }
 
+    let mut autofill = PasswordAutofill::new(
+        password_helper.as_ref().and_then(|h| h.saved_password()),
+        password_helper
+            .as_ref()
+            .map(|h| h.has_saved_password())
+            .unwrap_or(false),
+    );
+    let mut reported_rejection = false;
+    let mut report_rejection =
+        |autofill: &PasswordAutofill, shim: &mut TerminalShim| -> termwiz::Result<()> {
+            if autofill.rejected() && !reported_rejection {
+                reported_rejection = true;
+                if let Some(helper) = &password_helper {
+                    helper.saved_password_rejected();
+                }
+                shim.output_line("已存的密码被服务器拒绝，下次连接将改为手动输入。")?;
+            }
+            Ok(())
+        };
+
     // Process authentication related events
     while let Ok(event) = smol::block_on(events.recv()) {
         match event {
@@ -622,6 +793,12 @@ fn connect_ssh_session(
                 }
                 let mut answers = vec![];
                 for prompt in &auth.prompts {
+                    if let Some(saved) = autofill.auto_answer(prompt) {
+                        // Answer silently: the password is on file.
+                        answers.push(saved);
+                        continue;
+                    }
+                    report_rejection(&autofill, &mut shim)?;
                     let mut prompt_lines = prompt.prompt.split('\n').collect::<Vec<_>>();
                     let editor_prompt = prompt_lines.pop().unwrap();
                     for line in &prompt_lines {
@@ -632,6 +809,7 @@ fn connect_ssh_session(
                     editor.set_prompt(editor_prompt);
                     host.echo = prompt.echo;
                     if let Some(line) = editor.read_line(&mut host)? {
+                        autofill.record_typed(prompt, &line);
                         answers.push(line);
                     } else {
                         anyhow::bail!("Authentication was cancelled");
@@ -641,12 +819,34 @@ fn connect_ssh_session(
             }
             SessionEvent::Error(err) => {
                 shim.output_line(&format!("Error: {}", err))?;
+                autofill.note_error();
+                report_rejection(&autofill, &mut shim)?;
             }
             SessionEvent::HostVerificationFailed(failed) => {
                 let message = format_host_verification_for_terminal(failed);
                 shim.render(&message)?;
             }
             SessionEvent::Authenticated => {
+                authenticated.store(true, Ordering::SeqCst);
+
+                if let (Some(helper), Some(offer)) =
+                    (&password_helper, autofill.offer_after_success())
+                {
+                    let (question, password) = match offer {
+                        SaveOffer::Save(pw) => ("保存密码，下次自动登录？(y/N) ", pw),
+                        SaveOffer::Update(pw) => ("更新已存的密码？(y/N) ", pw),
+                    };
+                    let mut editor = LineEditor::new(&mut shim);
+                    let mut host = PasswordPromptHost::default();
+                    host.echo = true;
+                    editor.set_prompt(question);
+                    if let Some(line) = editor.read_line(&mut host)? {
+                        if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
+                            helper.save_password(password);
+                        }
+                    }
+                }
+
                 // Our session has been authenticated: we can now
                 // set up the real pty for the pane
                 match smol::block_on(session.request_pty(
@@ -713,7 +913,12 @@ impl Domain for RemoteSshDomain {
 
         // This needs to be separate from the if let block below in order
         // for the lock to be released at the appropriate time
-        let mut session: Option<Session> = self.session.lock().unwrap().as_ref().cloned();
+        let mut session: Option<Session> = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|slot| slot.session.clone());
 
         let StartNewSessionResult { pty, child, writer } = if let Some(session) = session.take() {
             match session
@@ -1144,5 +1349,133 @@ impl std::io::Read for PtyReader {
                 _ => res,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod autofill_test {
+    use super::*;
+    use wezterm_ssh::AuthenticationPrompt;
+
+    fn password() -> AuthenticationPrompt {
+        AuthenticationPrompt {
+            prompt: "Password: ".to_string(),
+            echo: false,
+        }
+    }
+
+    #[test]
+    fn saved_password_is_offered_once() {
+        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        assert_eq!(fill.auto_answer(&password()), Some("secret".to_string()));
+        assert!(!fill.rejected());
+        assert_eq!(fill.auto_answer(&password()), None);
+        assert!(fill.rejected());
+    }
+
+    #[test]
+    fn non_password_prompt_is_never_autofilled() {
+        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        let code = AuthenticationPrompt {
+            prompt: "Verification code: ".to_string(),
+            echo: false,
+        };
+        assert_eq!(fill.auto_answer(&code), None);
+        assert!(!fill.rejected());
+    }
+
+    #[test]
+    fn echoed_prompt_is_not_a_password_prompt() {
+        let prompt = AuthenticationPrompt {
+            prompt: "Password hint (shown): ".to_string(),
+            echo: true,
+        };
+        assert!(!is_password_prompt(&prompt));
+    }
+
+    #[test]
+    fn chinese_password_prompt_is_recognized() {
+        let prompt = AuthenticationPrompt {
+            prompt: "密码：".to_string(),
+            echo: false,
+        };
+        assert!(is_password_prompt(&prompt));
+        let prompt = AuthenticationPrompt {
+            prompt: "tester@host's PASSWORD:".to_string(),
+            echo: false,
+        };
+        assert!(is_password_prompt(&prompt));
+    }
+
+    #[test]
+    fn error_after_autofill_marks_rejected() {
+        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        fill.auto_answer(&password());
+        fill.note_error();
+        assert!(fill.rejected());
+    }
+
+    #[test]
+    fn error_without_autofill_is_not_a_rejection() {
+        let mut fill = PasswordAutofill::new(None, false);
+        fill.note_error();
+        assert!(!fill.rejected());
+    }
+
+    #[test]
+    fn typed_password_offers_save_when_none_saved() {
+        let mut fill = PasswordAutofill::new(None, false);
+        assert_eq!(fill.auto_answer(&password()), None);
+        fill.record_typed(&password(), "pw");
+        assert_eq!(fill.offer_after_success(), Some(SaveOffer::Save("pw".to_string())));
+    }
+
+    #[test]
+    fn typed_password_offers_update_after_rejection() {
+        let mut fill = PasswordAutofill::new(Some("old".to_string()), true);
+        fill.auto_answer(&password());
+        assert_eq!(fill.auto_answer(&password()), None);
+        fill.record_typed(&password(), "new");
+        assert_eq!(
+            fill.offer_after_success(),
+            Some(SaveOffer::Update("new".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejected_earlier_still_offers_update() {
+        // The helper withholds a password it already knows is wrong, but one
+        // is still on file, so the question is "update", not "save".
+        let mut fill = PasswordAutofill::new(None, true);
+        fill.record_typed(&password(), "new");
+        assert_eq!(
+            fill.offer_after_success(),
+            Some(SaveOffer::Update("new".to_string()))
+        );
+    }
+
+    #[test]
+    fn autofill_success_offers_nothing() {
+        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        fill.auto_answer(&password());
+        assert_eq!(fill.offer_after_success(), None);
+    }
+
+    #[test]
+    fn typed_non_password_is_not_offered() {
+        let mut fill = PasswordAutofill::new(None, false);
+        let code = AuthenticationPrompt {
+            prompt: "Verification code: ".to_string(),
+            echo: false,
+        };
+        fill.record_typed(&code, "123456");
+        assert_eq!(fill.offer_after_success(), None);
+    }
+
+    #[test]
+    fn no_saved_password_means_no_autofill() {
+        let mut fill = PasswordAutofill::new(None, false);
+        assert_eq!(fill.auto_answer(&password()), None);
+        assert!(!fill.rejected());
     }
 }
