@@ -10,6 +10,10 @@ tags:
 Controls how wide the session sidebar is when
 [session_sidebar_enabled](session_sidebar_enabled.md) is set.
 
+This is the width of the panel that shows the sessions or files page. The
+column of page tabs down its left edge (2 cells wide) comes on top of it, and
+is all that remains when the panel is collapsed.
+
 The value is a [Dimension](../../../config/lua/config/index.md), so it can be
 expressed in cells, pixels, points or as a percentage of the window width:
 

@@ -10,8 +10,8 @@
 use crate::sessions::ssh::{ssh_domain_name, with_ssh_hosts};
 use crate::sessions::store::with_store;
 use crate::sessions::{
-    clamp_scroll, clamp_width, drop_placement, forms, NodeId, NodeKind, Placement, SessionNode,
-    SessionSpawn,
+    clamp_scroll, clamp_width, drop_placement, forms, rail_click, NodeId, NodeKind, Placement,
+    SessionNode, SessionSpawn, SidebarPage,
 };
 use crate::spawn::SpawnWhere;
 use crate::termwindow::form::FormModal;
@@ -27,10 +27,11 @@ use wezterm_term::{KeyCode, KeyModifiers};
 /// Narrowest useful sidebar, in cells of the title font.
 pub const MIN_SIDEBAR_CELLS: f32 = 8.;
 
-/// Width of the rail left behind when the sidebar is collapsed.
+/// Width of the page tab rail down the sidebar's left edge, in terminal
+/// cells.
 ///
-/// Collapsing to nothing would leave no way to bring it back short of the
-/// command palette, so a sliver stays behind carrying the expand arrow.
+/// It stays when the panel is collapsed: collapsing to nothing would leave no
+/// way to bring the sidebar back short of the command palette.
 pub const COLLAPSED_RAIL_CELLS: f32 = 2.;
 
 /// Row height as a multiple of the title font's cell height.
@@ -97,6 +98,9 @@ pub struct NodeDrag {
 pub struct SidebarState {
     pub collapsed: bool,
 
+    /// The page the panel shows; picked from the tab rail.
+    pub page: SidebarPage,
+
     /// User's dragged width in pixels; None means "use the configured width".
     pub width: Option<f32>,
 
@@ -144,6 +148,7 @@ impl Default for SidebarState {
     fn default() -> Self {
         Self {
             collapsed: false,
+            page: SidebarPage::default(),
             width: None,
             pending_width: None,
             drag: None,
@@ -170,15 +175,32 @@ impl super::TermWindow {
         self.sidebar_is_enabled() && !self.sidebar.collapsed
     }
 
-    /// The width the sidebar occupies, in pixels.
+    /// The width the sidebar occupies, in pixels: the tab rail plus, unless
+    /// collapsed, the panel.
     ///
     /// This is folded into `border.left`, which the rest of the GUI already
     /// treats as the left origin of the content area, so widening it shifts the
     /// panes, splits, tab bar and mouse coordinates all at once.
-    ///
-    /// Collapsed still returns a non-zero rail: see [`COLLAPSED_RAIL_CELLS`].
     pub fn sidebar_width(&self) -> f32 {
         if !self.sidebar_is_enabled() {
+            return 0.;
+        }
+        self.sidebar_rail_width() + self.sidebar_panel_width()
+    }
+
+    /// Width of the page tab rail; see [`COLLAPSED_RAIL_CELLS`].
+    pub fn sidebar_rail_width(&self) -> f32 {
+        if !self.sidebar_is_enabled() {
+            return 0.;
+        }
+        self.render_metrics.cell_size.width as f32 * COLLAPSED_RAIL_CELLS
+    }
+
+    /// Width of the panel to the right of the rail; 0 while collapsed.
+    ///
+    /// `session_sidebar_width` and a dragged width both size the panel alone.
+    pub fn sidebar_panel_width(&self) -> f32 {
+        if !self.sidebar_is_expanded() {
             return 0.;
         }
 
@@ -187,10 +209,6 @@ impl super::TermWindow {
             pixel_max: self.dimensions.pixel_width as f32,
             pixel_cell: self.render_metrics.cell_size.width as f32,
         };
-
-        if self.sidebar.collapsed {
-            return context.pixel_cell * COLLAPSED_RAIL_CELLS;
-        }
 
         let configured = self
             .config
@@ -202,6 +220,23 @@ impl super::TermWindow {
             self.dimensions.pixel_width as f32,
             context.pixel_cell * MIN_SIDEBAR_CELLS,
         )
+    }
+
+    /// A click on one of the rail's page tabs.
+    pub fn click_sidebar_page(&mut self, clicked: SidebarPage) {
+        let (page, collapsed) = rail_click(clicked, self.sidebar.page, self.sidebar.collapsed);
+        if page != self.sidebar.page {
+            // The search box and rename field belong to the sessions page;
+            // don't leave the keyboard captured by one that isn't showing.
+            self.release_sidebar_focus();
+            self.sidebar.menu = None;
+            self.sidebar.page = page;
+        }
+        if collapsed != self.sidebar.collapsed {
+            self.toggle_session_sidebar();
+        } else {
+            self.invalidate_sidebar();
+        }
     }
 
     pub fn toggle_session_sidebar(&mut self) {
@@ -224,6 +259,10 @@ impl super::TermWindow {
     pub fn focus_session_sidebar_search(&mut self) {
         if !self.sidebar_is_enabled() {
             return;
+        }
+        if self.sidebar.page != SidebarPage::Sessions {
+            self.sidebar.menu = None;
+            self.sidebar.page = SidebarPage::Sessions;
         }
         if self.sidebar.collapsed {
             self.sidebar.collapsed = false;
@@ -953,13 +992,18 @@ impl super::TermWindow {
             UIItemType::SidebarResizeHandle => {
                 context.set_cursor(Some(::window::MouseCursor::SizeLeftRight));
                 if event.kind == WMEK::Press(MousePress::Left) {
-                    self.sidebar.pending_width = Some(self.sidebar_width());
+                    self.sidebar.pending_width = Some(self.sidebar_panel_width());
                     self.dragging.replace((item, event));
                 }
             }
             UIItemType::SidebarCollapseToggle => {
                 if event.kind == WMEK::Press(MousePress::Left) {
                     self.toggle_session_sidebar();
+                }
+            }
+            UIItemType::SidebarPageTab(page) => {
+                if event.kind == WMEK::Press(MousePress::Left) {
+                    self.click_sidebar_page(page);
                 }
             }
             UIItemType::SidebarBackground => {
@@ -1032,8 +1076,8 @@ impl super::TermWindow {
         event: MouseEvent,
         context: &dyn WindowOps,
     ) {
-        let border = self.get_os_border();
-        let left_edge = (border.left.get() as f32) - self.sidebar_width();
+        // The dragged edge is the panel's; the rail to its left is fixed.
+        let left_edge = self.sidebar_panel_bounds().min_x();
         let desired = (event.coords.x as f32 - left_edge).max(0.);
 
         let context_width = DimensionContext {
@@ -1061,7 +1105,7 @@ impl super::TermWindow {
         if let Some(width) = self.sidebar.pending_width.take() {
             // A click on the splitter that didn't move anywhere shouldn't pin
             // the width and stop it following the configured value.
-            if (width - self.sidebar_width()).abs() >= 1. {
+            if (width - self.sidebar_panel_width()).abs() >= 1. {
                 self.sidebar.width = Some(width);
                 self.apply_chrome_geometry_change();
             }
@@ -1113,7 +1157,7 @@ impl super::TermWindow {
     /// Where `dragged` would go if dropped at (x, y), or None when that is
     /// nowhere it can go.
     fn sidebar_drop_target(&self, dragged: NodeId, x: isize, y: isize) -> Option<Placement> {
-        let bounds = self.sidebar_bounds();
+        let bounds = self.sidebar_panel_bounds();
         if (x as f32) < bounds.min_x() || (x as f32) >= bounds.max_x() {
             return None;
         }

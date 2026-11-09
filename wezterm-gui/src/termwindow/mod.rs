@@ -183,6 +183,8 @@ pub enum UIItemType {
     SidebarMenuItem(crate::termwindow::sidebar::MenuAction),
     /// The chevron that collapses the sidebar to a rail and back.
     SidebarCollapseToggle,
+    /// A page tab on the sidebar's rail.
+    SidebarPageTab(crate::sessions::SidebarPage),
     /// A tab in a pane stack's strip.
     PaneTab {
         tab_id: TabId,
@@ -898,18 +900,20 @@ impl TermWindow {
         };
 
         // We don't have a `self` to ask for the sidebar width yet, and the
-        // sidebar starts out at its configured width with nothing collapsed.
+        // sidebar starts out at its configured width with nothing collapsed:
+        // the tab rail plus the panel.
         let initial_sidebar_width = if config.session_sidebar_enabled {
             let context = DimensionContext {
                 dpi: dimensions.dpi as f32,
                 pixel_max: dimensions.pixel_width as f32,
                 pixel_cell: render_metrics.cell_size.width as f32,
             };
-            crate::sessions::clamp_width(
-                config.session_sidebar_width.evaluate_as_pixels(context),
-                dimensions.pixel_width as f32,
-                context.pixel_cell * crate::termwindow::sidebar::MIN_SIDEBAR_CELLS,
-            )
+            context.pixel_cell * crate::termwindow::sidebar::COLLAPSED_RAIL_CELLS
+                + crate::sessions::clamp_width(
+                    config.session_sidebar_width.evaluate_as_pixels(context),
+                    dimensions.pixel_width as f32,
+                    context.pixel_cell * crate::termwindow::sidebar::MIN_SIDEBAR_CELLS,
+                )
         } else {
             0.
         };

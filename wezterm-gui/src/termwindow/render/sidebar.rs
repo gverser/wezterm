@@ -4,7 +4,7 @@
 //! `render/borders.rs` for how that space is carved out.
 
 use crate::sessions::store::with_store;
-use crate::sessions::{visible_range, NodeId, Placement, RowKind, VisibleRow};
+use crate::sessions::{visible_range, NodeId, Placement, RowKind, SidebarPage, VisibleRow};
 use crate::termwindow::box_model::*;
 use crate::termwindow::sidebar::{ContextMenu, SidebarFocus, SIDEBAR_LINE_HEIGHT};
 use crate::termwindow::UIItemType;
@@ -56,18 +56,42 @@ impl crate::TermWindow {
         )
     }
 
+    /// The page tab rail down the sidebar's left edge.
+    pub fn sidebar_rail_bounds(&self) -> RectF {
+        let bounds = self.sidebar_bounds();
+        euclid::rect(
+            bounds.min_x(),
+            bounds.min_y(),
+            self.sidebar_rail_width().min(bounds.width()),
+            bounds.height(),
+        )
+    }
+
+    /// The panel to the right of the rail, showing the current page; zero
+    /// width while collapsed.
+    pub fn sidebar_panel_bounds(&self) -> RectF {
+        let bounds = self.sidebar_bounds();
+        let rail = self.sidebar_rail_width().min(bounds.width());
+        euclid::rect(
+            bounds.min_x() + rail,
+            bounds.min_y(),
+            bounds.width() - rail,
+            bounds.height(),
+        )
+    }
+
     /// The rectangle of the sidebar field that currently has the keyboard, in
     /// window coordinates, for positioning the IME candidate window.
     ///
     /// Returns None when the sidebar does not own the keyboard, which is the
     /// signal to fall back to the terminal cursor.
     pub fn sidebar_text_cursor_rect(&self) -> Option<Rect> {
-        if !self.sidebar_is_expanded() {
+        if !self.sidebar_is_expanded() || self.sidebar.page != SidebarPage::Sessions {
             return None;
         }
 
         let focus = self.sidebar.focus.clone()?;
-        let bounds = self.sidebar_bounds();
+        let bounds = self.sidebar_panel_bounds();
         let row_height = self.sidebar_row_height();
 
         // Row 0 is the search box; the tree starts below it.
@@ -165,7 +189,7 @@ impl crate::TermWindow {
         let thickness = metrics.underline_height.max(2) as f32;
         let indent = metrics.cell_size.width as f32 * INDENT_CELLS;
         let pad = metrics.cell_size.width as f32 * 0.5;
-        let bounds = self.sidebar_bounds();
+        let bounds = self.sidebar_panel_bounds();
 
         // Where each row was drawn in this paint; the ui items were just
         // collected from it.
@@ -258,8 +282,8 @@ impl crate::TermWindow {
     /// take clicks ahead of the rows underneath it.
     fn build_sidebar(&self, palette: &ColorPalette) -> anyhow::Result<Vec<ComputedElement>> {
         let (font, metrics) = self.sidebar_font()?;
-        let bounds = self.sidebar_bounds();
-        if bounds.width() <= 0. || bounds.height() <= 0. {
+        let whole = self.sidebar_bounds();
+        if whole.width() <= 0. || whole.height() <= 0. {
             return Ok(vec![]);
         }
 
@@ -267,8 +291,20 @@ impl crate::TermWindow {
         let pad = metrics.cell_size.width as f32 * 0.5;
         let capacity = self.sidebar_row_capacity();
 
-        if !self.sidebar_is_expanded() {
-            return Ok(vec![self.sidebar_rail(&font, &metrics, &colors, bounds)?]);
+        let rail = self.sidebar_rail(&font, &metrics, &colors, self.sidebar_rail_bounds())?;
+        let bounds = self.sidebar_panel_bounds();
+        if !self.sidebar_is_expanded() || bounds.width() <= 0. {
+            return Ok(vec![rail]);
+        }
+
+        if self.sidebar.page == SidebarPage::Files {
+            // Filled in by the file browser.
+            let hint = self.sidebar_hint_element("文件", &font, &colors, bounds.width(), pad);
+            return Ok(vec![
+                rail,
+                self.sidebar_panel(vec![hint], None, &font, &metrics, &colors, bounds)?,
+                self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?,
+            ]);
         }
 
         let mut children = vec![self.sidebar_search_element(&font, &colors, bounds.width(), pad)];
@@ -306,36 +342,17 @@ impl crate::TermWindow {
             }
         });
 
-        let container = Element::new(&font, ElementContent::Children(children))
-            .display(DisplayType::Block)
-            .item_type(UIItemType::SidebarBackground)
-            .min_width(Some(Dimension::Pixels(bounds.width())))
-            .min_height(Some(Dimension::Pixels(bounds.height())))
-            .colors(ElementColors {
-                border: BorderColor::default(),
-                bg: colors.background().to_linear().into(),
-                text: colors.inactive_tab().fg_color.to_linear().into(),
-            });
-
-        let mut computed = vec![self.compute_element(
-            &LayoutContext {
-                height: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
-                    pixel_max: bounds.height(),
-                    pixel_cell: metrics.cell_size.height as f32,
-                },
-                width: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
-                    pixel_max: bounds.max_x(),
-                    pixel_cell: metrics.cell_size.width as f32,
-                },
+        let mut computed = vec![
+            rail,
+            self.sidebar_panel(
+                children,
+                Some(UIItemType::SidebarBackground),
+                &font,
+                &metrics,
+                &colors,
                 bounds,
-                metrics: &metrics,
-                gl_state: self.render_state.as_ref().unwrap(),
-                zindex: 10,
-            },
-            &container,
-        )?];
+            )?,
+        ];
 
         computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
 
@@ -413,37 +430,30 @@ impl crate::TermWindow {
             .colors(field_colors)
     }
 
-    /// What is left when the sidebar is collapsed: a sliver carrying the
-    /// arrow that brings it back.
+    /// The panel's background with `children` stacked down it.
     ///
-    /// Collapsing to zero width would strand the user with no way to reopen it
-    /// short of the command palette.
-    fn sidebar_rail(
+    /// `item_type` is what a click on the empty area below them hits.
+    pub(crate) fn sidebar_panel(
         &self,
+        children: Vec<Element>,
+        item_type: Option<UIItemType>,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
         colors: &TabBarColors,
         bounds: RectF,
     ) -> anyhow::Result<ComputedElement> {
-        let style = colors.inactive_tab();
-        let hover = colors.inactive_tab_hover();
-
-        let arrow = Element::new(font, ElementContent::Text("\u{00bb}".to_string()))
+        let mut container = Element::new(font, ElementContent::Children(children))
             .display(DisplayType::Block)
-            .line_height(Some(SIDEBAR_LINE_HEIGHT))
-            .item_type(UIItemType::SidebarCollapseToggle)
             .min_width(Some(Dimension::Pixels(bounds.width())))
             .min_height(Some(Dimension::Pixels(bounds.height())))
             .colors(ElementColors {
                 border: BorderColor::default(),
                 bg: colors.background().to_linear().into(),
-                text: style.fg_color.to_linear().into(),
-            })
-            .hover_colors(Some(ElementColors {
-                border: BorderColor::default(),
-                bg: hover.bg_color.to_linear().into(),
-                text: hover.fg_color.to_linear().into(),
-            }));
+                text: colors.inactive_tab().fg_color.to_linear().into(),
+            });
+        if let Some(item_type) = item_type {
+            container = container.item_type(item_type);
+        }
 
         self.compute_element(
             &LayoutContext {
@@ -462,8 +472,118 @@ impl crate::TermWindow {
                 gl_state: self.render_state.as_ref().unwrap(),
                 zindex: 10,
             },
-            &arrow,
+            &container,
         )
+    }
+
+    /// The column of page tabs down the sidebar's left edge, each tab's name
+    /// running top to bottom one character per line.
+    ///
+    /// It is all that is left when the sidebar is collapsed, so a click on
+    /// either tab brings the panel back on that page.
+    fn sidebar_rail(
+        &self,
+        font: &Rc<LoadedFont>,
+        metrics: &RenderMetrics,
+        colors: &TabBarColors,
+        bounds: RectF,
+    ) -> anyhow::Result<ComputedElement> {
+        let expanded = self.sidebar_is_expanded();
+        let hover = colors.inactive_tab_hover();
+        let context = LayoutContext {
+            height: DimensionContext {
+                dpi: self.dimensions.dpi as f32,
+                pixel_max: bounds.height(),
+                pixel_cell: metrics.cell_size.height as f32,
+            },
+            width: DimensionContext {
+                dpi: self.dimensions.dpi as f32,
+                pixel_max: bounds.max_x(),
+                pixel_cell: metrics.cell_size.width as f32,
+            },
+            bounds,
+            metrics,
+            gl_state: self.render_state.as_ref().unwrap(),
+            zindex: 10,
+        };
+        // box_model has no centring, so each glyph is padded in by half of
+        // what it leaves of the rail. Its width comes from shaping it: CJK
+        // advances in the title font are not a whole number of its cells.
+        let glyph_width = |text: &str| -> f32 {
+            self.compute_element(
+                &context,
+                &Element::new(font, ElementContent::Text(text.to_string())),
+            )
+            .map(|e| e.bounds.width())
+            .unwrap_or(0.)
+        };
+
+        let tabs = [
+            (SidebarPage::Sessions, "会话"),
+            (SidebarPage::Files, "文件"),
+        ]
+        .iter()
+        .map(|&(page, label)| {
+            // Marked only while the panel is actually showing it.
+            let style = if expanded && self.sidebar.page == page {
+                colors.active_tab()
+            } else {
+                colors.inactive_tab()
+            };
+            let chars = label
+                .chars()
+                .map(|c| {
+                    let text = c.to_string();
+                    let side = ((bounds.width() - glyph_width(&text)) / 2.).max(0.).floor();
+                    Element::new(font, ElementContent::Text(text))
+                        .display(DisplayType::Block)
+                        .padding(BoxDimension {
+                            left: Dimension::Pixels(side),
+                            right: Dimension::Pixels(0.),
+                            top: Dimension::Pixels(0.),
+                            bottom: Dimension::Pixels(0.),
+                        })
+                        .colors(ElementColors {
+                            border: BorderColor::default(),
+                            bg: InheritableColor::Inherited,
+                            text: InheritableColor::Inherited,
+                        })
+                })
+                .collect();
+            Element::new(font, ElementContent::Children(chars))
+                .display(DisplayType::Block)
+                .item_type(UIItemType::SidebarPageTab(page))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(0.),
+                    right: Dimension::Pixels(0.),
+                    top: Dimension::Cells(0.5),
+                    bottom: Dimension::Cells(0.5),
+                })
+                .min_width(Some(Dimension::Pixels(bounds.width())))
+                .colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: style.bg_color.to_linear().into(),
+                    text: style.fg_color.to_linear().into(),
+                })
+                .hover_colors(Some(ElementColors {
+                    border: BorderColor::default(),
+                    bg: hover.bg_color.to_linear().into(),
+                    text: hover.fg_color.to_linear().into(),
+                }))
+        })
+        .collect();
+
+        let rail = Element::new(font, ElementContent::Children(tabs))
+            .display(DisplayType::Block)
+            .min_width(Some(Dimension::Pixels(bounds.width())))
+            .min_height(Some(Dimension::Pixels(bounds.height())))
+            .colors(ElementColors {
+                border: BorderColor::default(),
+                bg: colors.background().to_linear().into(),
+                text: colors.inactive_tab().fg_color.to_linear().into(),
+            });
+
+        self.compute_element(&context, &rail)
     }
 
     /// A non-interactive line of explanatory text.

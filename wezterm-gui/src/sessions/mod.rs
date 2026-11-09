@@ -57,6 +57,32 @@ pub fn visible_range(total_rows: usize, scroll_offset: usize, capacity: usize) -
     start..end
 }
 
+/// The pages of the sidebar, picked from the tab rail down its left edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarPage {
+    #[default]
+    Sessions,
+    Files,
+}
+
+/// What a click on a rail tab does: returns (new page, new collapsed).
+///
+/// Collapsed, any tab opens the panel on that page. Open, the current page's
+/// tab closes it and another tab switches to that page.
+pub fn rail_click(
+    clicked: SidebarPage,
+    current: SidebarPage,
+    collapsed: bool,
+) -> (SidebarPage, bool) {
+    if collapsed {
+        (clicked, false)
+    } else if clicked == current {
+        (current, true)
+    } else {
+        (clicked, false)
+    }
+}
+
 /// Constrain the sidebar width to something the window can actually afford.
 ///
 /// Without an upper bound, dragging the splitter past the window edge leaves
@@ -346,5 +372,37 @@ mod test {
     #[test]
     fn a_zero_width_window_yields_zero() {
         assert_eq!(clamp_width(100., 0., 100.), 0.);
+    }
+
+    #[test]
+    fn rail_click_collapsed_expands_to_clicked() {
+        assert_eq!(
+            rail_click(SidebarPage::Files, SidebarPage::Sessions, true),
+            (SidebarPage::Files, false)
+        );
+        assert_eq!(
+            rail_click(SidebarPage::Sessions, SidebarPage::Sessions, true),
+            (SidebarPage::Sessions, false)
+        );
+    }
+
+    #[test]
+    fn rail_click_active_collapses() {
+        assert_eq!(
+            rail_click(SidebarPage::Files, SidebarPage::Files, false),
+            (SidebarPage::Files, true)
+        );
+    }
+
+    #[test]
+    fn rail_click_other_switches() {
+        assert_eq!(
+            rail_click(SidebarPage::Files, SidebarPage::Sessions, false),
+            (SidebarPage::Files, false)
+        );
+        assert_eq!(
+            rail_click(SidebarPage::Sessions, SidebarPage::Files, false),
+            (SidebarPage::Sessions, false)
+        );
     }
 }
