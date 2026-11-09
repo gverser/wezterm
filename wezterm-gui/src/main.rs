@@ -40,6 +40,7 @@ mod customglyph;
 mod download;
 mod frontend;
 mod glyphcache;
+mod highlight;
 mod inputmap;
 mod overlay;
 mod pane_strip;

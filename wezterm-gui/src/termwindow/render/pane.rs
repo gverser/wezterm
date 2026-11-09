@@ -335,7 +335,10 @@ impl crate::TermWindow {
                 window_is_transparent: bool,
                 layers: &'a mut TripleLayerQuadAllocator<'b>,
                 error: Option<anyhow::Error>,
+                highlight: bool,
             }
+
+            let highlight = self.keyword_highlight_active(&*pos.pane);
 
             let left_pixel_x = padding_left
                 + border.left.get() as f32
@@ -365,6 +368,7 @@ impl crate::TermWindow {
                 window_is_transparent,
                 layers,
                 error: None,
+                highlight,
             };
 
             impl<'a, 'b> LineRender<'a, 'b> {
@@ -440,6 +444,7 @@ impl crate::TermWindow {
                         left_pixel_x: NotNan::new(self.left_pixel_x).unwrap(),
                         phys_line_idx: line_idx,
                         reverse_video: self.dims.reverse_video,
+                        highlight: self.highlight,
                     };
 
                     if let Some(cached_quad) =
@@ -473,6 +478,7 @@ impl crate::TermWindow {
                     let shape_key = LineToEleShapeCacheKey {
                         shape_hash,
                         shape_generation: quad_key.shape_generation,
+                        highlight: self.highlight,
                         composing: if self.cursor.y == stable_row && self.pos.is_active {
                             if let DeadKeyStatus::Composing(composing) =
                                 &self.term_window.dead_key_status
@@ -484,6 +490,18 @@ impl crate::TermWindow {
                         } else {
                             None
                         },
+                    };
+
+                    // Only reached when the cached quads are stale, so the
+                    // rules don't run every frame.
+                    let highlighted = if self.highlight {
+                        self.term_window.highlighted_line(line, shape_hash)
+                    } else {
+                        None
+                    };
+                    let line: &Line = match &highlighted {
+                        Some(hl) => hl,
+                        None => line,
                     };
 
                     let render_result = self

@@ -251,6 +251,10 @@ impl super::TermWindow {
     fn perform_assignment_without_pane(&mut self, action: &KeyAssignment) -> bool {
         use KeyAssignment::*;
         match action {
+            ToggleKeywordHighlight => {
+                self.toggle_keyword_highlight();
+                true
+            }
             ShowFeishuPanel => {
                 self.show_feishu_panel();
                 true

@@ -488,6 +488,14 @@ pub struct TermWindow {
 
     line_quad_cache: RefCell<LfuCache<LineQuadCacheKey, LineQuadCacheValue>>,
 
+    /// Set by `ToggleKeywordHighlight`; overrides `keyword_highlight_enabled`
+    /// for this window until the next toggle.
+    keyword_highlight_override: Option<bool>,
+    highlight_rules: Rc<Vec<crate::highlight::CompiledRule>>,
+    /// Recoloured copies of lines, by the original's shape hash and the shape
+    /// generation they were made under.
+    highlight_cache: RefCell<LfuCache<([u8; 16], usize), Option<Rc<wezterm_term::Line>>>>,
+
     last_status_call: Instant,
     cursor_blink_state: RefCell<ColorEase>,
     blink_state: RefCell<ColorEase>,
@@ -993,6 +1001,16 @@ impl TermWindow {
             line_quad_cache: RefCell::new(LfuCache::new(
                 "line_quad_cache.hit.rate",
                 "line_quad_cache.miss.rate",
+                |config| config.line_quad_cache_size,
+                &config,
+            )),
+            keyword_highlight_override: None,
+            highlight_rules: Rc::new(crate::highlight::compile_rules(
+                &config.keyword_highlight_rules,
+            )),
+            highlight_cache: RefCell::new(LfuCache::new(
+                "highlight_cache.hit.rate",
+                "highlight_cache.miss.rate",
                 |config| config.line_quad_cache_size,
                 &config,
             )),
@@ -2089,6 +2107,41 @@ impl TermWindow {
 }
 
 impl TermWindow {
+    /// Whether keyword highlighting applies to this pane right now.
+    pub fn keyword_highlight_active(&self, pane: &dyn Pane) -> bool {
+        let enabled = self
+            .keyword_highlight_override
+            .unwrap_or(self.config.keyword_highlight_enabled);
+        enabled
+            && !self.highlight_rules.is_empty()
+            && (self.config.keyword_highlight_alt_screen || !pane.is_alt_screen_active())
+    }
+
+    /// The recoloured copy of `line`, if any rule matches it.
+    pub fn highlighted_line(
+        &self,
+        line: &wezterm_term::Line,
+        shape_hash: [u8; 16],
+    ) -> Option<Rc<wezterm_term::Line>> {
+        let key = (shape_hash, self.shape_generation);
+        if let Some(cached) = self.highlight_cache.borrow_mut().get(&key) {
+            return cached.clone();
+        }
+        let result = crate::highlight::highlight_line(line, &self.highlight_rules).map(Rc::new);
+        self.highlight_cache.borrow_mut().put(key, result.clone());
+        result
+    }
+
+    pub fn toggle_keyword_highlight(&mut self) {
+        let current = self
+            .keyword_highlight_override
+            .unwrap_or(self.config.keyword_highlight_enabled);
+        self.keyword_highlight_override = Some(!current);
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
+        }
+    }
+
     fn palette(&mut self) -> &ColorPalette {
         if self.palette.is_none() {
             self.palette
@@ -2151,6 +2204,9 @@ impl TermWindow {
         );
 
         self.show_scroll_bar = config.enable_scroll_bar;
+        self.highlight_rules = Rc::new(crate::highlight::compile_rules(
+            &config.keyword_highlight_rules,
+        ));
         self.shape_generation += 1;
         {
             let mut shape_cache = self.shape_cache.borrow_mut();
@@ -3583,6 +3639,7 @@ impl TermWindow {
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
             ToggleSessionSidebar => self.toggle_session_sidebar(),
+            ToggleKeywordHighlight => self.toggle_keyword_highlight(),
             FocusSessionSidebarSearch => self.focus_session_sidebar_search(),
             CloseAllSessions => self.close_all_sessions(),
         };

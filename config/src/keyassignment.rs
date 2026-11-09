@@ -652,6 +652,7 @@ pub enum KeyAssignment {
     InputSelector(InputSelector),
     Confirmation(Confirmation),
     ToggleSessionSidebar,
+    ToggleKeywordHighlight,
     FocusSessionSidebarSearch,
     ShowFeishuPanel,
     CloseAllSessions,

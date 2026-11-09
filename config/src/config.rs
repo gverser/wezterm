@@ -325,6 +325,20 @@ pub struct Config {
     #[dynamic(default = "default_hyperlink_rules")]
     pub hyperlink_rules: Vec<hyperlink::Rule>,
 
+    /// Colour keywords such as "error" and "ok" in terminal output, wherever
+    /// the program did not colour them itself. Display only: copied text is
+    /// unchanged.
+    #[dynamic(default = "default_true")]
+    pub keyword_highlight_enabled: bool,
+
+    /// Also highlight in full screen programs (less, vim, top, ...).
+    #[dynamic(default = "default_true")]
+    pub keyword_highlight_alt_screen: bool,
+
+    /// The rules; setting this replaces the defaults entirely.
+    #[dynamic(default = "crate::highlight::default_keyword_highlight_rules")]
+    pub keyword_highlight_rules: Vec<crate::highlight::KeywordHighlightRule>,
+
     /// What to set the TERM variable to
     #[dynamic(default = "default_term")]
     pub term: String,

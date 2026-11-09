@@ -74,6 +74,10 @@ pub struct LineQuadCacheKey {
     pub cursor: Option<CursorProperties>,
     pub reverse_video: bool,
     pub password_input: bool,
+    /// Whether keyword highlighting applied to this line. The shape hash is
+    /// the hash of the line as the pane holds it, which is the same either
+    /// way.
+    pub highlight: bool,
 }
 
 pub struct LineQuadCacheValue {
@@ -99,6 +103,7 @@ pub struct LineToEleShapeCacheKey {
     pub shape_hash: [u8; 16],
     pub composing: Option<(usize, String)>,
     pub shape_generation: usize,
+    pub highlight: bool,
 }
 
 pub struct LineToElementShapeItem {

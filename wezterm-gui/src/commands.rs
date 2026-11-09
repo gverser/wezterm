@@ -2044,6 +2044,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Edit"],
             icon: None,
         },
+        ToggleKeywordHighlight => CommandDef {
+            brief: "Toggle Keyword Highlight".into(),
+            doc: "Turn keyword highlighting in terminal output on or off for this window".into(),
+            keys: vec![],
+            args: &[ArgType::ActivePane],
+            menubar: &["View"],
+            icon: Some("md_format_color_highlight"),
+        },
         ToggleSessionSidebar => CommandDef {
             brief: "Toggle Session Sidebar".into(),
             doc: "Show or hide the session sidebar along the left edge of the window".into(),
@@ -2137,6 +2145,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ToggleSessionSidebar,
         FocusSessionSidebarSearch,
         ShowFeishuPanel,
+        ToggleKeywordHighlight,
         // ----------------- Window
         CloseAllSessions,
         ToggleFullScreen,

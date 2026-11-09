@@ -96,6 +96,14 @@ As features stabilize some brief notes about them will accumulate here.
   [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),
   [ActivatePaneStackRelative](config/lua/keyassignment/ActivatePaneStackRelative.md)
   and [MovePaneToStack](config/lua/keyassignment/MovePaneToStack.md).
+* Keyword highlighting: words such as `error`, `warning` and `ok`, and IPv4
+  addresses, are coloured in terminal output wherever the program left them in
+  the default colour, after MobaXterm's syntax highlighting. It only changes
+  what is drawn; copied text is unchanged. See
+  [keyword_highlight_enabled](config/lua/config/keyword_highlight_enabled.md),
+  [keyword_highlight_rules](config/lua/config/keyword_highlight_rules.md),
+  [keyword_highlight_alt_screen](config/lua/config/keyword_highlight_alt_screen.md)
+  and [ToggleKeywordHighlight](config/lua/keyassignment/ToggleKeywordHighlight.md).
 * [command_palette_line_height](config/lua/config/command_palette_line_height.md)
   option to scale the vertical spacing of rows in the command palette,
   independently of [line_height](config/lua/config/line_height.md) which is for terminal cells only.
