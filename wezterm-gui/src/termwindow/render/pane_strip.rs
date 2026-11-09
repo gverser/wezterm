@@ -181,6 +181,10 @@ impl crate::TermWindow {
             }
         }
 
+        // Against the hit regions just registered, so that the line below is
+        // the drop a release at the resting pointer would perform.
+        self.reresolve_pane_tab_drop();
+
         // After every strip, so that a line on the edge between two tabs is
         // drawn over both. The early returns above (no header rows, tab
         // overlay) are cases where the drop has no target either.

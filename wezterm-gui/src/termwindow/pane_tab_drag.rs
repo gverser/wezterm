@@ -31,8 +31,26 @@ pub struct PaneTabDrag {
     /// False until the pointer passes the threshold. Until then the press is
     /// just the click it already performed.
     pub dragging: bool,
-    /// Where the tab would land, as of the last move.
+    /// Pixel position of the last move past the threshold. Kept so that a
+    /// frame can resolve the drop again when the strips re-lay out under a
+    /// pointer that is not moving.
+    pub pointer: Option<(isize, isize)>,
+    /// Where the tab would land, as of the last move or the last frame,
+    /// whichever came later.
     pub target: Option<PaneTabDrop>,
+}
+
+impl PaneTabDrag {
+    /// Where a frame should resolve the drop again, if anywhere. Only a drag
+    /// past the threshold shows an insertion line, and before the first move
+    /// there is no pointer to resolve at.
+    fn pointer_to_reresolve(&self) -> Option<(isize, isize)> {
+        if self.dragging {
+            self.pointer
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,6 +81,7 @@ impl crate::TermWindow {
             tab_id,
             pane_id,
             dragging: false,
+            pointer: None,
             target: None,
         });
         self.dragging = Some((item, event));
@@ -116,12 +135,37 @@ impl crate::TermWindow {
         let target = self.pane_tab_drop_at(&drag, event.coords.x, event.coords.y);
         if let Some(drag) = self.pane_tab_drag.as_mut() {
             drag.dragging = true;
+            drag.pointer = Some((event.coords.x, event.coords.y));
             if drag.target != target {
                 drag.target = target;
                 context.invalidate();
             }
         }
         self.dragging.replace((item, start_event));
+    }
+
+    /// Called by every paint once this frame's strip hit regions are
+    /// registered and before the insertion line is drawn. A strip can
+    /// re-lay out under a pointer that is resting (a hidden member gains its
+    /// unseen marker, a title changes, members come or go); the release
+    /// resolves against the new layout, so the line has to as well, or it
+    /// shows a gap the release will not use.
+    ///
+    /// Does not invalidate: the re-layout already asked for this frame, and
+    /// this frame draws the line from the fresh target.
+    pub(super) fn reresolve_pane_tab_drop(&mut self) {
+        let drag = match self.pane_tab_drag {
+            Some(drag) => drag,
+            None => return,
+        };
+        let (x, y) = match drag.pointer_to_reresolve() {
+            Some(pointer) => pointer,
+            None => return,
+        };
+        let target = self.pane_tab_drop_at(&drag, x, y);
+        if let Some(drag) = self.pane_tab_drag.as_mut() {
+            drag.target = target;
+        }
     }
 
     /// Where the tab of `drag` would land if dropped at pixel (x, y), or None
@@ -227,5 +271,24 @@ mod test {
         assert!(passes_drag_threshold(5.0, 0.0, 10.0));
         // Measured along the diagonal: (3, 4) is 5 pixels away.
         assert!(passes_drag_threshold(3.0, 4.0, 10.0));
+    }
+
+    #[test]
+    fn only_a_drag_with_a_pointer_is_resolved_again_by_a_frame() {
+        let drag = |dragging, pointer| PaneTabDrag {
+            tab_id: 1,
+            pane_id: 2,
+            dragging,
+            pointer,
+            target: None,
+        };
+        assert_eq!(
+            drag(true, Some((260, 40))).pointer_to_reresolve(),
+            Some((260, 40))
+        );
+        // A press that has not passed the threshold shows no line.
+        assert_eq!(drag(false, Some((260, 40))).pointer_to_reresolve(), None);
+        assert_eq!(drag(false, None).pointer_to_reresolve(), None);
+        assert_eq!(drag(true, None).pointer_to_reresolve(), None);
     }
 }
