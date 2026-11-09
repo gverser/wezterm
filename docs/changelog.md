@@ -86,6 +86,16 @@ As features stabilize some brief notes about them will accumulate here.
   sight before taking them with it. See also
   [ToggleSessionSidebar](config/lua/keyassignment/ToggleSessionSidebar.md) and
   [FocusSessionSidebarSearch](config/lua/keyassignment/FocusSessionSidebarSearch.md).
+* Pane tab strips: with
+  [enable_pane_tab_bar](config/lua/config/enable_pane_tab_bar.md) on, every
+  split of a newly created window tab gets a one-row tab strip, and one split
+  can hold several terminals stacked behind each other. Click a tab to show it,
+  click its `x` or middle click to close it, double click empty space on the
+  strip to start a new terminal, and drag a tab to reorder the stack or onto the
+  strip of another split to move it there. The keyboard equivalents are
+  [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),
+  [ActivatePaneStackRelative](config/lua/keyassignment/ActivatePaneStackRelative.md)
+  and [MovePaneToStack](config/lua/keyassignment/MovePaneToStack.md).
 * [command_palette_line_height](config/lua/config/command_palette_line_height.md)
   option to scale the vertical spacing of rows in the command palette,
   independently of [line_height](config/lua/config/line_height.md) which is for terminal cells only.

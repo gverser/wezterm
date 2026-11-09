@@ -4,7 +4,7 @@
 （`config: Replace winapi with windows-sys (#8098)`），在那之前的历史都属于上游，
 不在这里记。
 
-一共做了三件事，互相衔接：
+一共做了四件事，互相衔接：
 
 1. **会话侧边栏** —— 窗口左侧一棵保存好的会话树，每个条目绑一个 mux workspace，
    照 MobaXterm 的会话面板做的。
@@ -13,14 +13,109 @@
 3. **飞书客户端** —— 桥另一头的 Node 进程，住在另一个仓库
    `D:\dev\remote-controll`。它的提交在下面用 **`[client]`** 标出；那条功能横跨
    两个仓库，只记一半会看不懂。
+4. **分屏标签组** —— 每块分屏顶上一行标签条，一块屏里可以叠多个终端；
+   配置项 `enable_pane_tab_bar` 打开后对新建的窗口标签页生效。
 
-设计文档在 `docs-internal/`：
+飞书相关的设计文档在 `docs-internal/`：
 
 - `2026-09-03-feishu-bridge-design.md` —— 整体设计与 IPC 协议
 - `2026-09-03-feishu-bridge-plan-rust.md` —— Rust 侧实现计划
 - `2026-09-07-feishu-per-pane-control-design.md` —— 按 pane 订阅与服务生命周期
 
+分屏标签组的设计文档是 `docs/superpowers/specs/2026-11-05-pane-tabs-design.md`。
+
 ---
+
+## 2026-11-09
+
+分屏标签组，阶段 3：标签条上的拖动，以及点击规则收口。
+
+- **`86085eb59` gui: 标签条点击规则收成 strip_press 一个函数**
+  是否忽略这一下按键，以及这一下要记成什么，原来在调用方和测试辅助里各算一遍，
+  现在只有 `strip_press` 一处。激活一个带「有新输出」小点的标签会让小点消失、
+  标签变窄，重排后别的 `×` 可能正好落在指针下；所以激活之后紧跟的关闭一律吞掉，
+  吞掉的那一下仍记着那次激活，连按第三下也被吞。窗口失焦时清掉点击记录。
+- **`007c3d52c` gui: 标签条标签可拖动**
+  按住标签拖：在同一条标签条内松手是叠内换位，拖到另一块屏的标签条上松手是
+  挪进那块屏的叠，在标签条以外松手则取消。拖动中只画一条插入竖线，松手才调一次
+  `move_pane_to_stack`，不像窗口标签栏那样实时换位（连着 mux server 时每一步都是
+  一个 PDU 加一次整树重拉）。只在同一个窗口标签页内有效；指针移动不到半个格
+  宽算单击。
+- **`b25e7ce7d` gui: 键盘 MovePaneToStack 与拖动松手共用一个挪动 helper**
+  两条路径共用 `spawn_move_pane_to_stack`，`await` 之后都 `invalidate` 重画。
+  连着 mux server 时本地要等 resync 才拿到新顺序，而换位和同宽叶子之间的挪动
+  没有输出，不重画的话标签条会停在旧顺序上，下一次拖动也会按旧画面量位置。
+
+## 2026-11-06
+
+分屏标签组，阶段 2：协议补齐，标签条的绘制和鼠标，三个按键动作，焦点卡死修复。
+
+- **`35c1792ec` mux: 嵌套拖动按子树最小高度夹分割线**
+  修阶段 1 遗留的问题：`header_rows = 1` 时拖外层分割线，嵌套的内层成员可能被
+  压成 0 行。
+- **`ee1195f34` mux、`9e3c79a98` codec: 「在叠里新开」与「挪进叠」的协议**
+  mux 层新增两个入口，线上新增 `SpawnPaneInStack`（68）和 `MovePaneToStack`
+  （69）两个 PDU。
+  升级注意：`CODEC_VERSION` 从 49 涨到 50，`wezterm-gui.exe`、
+  `wezterm-mux-server.exe`、`wezterm.exe` 要一起换，旧的 mux-server 得先停掉。
+- **`6562fecb7` gui: 修焦点乒乓——丢掉过时的 PaneFocused 重放，client 不再回报
+  server 的焦点回声**
+  上游原有的 bug：开着多个 pane 来回切焦点会无限循环，GUI 卡死，本地 domain
+  上不需要 server 就能复现。两条回路：`frontend.rs` 重放过时的本地
+  `PaneFocused`；`ClientPane` 把 server 迟到的焦点回声当成新的选择又报回去。
+  修复接受三个代价：
+  1. 高延迟连接上连续切换时，本地焦点会短暂把中间经过的 pane 重放一遍，这段
+     时间里敲的字会进中间那块；本机 unix socket 上约 1 ms。
+  2. 别的连接改了焦点之后，server 记录的「这个 GUI 聚焦的 pane」要等用户下次在
+     这个 GUI 里切换才更新；不带 `--pane-id` 又没有 `WEZTERM_PANE` 的 cli 命令
+     会选到旧 pane。
+  3. 焦点通知指向一个 GUI 还没同步到的 pane 时可能乱序应用，两边会静默不一致，
+     直到下一次操作。
+- **`d69544e61` gui: 三个按键动作**
+  `SpawnCommandInPaneStack`、`ActivatePaneStackRelative`、`MovePaneToStack`，
+  没有默认快捷键，`enable_pane_tab_bar` 打开时出现在命令面板里。后续
+  `5dc15ca0a` 把三个动作共用的守卫（标签页没有标签条时不做事）合成一份，标签条
+  也改用 `Tab::visible_pane_of_leaf`。
+- **`7fb2b6685` gui: 标签条排版纯函数 `layout_strip`**
+  后续 `d96fce2d0` 修了零宽字素让 `×` 与关闭热区错位，`eb1137d34` 把零宽长
+  字素按 1 格计宽，并让叠内新开的命令显示用户设的 label。
+- **`982d03963` gui: 画 pane 叠标签条**
+  注册标签条的 UIItem，隐藏 pane 有新输出时重画一次并在标签上画小点。后续
+  `525237507` 改正 `prune_hidden_output` 的注释：zoom 时仍画被 zoom 那一叠的
+  标签条。
+- **`bbff0f314` gui: 标签条鼠标操作**
+  点标签切换，点 `×` 或中键关闭，双击空白处在叠里新开。后续 `6c3ebacae` 让双击
+  只认两次按中同一项，双击 `×` 只关一个 pane；`4879ef806` 把连击改成按「上一次
+  按中的条目、动作和时间」判断，不再依赖格子里的连击计数（确认框抓鼠标会让
+  列号从四舍五入变成截断，计数因此被重置），并让 pane 级 overlay 的输出也触发
+  重画（上游原有的缺口：overlay 的 id 不在 tab 里，输出从不重画）。
+- **`fcb8d1ce8` mux: 叶可见成员与 pane 尺寸各收成一份，钳住拖分隔条的行数**
+  **`7ca67d93d` mux-server: 改正 `spawn_pane_in_stack` 回包注释里的理由**
+  整理，不改行为。
+
+## 2026-11-05
+
+分屏标签组，阶段 1：mux 模型。此时还没有标签条，只有模型、协议和配置项。
+
+- **`6736f8e70` mux: 新增 PaneStack 与槽位/成员尺寸换算**
+  **`aa275a5d8` mux: Tab 的叶子换成 PaneStack，并为标签条让出叶子顶上的行**
+  **`a9a974285` mux: `split_and_insert` 里 resize 失败时把树放回去**
+  **`ef0884b7c` mux: 叠的操作——加入、挪动、切换可见成员**
+  **`0d352c505` mux: zoom 以叶子为单位，可见成员换了 zoom 跟着走**
+  标签页的叶子从单个 pane 换成一叠 pane，同一叠里只有一个可见。每个标签页有自己的
+  `header_rows`，建标签页时定死；非 0 时每个叶子顶上让出那么多行给标签条。zoom
+  以叶子为单位，叠内切换不取消 zoom。`header_rows = 0` 时行为与以前一致。
+- **`4bc564316` codec: 线上布局改为整叠 PaneStackEntry，SpawnResponse 带
+  header_rows**
+  **`30980b887` client: `ClientDomain::spawn` 先钳位 server 给的 header_rows
+  再使用**
+  升级注意：`CODEC_VERSION` 从 48 涨到 49。
+- **`0937d2717` mux: 加 `enable_pane_tab_bar` 配置项**
+  默认 `false`，只决定新建标签页的 `header_rows`；连 mux server 时以 server 端
+  配置为准。`tab.rs` 以外的调用点改用整叠 API。
+  文档见 `docs/config/lua/config/enable_pane_tab_bar.md`。
+- **`2a75a3e29` mux: 终审修复**
+  叶子最小行数收口为 `min_leaf_rows`，空叠不再留在 Split 下，补不变量测试。
 
 ## 2026-10-29
 
