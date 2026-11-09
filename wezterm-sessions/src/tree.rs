@@ -138,6 +138,22 @@ impl SessionNode {
             NodeKind::Session { .. } => &[],
         }
     }
+
+    /// This node if it is a session, and every session inside it if it is a
+    /// folder: what goes when it is removed.
+    pub fn session_ids(&self) -> Vec<NodeId> {
+        fn walk(node: &SessionNode, out: &mut Vec<NodeId>) {
+            if !node.is_folder() {
+                out.push(node.id);
+            }
+            for child in node.children() {
+                walk(child, out);
+            }
+        }
+        let mut out = vec![];
+        walk(self, &mut out);
+        out
+    }
 }
 
 /// One row of the flattened, currently-visible view of the tree.
@@ -564,6 +580,21 @@ mod test {
     /// has to be named rather than elided.
     fn names<'a>(rows: &[VisibleRow<'a>]) -> Vec<(&'a str, usize)> {
         rows.iter().map(|r| (r.name, r.depth)).collect()
+    }
+
+    #[test]
+    fn session_ids_of_a_removed_folder_include_everything_inside() {
+        let mut tree = sample();
+        let work = tree.roots[0].id;
+        let removed = tree.remove(work).unwrap();
+        let names: Vec<NodeId> = removed.session_ids();
+        let alpha = removed.children()[0].id;
+        let beta = removed.children()[1].id;
+        assert_eq!(names, vec![alpha, beta]);
+
+        let gamma = tree.roots[0].id;
+        let removed = tree.remove(gamma).unwrap();
+        assert_eq!(removed.session_ids(), vec![gamma]);
     }
 
     #[test]

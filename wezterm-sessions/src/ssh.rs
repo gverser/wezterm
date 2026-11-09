@@ -13,7 +13,7 @@ use crate::store::{quarantine_file_name, temp_file_name};
 use crate::tree::NodeId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -186,15 +186,6 @@ impl SshHostStore {
         removed
     }
 
-    /// Drop hosts whose node no longer exists in the session tree.
-    pub fn retain_ids(&mut self, alive: &HashSet<NodeId>) {
-        let before = self.hosts.hosts.len();
-        self.hosts.hosts.retain(|id, _| alive.contains(id));
-        if self.hosts.hosts.len() != before {
-            self.changed();
-        }
-    }
-
     fn changed(&mut self) {
         self.generation += 1;
         if let Err(err) = save_ssh_hosts_to(&self.path, &self.hosts) {
@@ -221,7 +212,6 @@ pub fn with_ssh_hosts<R>(func: impl FnOnce(&mut SshHostStore) -> R) -> R {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::collections::HashSet;
 
     fn scratch() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
@@ -312,20 +302,6 @@ mod test {
         assert!(store.generation() > before);
         let reloaded = SshHostStore::load_at(dir.path().join("ssh_hosts.json"));
         assert_eq!(reloaded.get(NodeId(1)).unwrap().password, "new");
-    }
-
-    #[test]
-    fn retain_ids_drops_orphans() {
-        let dir = scratch();
-        let mut store = SshHostStore::load_at(dir.path().join("ssh_hosts.json"));
-        store.set(NodeId(1), sample_host());
-        store.set(NodeId(2), sample_host());
-        let alive: HashSet<NodeId> = [NodeId(2)].into_iter().collect();
-        store.retain_ids(&alive);
-        assert!(store.get(NodeId(1)).is_none());
-        assert!(store.get(NodeId(2)).is_some());
-        let reloaded = SshHostStore::load_at(dir.path().join("ssh_hosts.json"));
-        assert!(reloaded.get(NodeId(1)).is_none());
     }
 
     #[test]

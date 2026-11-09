@@ -16,7 +16,7 @@ use mux::pane::Pane;
 use mux::ssh::{RemoteSshDomain, SshPasswordHelper};
 use mux::Mux;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -186,10 +186,22 @@ pub fn ensure_ssh_domain(id: NodeId) -> anyhow::Result<Arc<dyn Domain>> {
 }
 
 /// Register a domain for every saved ssh node, so that they can also be
-/// reached by name (`wezterm cli spawn --domain-name sidebar-ssh:12`), and
-/// forget hosts whose node has been deleted.
+/// reached by name (`wezterm cli spawn --domain-name sidebar-ssh:12`).
+///
+/// Hosts whose node is not in the tree are left alone: the tree comes back
+/// empty when sessions.json can't be read or parsed, and pruning against it
+/// would throw away every saved host and password. Hosts are forgotten only
+/// when their node is deleted; see [`forget_ssh_hosts`].
 pub fn register_all_ssh_domains() {
-    for id in forget_deleted_nodes() {
+    let alive: Vec<NodeId> = with_store(|store| {
+        store
+            .tree()
+            .sessions_with_names()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    });
+    for id in alive {
         if with_ssh_hosts(|store| store.get(id).is_some()) {
             if let Err(err) = ensure_ssh_domain(id) {
                 log::error!("registering ssh domain for session {id}: {err:#}");
@@ -198,22 +210,14 @@ pub fn register_all_ssh_domains() {
     }
 }
 
-/// Drop the saved hosts of nodes that are no longer in the session tree, and
-/// return the session nodes that are.
-///
-/// Called after anything that removes nodes; deleting a folder takes every
-/// session inside it along.
-pub fn forget_deleted_nodes() -> HashSet<NodeId> {
-    let alive: HashSet<NodeId> = with_store(|store| {
-        store
-            .tree()
-            .sessions_with_names()
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect()
+/// Drop the saved hosts of nodes that have just been deleted; deleting a
+/// folder takes every session inside it along.
+pub fn forget_ssh_hosts(ids: &[NodeId]) {
+    with_ssh_hosts(|store| {
+        for id in ids {
+            store.remove(*id);
+        }
     });
-    with_ssh_hosts(|store| store.retain_ids(&alive));
-    alive
 }
 
 /// The sidebar node and domain behind a pane, if it is one of ours.

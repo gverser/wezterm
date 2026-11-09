@@ -890,8 +890,9 @@ impl super::TermWindow {
         if has_live_terminals {
             self.confirm_delete_session_node(id);
         } else {
-            with_store(|store| store.mutate(|tree| tree.remove(id)));
-            crate::sessions::ssh::forget_deleted_nodes();
+            if let Some(removed) = with_store(|store| store.mutate(|tree| tree.remove(id))) {
+                crate::sessions::ssh::forget_ssh_hosts(&removed.session_ids());
+            }
             if self.sidebar.selected == Some(id) {
                 self.sidebar.selected = None;
             }

@@ -60,8 +60,9 @@ pub fn confirm_delete_session_node(
 
     if crate::overlay::confirm::run_confirmation(&message, &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
-            with_store(|store| store.mutate(|tree| tree.remove(id)));
-            crate::sessions::ssh::forget_deleted_nodes();
+            if let Some(removed) = with_store(|store| store.mutate(|tree| tree.remove(id))) {
+                crate::sessions::ssh::forget_ssh_hosts(&removed.session_ids());
+            }
             anyhow::Result::<()>::Ok(())
         })
         .detach();
