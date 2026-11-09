@@ -2,6 +2,7 @@ use crate::pane_strip::{layout_strip, StripHitKind, StripStyle, StripTab};
 use crate::quad::TripleLayerQuadAllocator;
 use crate::termwindow::render::RenderScreenLineParams;
 use crate::termwindow::{UIItem, UIItemType};
+use config::TabBarColors;
 use mux::pane::PaneId;
 use mux::renderable::RenderableDimensions;
 use mux::Mux;
@@ -189,16 +190,44 @@ impl crate::TermWindow {
             }
         }
 
+        // After every strip, so that a line on the edge between two tabs is
+        // drawn over both. The early returns above (no header rows, tab
+        // overlay) are cases where the drop has no target either.
+        let drop = self
+            .pane_tab_drag
+            .filter(|drag| drag.dragging && drag.tab_id == tab_id)
+            .and_then(|drag| drag.target);
+        if let Some(drop) = drop {
+            let thickness = self.render_metrics.underline_height.max(2) as f32;
+            // As for the sidebar's drop marker: the light text colour of the
+            // active tab stands out against the strip background.
+            let color = self.pane_strip_colors().active_tab().fg_color.to_linear();
+            self.filled_rectangle(
+                layers,
+                2,
+                euclid::rect(
+                    drop.line_x - thickness / 2.,
+                    drop.line_top,
+                    thickness,
+                    cell_height,
+                ),
+                color,
+            )?;
+        }
+
         Ok(())
     }
 
-    fn pane_strip_style(&self) -> StripStyle {
-        let colors = self
-            .config
+    fn pane_strip_colors(&self) -> TabBarColors {
+        self.config
             .resolved_palette
             .tab_bar
             .clone()
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn pane_strip_style(&self) -> StripStyle {
+        let colors = self.pane_strip_colors();
         let mut background = CellAttributes::default();
         background.set_background(ColorSpec::TrueColor(*colors.background()));
         let hidden = colors.inactive_tab().as_cell_attributes();

@@ -111,6 +111,55 @@ pub fn layout_strip(
     }
 }
 
+/// The tabs drawn on one strip, as (position in the stack, left x, width)
+/// sorted by x. `items` are (pane id, left x, width) of the strip's tab hit
+/// regions. A narrow strip draws only a window of its stack, so a tab's
+/// place on screen is not its place in the stack; ids not in `stack` are
+/// dropped, as a stale frame may still show a pane that has since moved.
+pub fn drawn_tabs(items: &[(PaneId, f32, f32)], stack: &[PaneId]) -> Vec<(usize, f32, f32)> {
+    let mut drawn: Vec<(usize, f32, f32)> = items
+        .iter()
+        .filter_map(|&(pane_id, x, width)| {
+            stack
+                .iter()
+                .position(|&id| id == pane_id)
+                .map(|index| (index, x, width))
+        })
+        .collect();
+    drawn.sort_by(|a, b| a.1.total_cmp(&b.1));
+    drawn
+}
+
+/// The gap a tab dropped at `pointer_x` goes into, as (position in the
+/// stack, x of the insertion line). `drawn` comes from `drawn_tabs`. The
+/// pointer picks the gap before the first tab whose middle is to its right,
+/// so each tab's halves belong to the gaps on either side of it.
+pub fn drop_gap(drawn: &[(usize, f32, f32)], strip_left: f32, pointer_x: f32) -> (usize, f32) {
+    for &(index, left, width) in drawn {
+        if left + width / 2. > pointer_x {
+            return (index, left);
+        }
+    }
+    match drawn.last() {
+        Some(&(index, left, width)) => (index + 1, left + width),
+        None => (0, strip_left),
+    }
+}
+
+/// The `index` to pass to `Mux::move_pane_to_stack` for a drop into `gap`,
+/// or None if the drop would leave the pane where it is. `from` is the
+/// dragged pane's position in the target stack, None if it comes from
+/// another stack. `gap` counts the dragged pane, but `index` counts from
+/// after the pane is taken out, so gaps past it shift down by one; the gaps
+/// on either side of it are where it already is.
+pub fn move_index_for_drop(from: Option<usize>, gap: usize) -> Option<usize> {
+    match from {
+        Some(i) if gap == i || gap == i + 1 => None,
+        Some(i) if gap > i => Some(gap - 1),
+        _ => Some(gap),
+    }
+}
+
 /// Smallest width a tab is squeezed to before tabs start scrolling off.
 const MIN_TAB: usize = 8;
 
@@ -429,6 +478,50 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn drop_gap_picks_the_gap_by_midpoints() {
+        let drawn = [(0, 0.0, 50.0), (1, 50.0, 60.0), (2, 110.0, 70.0)];
+        assert_eq!(drop_gap(&drawn, 0.0, 10.0), (0, 0.0));
+        assert_eq!(drop_gap(&drawn, 0.0, 30.0), (1, 50.0));
+        assert_eq!(drop_gap(&drawn, 0.0, 140.0), (2, 110.0));
+        assert_eq!(drop_gap(&drawn, 0.0, 170.0), (3, 180.0));
+        assert_eq!(drop_gap(&[], 40.0, 99.0), (0, 40.0));
+    }
+
+    #[test]
+    fn drop_gap_uses_stack_indices_of_drawn_tabs() {
+        // Narrow strip showing members 5..=7 of a longer stack.
+        let drawn = [(5, 8.0, 80.0), (6, 88.0, 80.0), (7, 168.0, 80.0)];
+        assert_eq!(drop_gap(&drawn, 0.0, 20.0), (5, 8.0));
+        assert_eq!(drop_gap(&drawn, 0.0, 300.0), (8, 248.0));
+    }
+
+    #[test]
+    fn move_index_for_drop_ignores_own_gaps() {
+        assert_eq!(move_index_for_drop(Some(2), 2), None);
+        assert_eq!(move_index_for_drop(Some(2), 3), None);
+        assert_eq!(move_index_for_drop(Some(2), 0), Some(0));
+        assert_eq!(move_index_for_drop(Some(0), 3), Some(2));
+        assert_eq!(move_index_for_drop(None, 0), Some(0));
+        assert_eq!(move_index_for_drop(None, 4), Some(4));
+    }
+
+    #[test]
+    fn drawn_tabs_maps_pane_ids_to_stack_positions() {
+        let stack = [10, 11, 12, 13, 14, 15, 16, 17];
+        // Out of x order, and with a tab (99) that is not in this stack.
+        let items = [
+            (16, 88.0, 80.0),
+            (15, 8.0, 80.0),
+            (17, 168.0, 80.0),
+            (99, 0.0, 5.0),
+        ];
+        assert_eq!(
+            drawn_tabs(&items, &stack),
+            vec![(5, 8.0, 80.0), (6, 88.0, 80.0), (7, 168.0, 80.0)]
+        );
     }
 
     #[test]

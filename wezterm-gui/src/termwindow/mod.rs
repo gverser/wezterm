@@ -78,6 +78,7 @@ pub mod keyevent;
 mod modal;
 mod mouseevent;
 pub mod palette;
+pub mod pane_tab_drag;
 pub mod paneselect;
 mod prevcursor;
 pub mod render;
@@ -491,6 +492,9 @@ pub struct TermWindow {
 
     ui_items: Vec<UIItem>,
     dragging: Option<(UIItem, MouseEvent)>,
+    /// A left press on a pane stack strip tab, until its release; see
+    /// `pane_tab_drag.rs`.
+    pane_tab_drag: Option<pane_tab_drag::PaneTabDrag>,
 
     /// Per-window UI state for the session sidebar. The tree it displays is
     /// process-wide; see `crate::sessions::store::with_store`.
@@ -740,6 +744,10 @@ impl TermWindow {
             // leave between its presses, and clearing then would let a
             // double click on × close two panes.
             self.last_strip_press = None;
+            // Losing the foreground mid-drag (Alt+Tab) loses the button
+            // release with it. Not done on mouse leave: the release still
+            // arrives through the capture taken at the press.
+            self.cancel_pane_tab_drag();
             self.current_mouse_buttons.clear();
             self.current_mouse_capture = None;
             self.is_click_to_focus_window = false;
@@ -1019,6 +1027,7 @@ impl TermWindow {
             semantic_zones: HashMap::new(),
             ui_items: vec![],
             dragging: None,
+            pane_tab_drag: None,
             sidebar: Default::default(),
             hidden_output: HiddenOutputTracker::default(),
             last_ui_item: None,

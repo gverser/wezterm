@@ -159,6 +159,9 @@ impl super::TermWindow {
                             UIItemType::SidebarNode(id) => {
                                 self.finish_sidebar_node_press(id, context)
                             }
+                            UIItemType::PaneTab { .. } => {
+                                self.finish_pane_tab_drag(&event, context)
+                            }
                             _ => {}
                         }
                         return;
@@ -168,6 +171,12 @@ impl super::TermWindow {
 
             WMEK::Press(ref press) => {
                 capture_mouse = true;
+
+                // A strip tab drag still pending here lost its release (see
+                // cancel_pane_tab_drag); this press starts something new.
+                if press == &MousePress::Left && self.cancel_pane_tab_drag() {
+                    context.invalidate();
+                }
 
                 // Perform click counting
                 let button = mouse_press_to_tmb(press);
@@ -463,6 +472,9 @@ impl super::TermWindow {
             UIItemType::TabBar(TabBarItem::Tab { .. }) => {
                 self.drag_tab(item, start_event, event, context);
             }
+            UIItemType::PaneTab { .. } => {
+                self.drag_pane_tab(item, start_event, event, context);
+            }
             _ => {
                 log::error!("drag not implemented for {:?}", item);
             }
@@ -516,17 +528,18 @@ impl super::TermWindow {
             UIItemType::PaneTab { .. }
             | UIItemType::PaneTabClose { .. }
             | UIItemType::PaneTabBar { .. } => {
-                self.mouse_event_pane_strip(item.item_type, event, context);
+                self.mouse_event_pane_strip(item, event, context);
             }
         }
     }
 
     fn mouse_event_pane_strip(
         &mut self,
-        item: UIItemType,
+        ui_item: UIItem,
         event: MouseEvent,
         context: &dyn WindowOps,
     ) {
+        let item = ui_item.item_type.clone();
         if let WMEK::Press(press) = event.kind {
             // Not the streak in last_mouse_click: that also wants both
             // presses in the same cell, and the cell a pixel maps to changes
@@ -552,6 +565,12 @@ impl super::TermWindow {
             });
             if action != StripClickAction::Nothing {
                 self.perform_strip_click_action(&item, action, context);
+                // Only a press that did something can start a drag. A
+                // swallowed one is the tail of a close or spawn whose
+                // re-layout slid some other tab under the pointer.
+                if press == MousePress::Left && matches!(item, UIItemType::PaneTab { .. }) {
+                    self.start_pane_tab_drag(ui_item, event);
+                }
             }
         }
         context.set_cursor(Some(MouseCursor::Arrow));
