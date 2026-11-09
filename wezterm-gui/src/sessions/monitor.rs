@@ -18,7 +18,38 @@ use mux::Mux;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::time::{Duration, Instant};
 use wezterm_ssh::{ChildKiller, FileDescriptor, SshChildProcess};
+
+/// How long a failed channel waits before it is opened again.
+const RESTART_AFTER: Duration = Duration::from_secs(30);
+
+/// Whether a monitor in `state` should be replaced by a fresh channel: one
+/// that failed, once it has waited. Not on every paint, and not for a server
+/// that has no /proc to read.
+fn may_restart(state: MonitorState, failed_at: Option<Instant>, now: Instant) -> bool {
+    match (state, failed_at) {
+        (MonitorState::Failed, Some(at)) => now.saturating_duration_since(at) >= RESTART_AFTER,
+        _ => false,
+    }
+}
+
+/// The lines of `reader`, with any bytes that aren't UTF-8 replaced. A
+/// directory name in another encoding must not end the stream.
+fn lossy_lines<R: BufRead>(mut reader: R) -> impl Iterator<Item = String> {
+    std::iter::from_fn(move || {
+        let mut buf = vec![];
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+                    buf.pop();
+                }
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            }
+        }
+    })
+}
 
 /// The status bar shows for panes opened from a sidebar ssh node, and only
 /// when it is enabled.
@@ -46,7 +77,11 @@ struct Monitor {
     /// `RemoteSshDomain::authenticated_session`'s counter: a reconnect makes
     /// this monitor stale.
     generation: u64,
+    /// Which channel this is, so that a restarted one ignores whatever the
+    /// one before it still had in flight.
+    instance: u64,
     state: MonitorState,
+    failed_at: Option<Instant>,
     status: Option<ServerStatus>,
     cwds: HashMap<PaneId, String>,
     computer: StatusComputer,
@@ -68,6 +103,7 @@ impl Drop for Monitor {
 thread_local! {
     static MONITORS: RefCell<HashMap<DomainId, Monitor>> = RefCell::new(HashMap::new());
     static CWD_GENERATION: Cell<u64> = Cell::new(0);
+    static NEXT_INSTANCE: Cell<u64> = Cell::new(0);
 }
 
 fn invalidate_all_windows() {
@@ -85,23 +121,36 @@ pub fn ensure_monitor(domain_id: DomainId) {
     let Some(ssh) = domain.downcast_ref::<RemoteSshDomain>() else {
         return;
     };
-    let current = MONITORS.with(|m| m.borrow().get(&domain_id).map(|m| m.generation));
-    if current.is_some() && current == ssh.authenticated_generation() {
-        // Running, starting, or given up on for this connection. A failed
-        // channel is not retried on every paint; a reconnect brings a new
-        // generation and a fresh try.
-        return;
+    let existing = MONITORS.with(|m| {
+        m.borrow()
+            .get(&domain_id)
+            .map(|m| (m.generation, m.state, m.failed_at))
+    });
+    if let Some((generation, state, failed_at)) = existing {
+        if Some(generation) == ssh.authenticated_generation()
+            && !may_restart(state, failed_at, Instant::now())
+        {
+            // Running or starting for this connection, or failed too
+            // recently to try again; a reconnect brings a new generation.
+            return;
+        }
     }
     let Some((generation, session)) = ssh.authenticated_session() else {
         return;
     };
+    let instance = NEXT_INSTANCE.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
 
     MONITORS.with(|m| {
         m.borrow_mut().insert(
             domain_id,
             Monitor {
                 generation,
+                instance,
                 state: MonitorState::Starting,
+                failed_at: None,
                 status: None,
                 cwds: HashMap::new(),
                 computer: StatusComputer::default(),
@@ -116,7 +165,7 @@ pub fn ensure_monitor(domain_id: DomainId) {
             Ok(exec) => exec,
             Err(err) => {
                 log::error!("ssh monitor for domain {domain_id}: exec failed: {err:#}");
-                set_state(domain_id, generation, MonitorState::Failed);
+                set_state(domain_id, instance, MonitorState::Failed);
                 return;
             }
         };
@@ -128,12 +177,12 @@ pub fn ensure_monitor(domain_id: DomainId) {
         } = exec;
         if let Err(err) = stdin.write_all(MONITOR_SCRIPT.as_bytes()) {
             log::error!("ssh monitor for domain {domain_id}: sending script: {err:#}");
-            set_state(domain_id, generation, MonitorState::Failed);
+            set_state(domain_id, instance, MonitorState::Failed);
             return;
         }
 
         let stored = MONITORS.with(|m| match m.borrow_mut().get_mut(&domain_id) {
-            Some(mon) if mon.generation == generation => {
+            Some(mon) if mon.instance == instance => {
                 mon.stdin = Some(stdin);
                 mon.child = Some(child);
                 true
@@ -153,11 +202,10 @@ pub fn ensure_monitor(domain_id: DomainId) {
 
         std::thread::spawn(move || {
             let mut parser = FrameParser::default();
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
+            for line in lossy_lines(BufReader::new(stdout)) {
                 if let Some(event) = parser.feed_line(&line) {
                     promise::spawn::spawn_into_main_thread(async move {
-                        apply_event(domain_id, generation, event);
+                        apply_event(domain_id, instance, event);
                     })
                     .detach();
                 }
@@ -170,7 +218,7 @@ pub fn ensure_monitor(domain_id: DomainId) {
                         .unwrap_or(false)
                 });
                 if !unsupported {
-                    set_state(domain_id, generation, MonitorState::Failed);
+                    set_state(domain_id, instance, MonitorState::Failed);
                 }
             })
             .detach();
@@ -179,25 +227,28 @@ pub fn ensure_monitor(domain_id: DomainId) {
     .detach();
 }
 
-fn set_state(domain_id: DomainId, generation: u64, state: MonitorState) {
+fn set_state(domain_id: DomainId, instance: u64, state: MonitorState) {
     MONITORS.with(|m| {
         if let Some(mon) = m.borrow_mut().get_mut(&domain_id) {
-            if mon.generation == generation {
+            if mon.instance == instance {
                 mon.state = state;
+                if state == MonitorState::Failed {
+                    mon.failed_at = Some(Instant::now());
+                }
             }
         }
     });
     invalidate_all_windows();
 }
 
-fn apply_event(domain_id: DomainId, generation: u64, event: ParseEvent) {
+fn apply_event(domain_id: DomainId, instance: u64, event: ParseEvent) {
     let mut cwd_changed = false;
     MONITORS.with(|m| {
         let mut monitors = m.borrow_mut();
         let Some(mon) = monitors.get_mut(&domain_id) else {
             return;
         };
-        if mon.generation != generation {
+        if mon.instance != instance {
             return;
         }
         match event {
@@ -274,6 +325,36 @@ pub fn prune_monitors() {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn lossy_lines_survive_bytes_that_are_not_utf8() {
+        // A directory named in GBK ("测试").
+        let input: &[u8] = b"@frame\ncwd\t1\t/tmp/\xb2\xe2\xca\xd4\r\n@end\n";
+        let lines: Vec<String> = lossy_lines(input).collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "@frame");
+        assert!(lines[1].starts_with("cwd\t1\t/tmp/"));
+        assert!(lines[1].contains('\u{fffd}'));
+        assert!(!lines[1].ends_with('\r'));
+        assert_eq!(lines[2], "@end");
+    }
+
+    #[test]
+    fn failed_monitor_restarts_after_backoff() {
+        let failed_at = Instant::now();
+        let soon = failed_at + Duration::from_secs(5);
+        let later = failed_at + RESTART_AFTER;
+        assert!(!may_restart(MonitorState::Failed, Some(failed_at), soon));
+        assert!(may_restart(MonitorState::Failed, Some(failed_at), later));
+        assert!(!may_restart(MonitorState::Running, None, later));
+        assert!(!may_restart(MonitorState::Starting, None, later));
+        // A server without /proc won't grow one.
+        assert!(!may_restart(
+            MonitorState::Unsupported,
+            Some(failed_at),
+            later
+        ));
+    }
 
     #[test]
     fn status_bar_only_for_sidebar_ssh_panes() {
