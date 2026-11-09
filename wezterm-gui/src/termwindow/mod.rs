@@ -1364,6 +1364,11 @@ impl TermWindow {
                 Ok(true)
             }
             WindowEvent::DroppedFile(paths) => {
+                // Onto the file page they are uploads; onto the terminal
+                // their paths are pasted.
+                if self.files_drop(&paths) {
+                    return Ok(true);
+                }
                 let pane = match self.get_active_pane_or_overlay() {
                     Some(pane) => pane,
                     None => return Ok(true),

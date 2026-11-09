@@ -324,6 +324,7 @@ pub struct FormModal {
     on_submit: Submit,
     on_change: Change,
     on_extra: Extra,
+    on_cancel: Box<dyn Fn(&mut TermWindow)>,
 }
 
 impl FormModal {
@@ -337,6 +338,7 @@ impl FormModal {
             on_submit: Box::new(|_, _| {}),
             on_change: Box::new(|_| {}),
             on_extra: Box::new(|_, _| {}),
+            on_cancel: Box::new(|_| {}),
         }
     }
 
@@ -360,6 +362,17 @@ impl FormModal {
     pub fn on_extra(mut self, f: impl Fn(usize, &mut TermWindow) + 'static) -> Self {
         self.on_extra = Box::new(f);
         self
+    }
+
+    /// Called when the form is dismissed with Esc or its cancel button.
+    pub fn on_cancel(mut self, f: impl Fn(&mut TermWindow) + 'static) -> Self {
+        self.on_cancel = Box::new(f);
+        self
+    }
+
+    fn cancel(&self, term_window: &mut TermWindow) {
+        term_window.cancel_modal();
+        (self.on_cancel)(term_window);
     }
 
     /// Set a field from outside, e.g. after a file picker returns.
@@ -442,7 +455,7 @@ impl FormModal {
                 let button = self.state.borrow().buttons.get(b).cloned();
                 match button {
                     Some(FormButton::Primary(_)) => self.submit(term_window),
-                    Some(FormButton::Cancel(_)) => term_window.cancel_modal(),
+                    Some(FormButton::Cancel(_)) => self.cancel(term_window),
                     Some(FormButton::Extra(_, field)) => (self.on_extra)(field, term_window),
                     None => {}
                 }
@@ -821,7 +834,7 @@ impl Modal for FormModal {
         };
         match (key, mods) {
             (KeyCode::Escape, _) => {
-                term_window.cancel_modal();
+                self.cancel(term_window);
                 return Ok(true);
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {

@@ -1,6 +1,8 @@
 //! Drawing for the sidebar's file page.
 
+use crate::sftp::dialogs::can_pick_files;
 use crate::sftp::model::{display_size, elide_left, elide_right, wrap_cells, FileEntry};
+use crate::sftp::transfer::CANCELLED;
 use crate::sftp::{FilesAction, FilesConn};
 use crate::termwindow::box_model::*;
 use crate::termwindow::sidebar::{SidebarFocus, SIDEBAR_LINE_HEIGHT};
@@ -194,6 +196,113 @@ impl crate::TermWindow {
         )
     }
 
+    /// Width of the ✕ beside the transfer line, padding included.
+    pub(crate) fn files_cancel_width(&self) -> f32 {
+        let pad = match self.sidebar_font() {
+            Ok((_, metrics)) => metrics.cell_size.width as f32 * 0.5,
+            Err(_) => 0.,
+        };
+        self.files_text_width(FilesAction::CancelTransfer.label())
+            .unwrap_or(0.)
+            + pad * 2.
+    }
+
+    /// The transfer line along the bottom of the page, with its ✕.
+    pub(crate) fn files_transfer_element(
+        &self,
+        font: &Rc<LoadedFont>,
+        metrics: &RenderMetrics,
+        colors: &TabBarColors,
+        palette: &ColorPalette,
+        panel: RectF,
+        pad: f32,
+    ) -> anyhow::Result<Option<ComputedElement>> {
+        let lines = self.files_transfer_lines();
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let row = self.sidebar_row_height();
+        let height = (lines.len() as f32 * row).min(panel.height());
+        let bounds = euclid::rect(panel.min_x(), panel.max_y() - height, panel.width(), height);
+
+        let queue = &self.files.transfers;
+        let failed = !queue.is_busy()
+            && queue.note.is_none()
+            && matches!(&queue.last_result, Some((_, _, Err(err))) if err != CANCELLED);
+        let band = colors.inactive_tab();
+        let fg = if failed {
+            palette
+                .resolve_fg(ColorAttribute::PaletteIndex(1))
+                .to_linear()
+        } else {
+            band.fg_color.to_linear()
+        };
+        let hover = colors.inactive_tab_hover();
+
+        let children = lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let mut parts = vec![Element::new(font, ElementContent::Text(line))
+                    .colors(plain_colors(band.bg_color.to_linear(), fg))];
+                if i == 0 {
+                    parts.push(
+                        padded(
+                            Element::new(
+                                font,
+                                ElementContent::Text(
+                                    FilesAction::CancelTransfer.label().to_string(),
+                                ),
+                            ),
+                            pad,
+                        )
+                        .float(Float::Right)
+                        .item_type(UIItemType::FilesToolbar(FilesAction::CancelTransfer))
+                        .colors(plain_colors(
+                            band.bg_color.to_linear(),
+                            band.fg_color.to_linear(),
+                        ))
+                        .hover_colors(Some(plain_colors(
+                            hover.bg_color.to_linear(),
+                            hover.fg_color.to_linear(),
+                        ))),
+                    );
+                }
+                padded(Element::new(font, ElementContent::Children(parts)), pad)
+                    .display(DisplayType::Block)
+                    .line_height(Some(SIDEBAR_LINE_HEIGHT))
+                    .min_width(Some(Dimension::Pixels((panel.width() - pad * 2.).max(0.))))
+                    .colors(plain_colors(band.bg_color.to_linear(), fg))
+            })
+            .collect();
+
+        let element = Element::new(font, ElementContent::Children(children))
+            .display(DisplayType::Block)
+            .min_width(Some(Dimension::Pixels(bounds.width())))
+            .min_height(Some(Dimension::Pixels(bounds.height())))
+            .colors(plain_colors(band.bg_color.to_linear(), fg));
+
+        Ok(Some(self.compute_element(
+            &LayoutContext {
+                height: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: bounds.height(),
+                    pixel_cell: metrics.cell_size.height as f32,
+                },
+                width: DimensionContext {
+                    dpi: self.dimensions.dpi as f32,
+                    pixel_max: bounds.max_x(),
+                    pixel_cell: metrics.cell_size.width as f32,
+                },
+                bounds,
+                metrics,
+                gl_state: self.render_state.as_ref().unwrap(),
+                zindex: 10,
+            },
+            &element,
+        )?))
+    }
+
     /// The page's right-click menu, if it is open.
     pub(crate) fn files_menu_element(
         &self,
@@ -286,6 +395,9 @@ impl crate::TermWindow {
         let hover = colors.inactive_tab_hover();
         let buttons = TOOLBAR
             .iter()
+            // Nothing to pick files with where there is no dialog; dropping
+            // them still works.
+            .filter(|action| **action != FilesAction::Upload || can_pick_files())
             .map(|action| {
                 padded(
                     Element::new(font, ElementContent::Text(action.label().to_string())),

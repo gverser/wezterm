@@ -826,8 +826,41 @@ impl super::TermWindow {
         self.open_form(form);
     }
 
-    /// The "浏览…" button of a form field. Filled in by the file picker.
-    fn browse_for_form_field(&mut self, _field: usize) {}
+    /// The "浏览…" button of a form field: pick a file for it.
+    ///
+    /// The dialog has a thread of its own, so the form may have gone, or
+    /// been replaced, by the time it returns; only the form that asked gets
+    /// the answer.
+    fn browse_for_form_field(&mut self, field: usize) {
+        let Some(modal) = self.get_modal() else {
+            return;
+        };
+        let asked = std::rc::Rc::as_ptr(&modal) as *const () as usize;
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        promise::spawn::spawn(async move {
+            let picked = crate::sftp::dialogs::pick_open_files(false).await;
+            let Some(path) = picked.into_iter().next() else {
+                return;
+            };
+            let value = path.display().to_string();
+            window.notify(crate::termwindow::TermWindowNotif::Apply(Box::new(
+                move |tw| {
+                    let Some(modal) = tw.get_modal() else {
+                        return;
+                    };
+                    if std::rc::Rc::as_ptr(&modal) as *const () as usize != asked {
+                        return;
+                    }
+                    if let Some(form) = modal.downcast_ref::<FormModal>() {
+                        form.set_field_value(field, &value, tw);
+                    }
+                },
+            )));
+        })
+        .detach();
+    }
 
     fn confirm_delete_session_node(&mut self, id: NodeId) {
         let name = match with_store(|store| store.tree().find(id).map(|node| node.name.clone())) {

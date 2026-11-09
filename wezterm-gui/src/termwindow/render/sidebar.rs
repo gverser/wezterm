@@ -305,8 +305,11 @@ impl crate::TermWindow {
             let mut computed = vec![
                 rail,
                 self.build_files_page(&font, &metrics, &colors, palette, bounds, pad)?,
-                self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?,
             ];
+            computed.extend(
+                self.files_transfer_element(&font, &metrics, &colors, palette, bounds, pad)?,
+            );
+            computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
             // Last, so that it takes clicks ahead of the rows under it.
             computed.extend(self.files_menu_element(&font, &metrics, &colors)?);
             return Ok(computed);

@@ -7,12 +7,15 @@
 //! run on the main thread's executor and report back through
 //! `TermWindowNotif::Apply`.
 
+pub mod dialogs;
 pub mod model;
+pub mod transfer;
 
 use crate::sftp::model::FileEntry;
+use crate::sftp::transfer::{TransferJob, TransferQueue};
 use mux::domain::DomainId;
 use mux::pane::PaneId;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use wezterm_ssh::Sftp;
 
 /// The buttons along the top of the page.
@@ -23,6 +26,9 @@ pub enum FilesAction {
     Home,
     NewFolder,
     Upload,
+    /// The ✕ by the transfer line: cancel the running transfer, or dismiss
+    /// the line once it has finished.
+    CancelTransfer,
 }
 
 impl FilesAction {
@@ -33,6 +39,7 @@ impl FilesAction {
             Self::Home => "⌂",
             Self::NewFolder => "+",
             Self::Upload => "⇪上传",
+            Self::CancelTransfer => "✕",
         }
     }
 }
@@ -110,4 +117,9 @@ pub struct FilesUi {
     /// What following was last judged against: the directory counter and
     /// the active pane. Either changing means another look.
     pub follow_seen: Option<(u64, Option<(DomainId, PaneId)>)>,
+    pub transfers: TransferQueue,
+    /// Uploads that would replace a remote file, waiting for the user to say
+    /// whether to; asked about one at a time.
+    pub overwrite_pending: VecDeque<TransferJob>,
+    pub next_transfer_id: u64,
 }

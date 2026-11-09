@@ -6,10 +6,12 @@
 use crate::sessions::monitor::{cwd_generation, ensure_monitor, pane_cwd};
 use crate::sessions::ssh::{remote_ssh_domain, ssh_domain_of_pane};
 use crate::sessions::{clamp_scroll, forms, NodeId, SidebarPage};
+use crate::sftp::dialogs::{pick_open_files, pick_save_file};
 use crate::sftp::model::{
     check_file_name, explain_sftp_error, follow_target, remote_join, remote_parent,
     resolve_path_input, sort_entries, FileEntry,
 };
+use crate::sftp::transfer::{run_download, run_upload, Direction, TransferJob};
 use crate::sftp::{FilesAction, FilesConn, FilesMenu, FilesMenuAction};
 use crate::termwindow::form::{Field, FormButton, FormModal, FormState};
 use crate::termwindow::sidebar::SidebarFocus;
@@ -19,11 +21,19 @@ use mux::domain::DomainId;
 use mux::pane::PaneId;
 use mux::ssh::RemoteSshDomain;
 use std::future::Future;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use wezterm_ssh::{RenameOptions, Sftp, SftpChannelError};
 use wezterm_term::{KeyCode, KeyModifiers};
 
 /// Rows above the list: the path bar, the buttons, the follow checkbox.
 const HEADER_ROWS: usize = 3;
+
+/// The most the transfer line may wrap to.
+const MAX_TRANSFER_LINES: usize = 3;
+
+/// How often a running transfer redraws its progress.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 fn describe(err: impl std::fmt::Display) -> String {
     explain_sftp_error(&err.to_string())
@@ -91,7 +101,19 @@ impl crate::TermWindow {
             .files_conn()
             .map(|conn| self.files_notice_lines(conn).len())
             .unwrap_or(0);
-        rows.saturating_sub(HEADER_ROWS + notice)
+        rows.saturating_sub(HEADER_ROWS + notice + self.files_transfer_lines().len())
+    }
+
+    /// The transfer line at the bottom of the page, broken to fit beside its
+    /// ✕ button.
+    pub fn files_transfer_lines(&self) -> Vec<String> {
+        let Some(line) = self.files.transfers.status_line() else {
+            return vec![];
+        };
+        let mut lines =
+            self.files_wrap(&line, self.files_inner_width() - self.files_cancel_width());
+        lines.truncate(MAX_TRANSFER_LINES);
+        lines
     }
 
     /// Make sure there is a page for `domain_id`'s connection, opening one
@@ -375,6 +397,18 @@ impl crate::TermWindow {
     }
 
     pub fn files_action(&mut self, action: FilesAction) {
+        if action == FilesAction::CancelTransfer {
+            // About the queue, whichever server the page shows now.
+            let queue = &mut self.files.transfers;
+            if queue.is_busy() {
+                queue.cancel_active();
+            } else {
+                queue.last_result = None;
+                queue.note = None;
+            }
+            self.files_changed();
+            return;
+        }
         let Some((_, domain_id, _)) = self.files_target() else {
             return;
         };
@@ -397,6 +431,8 @@ impl crate::TermWindow {
             }
             FilesAction::NewFolder => self.files_new_folder(domain_id),
             FilesAction::Upload => self.files_upload(domain_id),
+            // Handled before looking at the page's connection.
+            FilesAction::CancelTransfer => {}
         }
     }
 
@@ -471,11 +507,262 @@ impl crate::TermWindow {
         }
     }
 
-    /// Filled in by the transfer queue.
-    pub fn files_upload(&mut self, _domain_id: DomainId) {}
+    /// The 上传 button: pick files and send them to the directory shown.
+    pub fn files_upload(&mut self, domain_id: DomainId) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        promise::spawn::spawn(async move {
+            let paths = pick_open_files(true).await;
+            if !paths.is_empty() {
+                window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                    tw.files_upload_paths(domain_id, paths)
+                })));
+            }
+        })
+        .detach();
+    }
 
-    /// Filled in by the transfer queue.
-    pub fn files_download(&mut self, _domain_id: DomainId, _path: String, _size: Option<u64>) {}
+    /// Files dropped on the window. Onto the file page they are uploaded to
+    /// the directory it shows; returns false for anywhere else, where they
+    /// keep their usual meaning.
+    pub fn files_drop(&mut self, paths: &[PathBuf]) -> bool {
+        if !self.files_page_visible() {
+            return false;
+        }
+        let Some((x, y)) = self.files_drop_point() else {
+            return false;
+        };
+        if !self.sidebar_bounds().contains(euclid::point2(x, y)) {
+            return false;
+        }
+        let Some((_, domain_id, _)) = self.files_target() else {
+            return false;
+        };
+        self.files_upload_paths(domain_id, paths.to_vec());
+        true
+    }
+
+    /// Where the pointer is, in window pixels. A drop arrives without a
+    /// position, and no mouse events come while something is being dragged
+    /// in from another program, so on Windows ask the system.
+    fn files_drop_point(&self) -> Option<(f32, f32)> {
+        #[cfg(windows)]
+        {
+            use ::window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            use winapi::shared::windef::{HWND, POINT};
+            use winapi::um::winuser::{GetCursorPos, ScreenToClient};
+            let window = self.window.as_ref()?;
+            let handle = window.window_handle().ok()?;
+            let RawWindowHandle::Win32(h) = handle.as_raw() else {
+                return None;
+            };
+            let mut pt = POINT { x: 0, y: 0 };
+            unsafe {
+                if GetCursorPos(&mut pt) == 0 || ScreenToClient(h.hwnd.get() as HWND, &mut pt) == 0
+                {
+                    return None;
+                }
+            }
+            Some((pt.x as f32, pt.y as f32))
+        }
+        #[cfg(not(windows))]
+        {
+            self.current_mouse_event
+                .as_ref()
+                .map(|event| (event.coords.x as f32, event.coords.y as f32))
+        }
+    }
+
+    /// Queue local files for upload to the directory the page shows for
+    /// `domain_id`, asking first about any that would replace a remote file.
+    pub fn files_upload_paths(&mut self, domain_id: DomainId, paths: Vec<PathBuf>) {
+        let Some(conn) = self.files.conns.get(&domain_id) else {
+            return;
+        };
+        if conn.cwd.is_empty() {
+            return;
+        }
+        let cwd = conn.cwd.clone();
+        let sftp = conn.sftp.clone();
+        let generation = conn.generation;
+
+        let mut files = vec![];
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => {
+                    self.files
+                        .transfers
+                        .note(format!("暂不支持上传文件夹：{name}"));
+                }
+                Ok(meta) => files.push((path, remote_join(&cwd, &name), meta.len())),
+                Err(err) => self.files.transfers.note(format!("无法读取 {name}：{err}")),
+            }
+        }
+        self.files_changed();
+        if files.is_empty() {
+            return;
+        }
+
+        self.files_spawn(
+            domain_id,
+            generation,
+            async move {
+                let mut checked = vec![];
+                for (local, remote, size) in files {
+                    let exists = sftp.metadata(remote.as_str()).await.is_ok();
+                    checked.push((local, remote, size, exists));
+                }
+                checked
+            },
+            move |tw, checked| {
+                for (local, remote, size, exists) in checked {
+                    let job = tw.files_new_job(
+                        domain_id,
+                        Direction::Upload { local, remote },
+                        Some(size),
+                    );
+                    if exists {
+                        tw.files.overwrite_pending.push_back(job);
+                    } else {
+                        tw.files.transfers.push(job);
+                    }
+                }
+                tw.files_pump_transfers();
+                tw.files_ask_overwrite();
+            },
+        );
+    }
+
+    /// Save a remote file somewhere the user picks.
+    pub fn files_download(&mut self, domain_id: DomainId, path: String, size: Option<u64>) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let name = path.rsplit('/').next().unwrap_or("download").to_string();
+        promise::spawn::spawn(async move {
+            let Some(local) = pick_save_file(&name).await else {
+                return;
+            };
+            window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                let job = tw.files_new_job(
+                    domain_id,
+                    Direction::Download {
+                        remote: path,
+                        local,
+                    },
+                    size,
+                );
+                tw.files.transfers.push(job);
+                tw.files_pump_transfers();
+                tw.files_changed();
+            })));
+        })
+        .detach();
+    }
+
+    fn files_new_job(
+        &mut self,
+        domain_id: DomainId,
+        dir: Direction,
+        size: Option<u64>,
+    ) -> TransferJob {
+        self.files.next_transfer_id += 1;
+        TransferJob {
+            id: self.files.next_transfer_id,
+            domain: domain_id,
+            dir,
+            size,
+        }
+    }
+
+    /// Ask about the next upload that would replace a remote file. One
+    /// question at a time: answering it asks the next.
+    fn files_ask_overwrite(&mut self) {
+        if self.get_modal().is_some() {
+            return;
+        }
+        let Some(job) = self.files.overwrite_pending.pop_front() else {
+            return;
+        };
+        let message = format!("远端已有同名文件「{}」，覆盖吗？", job.name());
+        let form = FormModal::new(forms::confirm_form("覆盖文件", &message, "覆盖"))
+            .on_submit(move |_, tw| {
+                tw.files.transfers.push(job.clone());
+                tw.files_pump_transfers();
+                tw.files_changed();
+                tw.files_ask_overwrite();
+            })
+            .on_cancel(|tw| tw.files_ask_overwrite());
+        self.open_form(form);
+    }
+
+    /// Start the next queued transfer, if none is running.
+    fn files_pump_transfers(&mut self) {
+        while let Some((job, cancel)) = self.files.transfers.start_next() {
+            let sftp = self.files.conns.get(&job.domain).map(|c| c.sftp.clone());
+            let (Some(sftp), Some(window)) = (sftp, self.window.clone()) else {
+                self.files
+                    .transfers
+                    .finish(job.id, Err("连接已断开".to_string()));
+                continue;
+            };
+            let id = job.id;
+            let domain_id = job.domain;
+            promise::spawn::spawn(async move {
+                let progress_window = window.clone();
+                let mut last = Instant::now();
+                let report = move |done: u64| {
+                    if last.elapsed() >= PROGRESS_INTERVAL {
+                        last = Instant::now();
+                        progress_window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                            tw.files.transfers.progress(id, done);
+                            tw.files_changed();
+                        })));
+                    }
+                };
+                let upload = matches!(job.dir, Direction::Upload { .. });
+                let result = match job.dir {
+                    Direction::Upload { local, remote } => {
+                        run_upload(sftp, local, remote, cancel, report).await
+                    }
+                    Direction::Download { remote, local } => {
+                        run_download(sftp, remote, local, cancel, report).await
+                    }
+                };
+                window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                    tw.files_transfer_done(id, domain_id, upload, result)
+                })));
+            })
+            .detach();
+            break;
+        }
+        self.files_changed();
+    }
+
+    fn files_transfer_done(
+        &mut self,
+        id: u64,
+        domain_id: DomainId,
+        upload: bool,
+        result: Result<(), String>,
+    ) {
+        if let Err(err) = &result {
+            log::warn!("file transfer {id} ended: {err}");
+        }
+        self.files.transfers.finish(id, result);
+        if upload {
+            // Show the new file, or that a failed one is gone again.
+            self.files_refresh_in(domain_id);
+        }
+        self.files_changed();
+        self.files_pump_transfers();
+        self.files_ask_overwrite();
+    }
 
     fn files_new_folder(&mut self, domain_id: DomainId) {
         let Some(cwd) = self
