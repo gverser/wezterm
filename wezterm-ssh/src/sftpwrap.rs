@@ -37,14 +37,18 @@ impl SftpWrap {
             #[cfg(feature = "libssh-rs")]
             Self::LibSsh(sftp) => {
                 use crate::sftp::types::WriteMode;
-                use libc::{O_APPEND, O_RDONLY, O_RDWR, O_WRONLY};
+                use libc::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
                 use libssh_rs::OpenFlags;
                 use std::convert::TryInto;
+                // `Write` means "create or truncate", like std::fs::File::create
+                // and like the ssh2 mapping in sftp/types.rs. Without O_CREAT
+                // and O_TRUNC, writing a new file fails and overwriting a
+                // longer one leaves its tail behind.
                 let accesstype = match (opts.write, opts.read) {
                     (Some(WriteMode::Append), true) => O_RDWR | O_APPEND,
                     (Some(WriteMode::Append), false) => O_WRONLY | O_APPEND,
-                    (Some(WriteMode::Write), false) => O_WRONLY,
-                    (Some(WriteMode::Write), true) => O_RDWR,
+                    (Some(WriteMode::Write), false) => O_WRONLY | O_CREAT | O_TRUNC,
+                    (Some(WriteMode::Write), true) => O_RDWR | O_CREAT | O_TRUNC,
                     (None, true) => O_RDONLY,
                     (None, false) => 0,
                 };

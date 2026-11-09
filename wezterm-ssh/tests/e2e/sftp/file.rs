@@ -215,3 +215,58 @@ fn should_support_async_close(#[future] session: SessionWithSshd) {
             .expect("Failed to close file second time");
     })
 }
+
+#[rstest]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+fn create_should_make_missing_file(#[future] session: SessionWithSshd) {
+    if !sshd_available() {
+        return;
+    }
+    smol::block_on(async {
+        let session: SessionWithSshd = session.await;
+
+        let temp = TempDir::new().unwrap();
+        let file = temp.child("missing-file");
+
+        let mut remote_file = session
+            .sftp()
+            .create(file.path().to_path_buf())
+            .await
+            .expect("Failed to create remote file");
+        remote_file
+            .write_all(b"hello")
+            .await
+            .expect("Failed to write to file");
+        remote_file.close().await.expect("Failed to close file");
+
+        file.assert("hello");
+    })
+}
+
+#[rstest]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), ignore)]
+fn create_should_truncate_existing_file(#[future] session: SessionWithSshd) {
+    if !sshd_available() {
+        return;
+    }
+    smol::block_on(async {
+        let session: SessionWithSshd = session.await;
+
+        let temp = TempDir::new().unwrap();
+        let file = temp.child("existing-file");
+        file.write_str("0123456789").unwrap();
+
+        let mut remote_file = session
+            .sftp()
+            .create(file.path().to_path_buf())
+            .await
+            .expect("Failed to open remote file");
+        remote_file
+            .write_all(b"ab")
+            .await
+            .expect("Failed to write to file");
+        remote_file.close().await.expect("Failed to close file");
+
+        file.assert("ab");
+    })
+}

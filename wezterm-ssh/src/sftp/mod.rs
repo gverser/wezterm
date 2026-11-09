@@ -102,7 +102,8 @@ impl Sftp {
         .await
     }
 
-    /// Helper to create a file in write-only mode with truncation.
+    /// Helper to create a file in write-only mode, like `std::fs::File::create`:
+    /// a missing file is created and an existing one is truncated.
     pub async fn create<T, E>(&self, filename: T) -> SftpChannelResult<File>
     where
         T: TryInto<Utf8PathBuf, Error = E>,
