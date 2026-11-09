@@ -11,6 +11,7 @@ pub use wezterm_sessions::{
 };
 
 pub mod forms;
+pub mod monitor_proto;
 pub mod ssh;
 
 use std::ops::Range;
