@@ -3570,6 +3570,17 @@ impl TermWindow {
         Ok(PerformAssignmentResult::Handled)
     }
 
+    /// The window's active tab if its pane tab strips are on screen: it has
+    /// header rows, and no tab-level overlay (launcher, tab navigator, ...)
+    /// is drawn over it, header rows included; see get_pos_panes_for_tab.
+    fn tab_with_pane_strips(&self) -> Option<Arc<Tab>> {
+        let tab = Mux::get().get_active_tab_for_window(self.mux_window_id)?;
+        if tab.header_rows() == 0 || self.tab_state(tab.tab_id()).overlay.is_some() {
+            return None;
+        }
+        Some(tab)
+    }
+
     /// The active tab for the pane stack key action named `action`, or None
     /// if the action is to do nothing: there is no active tab, an overlay
     /// covers it, or it has no pane tab bar. The last is logged because the

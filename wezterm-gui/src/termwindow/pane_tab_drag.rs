@@ -11,7 +11,6 @@ use crate::termwindow::{UIItem, UIItemType};
 use ::window::{MouseEvent, WindowOps};
 use mux::pane::PaneId;
 use mux::tab::TabId;
-use mux::Mux;
 
 /// How far the pointer must travel from the press, in cells, before a press
 /// on a strip tab becomes a drag; less is a click with an unsteady hand.
@@ -132,13 +131,10 @@ impl crate::TermWindow {
     /// user is aiming at, and the drag itself changes nothing in the mux
     /// before the release.
     fn pane_tab_drop_at(&self, drag: &PaneTabDrag, x: isize, y: isize) -> Option<PaneTabDrop> {
-        let tab = Mux::get().get_active_tab_for_window(self.mux_window_id)?;
-        // Another tab, or a tab-level overlay that covers the strips: the
-        // strips the user aimed at are not on screen any more.
-        if tab.tab_id() != drag.tab_id
-            || self.tab_state(drag.tab_id).overlay.is_some()
-            || !tab.contains_pane(drag.pane_id)
-        {
+        let tab = self.tab_with_pane_strips()?;
+        // Another tab: the strips the user aimed at are not on screen any
+        // more.
+        if tab.tab_id() != drag.tab_id || !tab.contains_pane(drag.pane_id) {
             return None;
         }
 

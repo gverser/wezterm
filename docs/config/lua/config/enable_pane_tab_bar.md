@@ -40,11 +40,11 @@ sides must agree on how tall each pane is.
 
 After a tab is closed or a new terminal is started, every press on a strip
 within the double click interval is ignored, so that a double click on a `×`
-closes one terminal rather than two. After a tab is switched to, only a close
-that follows straight away is ignored: switching can re-lay out the strip (the
+closes one terminal rather than two. After a click on a tab, only a close that
+follows straight away is ignored: the click can re-lay out the strip (the
 unseen-output marker disappears) and slide another `×` under the pointer.
-Clicking another tab, or empty space, still works. Nothing is moved while the button is held down, and a
-drag only works within the window tab it started in.
+Clicking another tab, or empty space, still works. Nothing is moved while the
+button is held down, and a drag only works within the window tab it started in.
 
 Moving the last terminal out of a split removes that split.
 

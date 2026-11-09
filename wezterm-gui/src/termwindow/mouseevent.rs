@@ -1330,7 +1330,8 @@ impl StripClickAction {
     /// next press of the same double or triple click lands on whatever slid
     /// there. Such presses are the rest of that click, not new ones; acting
     /// on them would close a second pane, or open a second confirmation
-    /// that cancels the first.
+    /// that cancels the first. (The rule that an Activate swallows an
+    /// immediately following Close lives in `strip_press`.)
     fn swallows_followers(self) -> bool {
         matches!(
             self,
@@ -1342,7 +1343,7 @@ impl StripClickAction {
 /// The previous press on a pane stack strip.
 pub(super) struct StripPress {
     item: UIItemType,
-    /// See `strip_press_memory`.
+    /// See `strip_press`.
     action: StripClickAction,
     at: Instant,
 }
@@ -1385,6 +1386,8 @@ fn strip_click_action(
 /// press swallowed after a close or a spawn passes that action on, so the
 /// whole run of quick presses is swallowed, not just the one right after
 /// it: the third press of a triple click on × must not close a second pane.
+/// The rule that an Activate swallows an immediately following Close lives in
+/// `strip_press`.
 fn strip_press_memory(
     prev: Option<StripClickAction>,
     action: StripClickAction,
@@ -1525,6 +1528,17 @@ mod test {
             strip_press(&tab8, Left, Some((&tab7, Activate(7)))).0,
             Activate(8)
         );
+        assert_eq!(
+            strip_press(&bar, Middle, Some((&tab7, Activate(7)))).0,
+            Nothing
+        );
+        for item in strip {
+            assert_eq!(
+                strip_press(item, Right, Some((&tab7, Activate(7)))).0,
+                Nothing,
+                "{item:?}"
+            );
+        }
 
         // A left press on empty strip spawns only as the second press of a
         // pair on the same stretch of the same tab's strip, whose first

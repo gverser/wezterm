@@ -63,20 +63,11 @@ impl crate::TermWindow {
         &mut self,
         layers: &mut TripleLayerQuadAllocator,
     ) -> anyhow::Result<()> {
-        let mux = Mux::get();
-        let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
+        let tab = match self.tab_with_pane_strips() {
             Some(tab) => tab,
             None => return Ok(()),
         };
-        if tab.header_rows() == 0 {
-            return Ok(());
-        }
         let tab_id = tab.tab_id();
-        // A tab-level overlay (launcher, tab navigator, ...) is drawn over
-        // the whole tab, header rows included; see get_pos_panes_for_tab.
-        if self.tab_state(tab_id).overlay.is_some() {
-            return Ok(());
-        }
 
         let style = self.pane_strip_style();
         let (origin_x, origin_y) = self.content_origin_pixels()?;
