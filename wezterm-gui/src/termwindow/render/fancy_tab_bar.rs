@@ -58,6 +58,8 @@ impl crate::TermWindow {
         // conditions: atlas recreation, resize, scale and config changes.
         // Keeping the two together means new call sites can't forget one.
         self.sidebar_computed.take();
+        // Likewise the ssh status bar.
+        self.status_bar_computed.take();
     }
 
     pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {
