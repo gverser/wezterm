@@ -100,6 +100,9 @@ pub struct DiskUsage {
     pub fstype: String,
     pub size_kb: u64,
     pub used_kb: u64,
+    /// Space an ordinary user can still write; less than `size - used` by
+    /// whatever is reserved for root.
+    pub avail_kb: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,12 +196,15 @@ impl FrameParser {
             // where the mount point may itself contain spaces.
             let fields: Vec<&str> = rest.split_whitespace().collect();
             if fields.len() >= 7 {
-                if let (Ok(size_kb), Ok(used_kb)) = (fields[2].parse(), fields[3].parse()) {
+                if let (Ok(size_kb), Ok(used_kb), Ok(avail_kb)) =
+                    (fields[2].parse(), fields[3].parse(), fields[4].parse())
+                {
                     metrics(&mut self.frame).disks.push(DiskUsage {
                         mount: fields[6..].join(" "),
                         fstype: fields[1].to_string(),
                         size_kb,
                         used_kb,
+                        avail_kb,
                     });
                 }
             }
@@ -413,6 +419,17 @@ fn pct(used: u64, total: u64) -> f32 {
     }
 }
 
+/// How full a disk is, as `df -P` reports it: used over used plus
+/// available, rounded up. Measured against the whole size instead, a disk
+/// with root's 5% reserve would read 90% when users can no longer write.
+pub fn disk_pct(d: &DiskUsage) -> f32 {
+    let usable = d.used_kb + d.avail_kb;
+    if usable == 0 {
+        return 0.;
+    }
+    ((d.used_kb as f64 * 100. / usable as f64).ceil()) as f32
+}
+
 /// The status bar's segments, left to right, fitted into `max_cells`.
 ///
 /// When they don't fit, the disks fold into the first one plus a count, then
@@ -467,10 +484,10 @@ pub fn status_segments(s: &ServerStatus, max_cells: usize) -> Vec<Segment> {
     let disk_level = s
         .disks
         .iter()
-        .map(|d| level_for(pct(d.used_kb, d.size_kb)))
+        .map(|d| level_for(disk_pct(d)))
         .max()
         .unwrap_or(Level::Normal);
-    let disk_text = |d: &DiskUsage| format!("{} {:.0}%", d.mount, pct(d.used_kb, d.size_kb));
+    let disk_text = |d: &DiskUsage| format!("{} {:.0}%", d.mount, disk_pct(d));
     if !s.disks.is_empty() {
         segments.push(Segment {
             kind: Kind::Disks,
@@ -581,6 +598,7 @@ host web01
                 fstype: "xfs".to_string(),
                 size_kb: 204800000,
                 used_kb: 184320000,
+                avail_kb: 20480000,
             }
         );
     }
@@ -621,6 +639,7 @@ host web01
             fstype: fstype.to_string(),
             size_kb,
             used_kb: 1,
+            avail_kb: 1,
         };
         assert!(keep_disk(&disk("ext4", 10)));
         assert!(keep_disk(&disk("xfs", 10)));
@@ -628,6 +647,23 @@ host web01
         assert!(!keep_disk(&disk("overlay", 10)));
         assert!(!keep_disk(&disk("squashfs", 10)));
         assert!(!keep_disk(&disk("ext4", 0)));
+    }
+
+    #[test]
+    fn disk_percent_matches_df() {
+        let disk = |size_kb, used_kb, avail_kb| DiskUsage {
+            mount: "/".to_string(),
+            fstype: "ext4".to_string(),
+            size_kb,
+            used_kb,
+            avail_kb,
+        };
+        // df -P: used / (used + available), rounded up.
+        assert_eq!(disk_pct(&disk(1055762868, 13909556, 988149840)), 2.);
+        // Blocks reserved for root count as neither used nor available.
+        assert_eq!(disk_pct(&disk(1052, 950, 50)), 95.);
+        assert_eq!(disk_pct(&disk(100, 81, 19)), 81.);
+        assert_eq!(disk_pct(&disk(0, 0, 0)), 0.);
     }
 
     #[test]
@@ -711,12 +747,14 @@ host web01
                     fstype: "ext4".to_string(),
                     size_kb: 100,
                     used_kb: 45,
+                    avail_kb: 55,
                 },
                 DiskUsage {
                     mount: "/data".to_string(),
                     fstype: "xfs".to_string(),
                     size_kb: 100,
                     used_kb: 81,
+                    avail_kb: 19,
                 },
             ],
         }
