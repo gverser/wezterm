@@ -108,10 +108,68 @@ fn read_dir_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSs
             .into_iter()
             .map(|(p, _)| p)
             .collect::<Vec<Utf8PathBuf>>();
-        assert_eq!(
-            contents,
-            vec![good.path().to_path_buf().try_into().unwrap()]
-        );
+        let expected: Vec<Utf8PathBuf> = vec![good.path().to_path_buf().try_into().unwrap()];
+        assert_eq!(contents, expected);
+
+        // The session is still usable afterwards.
+        session
+            .sftp()
+            .read_dir(temp.path().to_path_buf())
+            .await
+            .expect("session survived");
+    })
+}
+
+/// The file page lists a directory with `Dir::read_dir_many`, which reads
+/// entries through a different path from `Sftp::read_dir`. A name that isn't
+/// UTF-8 must be skipped there as well, without losing its neighbours.
+/// Linux only, for the same reason as the test above.
+#[cfg(target_os = "linux")]
+#[rstest]
+fn read_dir_many_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSshd) {
+    use std::os::unix::ffi::OsStrExt;
+    if !sshd_available() {
+        return;
+    }
+    smol::block_on(async {
+        let session: SessionWithSshd = session.await;
+
+        let temp = TempDir::new().unwrap();
+        for name in ["good1", "good2", "good3"] {
+            temp.child(name).touch().unwrap();
+        }
+        // "测试" in GBK
+        let bad = temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"\xb2\xe2\xca\xd4.txt"));
+        std::fs::write(&bad, b"x").unwrap();
+
+        // Batches of two, so the listing takes several and the skipped name
+        // falls inside one of them.
+        let dir = session
+            .sftp()
+            .open_dir(temp.path().to_path_buf())
+            .await
+            .expect("Failed to open directory");
+        let mut names = vec![];
+        loop {
+            let batch = dir
+                .read_dir_many(2)
+                .await
+                .expect("Failed to read directory");
+            if batch.is_empty() {
+                break;
+            }
+            assert!(batch.len() <= 2, "batch of {} for max 2", batch.len());
+            names.extend(
+                batch
+                    .into_iter()
+                    .map(|(p, _)| p.into_string())
+                    .filter(|n| n != "." && n != ".."),
+            );
+        }
+        names.sort();
+        assert_eq!(names, vec!["good1", "good2", "good3"]);
 
         // The session is still usable afterwards.
         session
