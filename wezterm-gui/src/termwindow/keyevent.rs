@@ -187,6 +187,15 @@ enum OnlyKeyBindings {
     No,
 }
 
+/// Whether a key stops here, while a sidebar text field has the keyboard,
+/// once neither the field nor a key binding has taken it. Arrows, Delete,
+/// Ctrl+C and the like would otherwise reach the terminal behind the field,
+/// and a paste could run a command there. Composed text isn't stopped: it
+/// goes on to `key_event_impl`, which hands it to the field.
+fn held_by_sidebar_field(sidebar_has_focus: bool, only: OnlyKeyBindings, key: &Key) -> bool {
+    sidebar_has_focus && only == OnlyKeyBindings::No && matches!(key, Key::Code(_))
+}
+
 impl super::TermWindow {
     fn encode_win32_input(&self, pane: &Arc<dyn Pane>, key: &KeyEvent) -> Option<String> {
         if !self.config.allow_win32_input_mode
@@ -396,6 +405,14 @@ impl super::TermWindow {
                     return true;
                 }
             }
+        }
+
+        if held_by_sidebar_field(
+            self.sidebar_has_keyboard_focus(),
+            only_key_bindings,
+            &self.win_key_code_to_termwiz_key_code(keycode),
+        ) {
+            return true;
         }
 
         // Everything past here is about handing the key to a terminal, which a
@@ -986,5 +1003,26 @@ impl super::TermWindow {
             WK::KeyPadPageDown => KC::KeyPadPageDown,
         };
         Key::Code(code)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn keys_a_sidebar_field_leaves_stop_short_of_the_terminal() {
+        let left = || Key::Code(::termwiz::input::KeyCode::LeftArrow);
+        let typed = || Key::Composed("é".to_string());
+        assert!(held_by_sidebar_field(true, OnlyKeyBindings::No, &left()));
+        assert!(
+            !held_by_sidebar_field(true, OnlyKeyBindings::No, &typed()),
+            "composed text goes on to the field itself"
+        );
+        assert!(
+            !held_by_sidebar_field(true, OnlyKeyBindings::Yes, &left()),
+            "the bindings-only pass decides nothing"
+        );
+        assert!(!held_by_sidebar_field(false, OnlyKeyBindings::No, &left()));
     }
 }

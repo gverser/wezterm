@@ -24,6 +24,15 @@ impl TermWindow {
     }
 
     pub fn paste_from_clipboard(&mut self, pane: &Arc<dyn Pane>, clipboard: ClipboardPasteSource) {
+        if self.sidebar_has_keyboard_focus() {
+            // A sidebar text field has the keyboard: the paste is for it,
+            // not for the terminal behind it.
+            self.sidebar_paste(match clipboard {
+                ClipboardPasteSource::Clipboard => Clipboard::Clipboard,
+                ClipboardPasteSource::PrimarySelection => Clipboard::PrimarySelection,
+            });
+            return;
+        }
         let pane_id = pane.pane_id();
         log::trace!(
             "paste_from_clipboard in pane {} {:?}",

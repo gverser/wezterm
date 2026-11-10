@@ -37,6 +37,12 @@ pub const COLLAPSED_RAIL_CELLS: f32 = 2.;
 /// Row height as a multiple of the title font's cell height.
 pub const SIDEBAR_LINE_HEIGHT: f64 = 1.25;
 
+/// The part of pasted text a one-line field takes: what follows a newline
+/// would have been the next command in a terminal, not more of the field.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("")
+}
+
 /// What the sidebar is currently capturing the keyboard for, if anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarFocus {
@@ -585,6 +591,28 @@ impl super::TermWindow {
     /// typed while a CJK input method is active -- including plain ASCII, which
     /// the IME still composes -- is delivered as `Key::Composed` and goes
     /// straight to the terminal.
+    /// Paste `clipboard` into the focused sidebar field. The fields are one
+    /// line, so only the first line is taken.
+    pub fn sidebar_paste(&mut self, clipboard: ::window::Clipboard) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let future = window.get_clipboard(clipboard);
+        promise::spawn::spawn(async move {
+            match future.await {
+                Ok(text) => window.notify(crate::termwindow::TermWindowNotif::Apply(Box::new(
+                    move |tw| {
+                        if tw.sidebar_has_keyboard_focus() {
+                            tw.sidebar_insert_text(first_line(&text));
+                        }
+                    },
+                ))),
+                Err(err) => log::error!("reading the clipboard: {err:#}"),
+            }
+        })
+        .detach();
+    }
+
     pub fn sidebar_insert_text(&mut self, text: &str) {
         match self.sidebar.focus.clone() {
             Some(SidebarFocus::Search) => {
@@ -908,6 +936,13 @@ impl super::TermWindow {
             Some(focus) => focus,
             None => return false,
         };
+
+        if let KeyCode::Char('v') | KeyCode::Char('V') = key {
+            if mods.contains(KeyModifiers::CTRL) {
+                self.sidebar_paste(::window::Clipboard::Clipboard);
+                return true;
+            }
+        }
 
         match focus {
             SidebarFocus::Search => self.search_key_down(key, mods),
@@ -1256,5 +1291,18 @@ impl super::TermWindow {
             Some(NodeDrag { target: None, .. }) => context.invalidate(),
             None => self.select_session_node(id),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_paste_into_a_sidebar_field_keeps_only_its_first_line() {
+        assert_eq!(first_line("/etc/nginx\nrm -rf /tmp/x\n"), "/etc/nginx");
+        assert_eq!(first_line("/srv/app\r\n"), "/srv/app");
+        assert_eq!(first_line("plain"), "plain");
+        assert_eq!(first_line(""), "");
     }
 }
