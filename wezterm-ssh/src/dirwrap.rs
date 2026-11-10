@@ -7,8 +7,11 @@ use camino::Utf8PathBuf;
 /// EOF status.
 fn is_end_of_dir(err: &SftpChannelError) -> bool {
     match err {
-        SftpChannelError::Sftp(crate::sftp::error::SftpError::Eof) => true,
+        // libssh: DirWrap::read_dir reports the end this way.
         SftpChannelError::FileIo(io) => io.kind() == std::io::ErrorKind::UnexpectedEof,
+        // ssh2: File::readdir ends with LIBSSH2_ERROR_FILE, "no more files".
+        #[cfg(feature = "ssh2")]
+        SftpChannelError::Ssh2(err) => err.code() == ssh2::ErrorCode::Session(-16),
         _ => false,
     }
 }
@@ -124,13 +127,28 @@ mod test {
         assert!(take_entries(100, &mut next).unwrap().is_empty());
     }
 
+    /// What `ssh2::File::readdir` returns once there are no more entries.
+    #[cfg(feature = "ssh2")]
+    fn eof_ssh2() -> SftpChannelError {
+        SftpChannelError::from(ssh2::Error::new(
+            ssh2::ErrorCode::Session(-16),
+            "no more files",
+        ))
+    }
+
     #[test]
-    fn take_entries_knows_both_ways_a_directory_ends() {
-        let mut next = reader(3, || SftpChannelError::Sftp(SftpError::Eof));
+    fn take_entries_knows_how_each_backend_ends_a_directory() {
+        // libssh: our own read_dir turns the end into UnexpectedEof.
+        let mut next = reader(3, eof_io);
         assert_eq!(take_entries(10, &mut next).unwrap(), vec![1, 2, 3]);
         assert!(take_entries(10, &mut next).unwrap().is_empty());
-        let mut next = reader(0, eof_io);
-        assert!(take_entries(10, &mut next).unwrap().is_empty());
+
+        #[cfg(feature = "ssh2")]
+        {
+            let mut next = reader(3, eof_ssh2);
+            assert_eq!(take_entries(10, &mut next).unwrap(), vec![1, 2, 3]);
+            assert!(take_entries(10, &mut next).unwrap().is_empty());
+        }
     }
 
     #[test]
