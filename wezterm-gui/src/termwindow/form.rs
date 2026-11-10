@@ -287,12 +287,6 @@ impl FormState {
             .find(|(f, _)| *f == i)
             .map(|(_, e)| e.as_str())
     }
-
-    pub fn has_password_field(&self) -> bool {
-        self.fields
-            .iter()
-            .any(|f| f.enabled && f.kind == FieldKind::Password)
-    }
 }
 
 use crate::termwindow::box_model::*;
