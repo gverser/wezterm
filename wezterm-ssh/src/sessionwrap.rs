@@ -43,6 +43,18 @@ impl SessionWrap {
         }
     }
 
+    /// False once the connection has gone: libssh notices when the socket
+    /// closes or fails. ssh2 doesn't say, so it always reports connected.
+    pub fn is_connected(&self) -> bool {
+        match self {
+            #[cfg(feature = "ssh2")]
+            Self::Ssh2(_) => true,
+
+            #[cfg(feature = "libssh-rs")]
+            Self::LibSsh(sess) => sess.sess.is_connected(),
+        }
+    }
+
     pub fn get_poll_flags(&self) -> i16 {
         match self {
             #[cfg(feature = "ssh2")]

@@ -30,6 +30,10 @@ use std::sync::{Arc, Mutex};
 pub fn ssh_domain_for(id: NodeId, host: &SshHost) -> SshDomain {
     let mut ssh_option = HashMap::new();
     ssh_option.insert("port".to_string(), host.port.to_string());
+    // A connection that dies quietly (wifi, VPN, sleep, a NAT timeout) sends
+    // nothing back; only something sent out finds it dead. Without this an
+    // idle pane looks connected until the next keystroke, then vanishes.
+    ssh_option.insert("serveraliveinterval".to_string(), "30".to_string());
     if host.auth == SshAuth::Key {
         ssh_option.insert("identityfile".to_string(), host.key_path.trim().to_string());
         ssh_option.insert("identitiesonly".to_string(), "yes".to_string());
@@ -264,6 +268,17 @@ mod test {
         assert_eq!(dom.assume_shell, Shell::Posix);
         assert_eq!(dom.multiplexing, SshMultiplexing::None);
         assert!(dom.ssh_option.get("identityfile").is_none());
+    }
+
+    #[test]
+    fn saved_hosts_send_keepalives() {
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password));
+        assert_eq!(
+            dom.ssh_option
+                .get("serveraliveinterval")
+                .map(|s| s.as_str()),
+            Some("30")
+        );
     }
 
     #[test]

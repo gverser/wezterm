@@ -89,6 +89,11 @@ impl portable_pty::MasterPty for SshPty {
     }
 }
 
+/// How a shell's channel ends when no exit status came back for it: the
+/// connection went away (or the remote shell died of a signal), rather than
+/// the shell exiting. Panes show it instead of closing without a word.
+pub const SESSION_LOST: &str = "SSH 连接已断开";
+
 #[derive(Debug)]
 pub struct SshChildProcess {
     pub(crate) channel: ChannelId,
@@ -108,7 +113,7 @@ impl SshChildProcess {
                 Ok(status)
             }
             Err(_) => {
-                let status = ExitStatus::with_exit_code(1);
+                let status = ExitStatus::with_signal(SESSION_LOST);
                 self.exited.replace(status.clone());
                 Ok(status)
             }
@@ -128,7 +133,7 @@ impl portable_pty::Child for SshChildProcess {
             }
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Closed) => {
-                let status = ExitStatus::with_exit_code(1);
+                let status = ExitStatus::with_signal(SESSION_LOST);
                 self.exited.replace(status.clone());
                 Ok(Some(status))
             }
@@ -145,7 +150,7 @@ impl portable_pty::Child for SshChildProcess {
                 Ok(status)
             }
             Err(_) => {
-                let status = ExitStatus::with_exit_code(1);
+                let status = ExitStatus::with_signal(SESSION_LOST);
                 self.exited.replace(status.clone());
                 Ok(status)
             }
@@ -324,5 +329,43 @@ impl crate::sessioninner::SessionInner {
             .ok_or_else(|| anyhow::anyhow!("invalid channel id {}", resize.channel))?;
         info.channel.resize_pty(&resize)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use portable_pty::Child;
+
+    fn child(exit: Receiver<ExitStatus>) -> SshChildProcess {
+        SshChildProcess {
+            channel: 1,
+            tx: None,
+            exit,
+            exited: None,
+        }
+    }
+
+    #[test]
+    fn a_channel_that_ends_without_an_exit_status_reports_a_lost_session() {
+        let (tx, rx) = bounded(1);
+        drop(tx);
+        let status = child(rx).try_wait().unwrap().unwrap();
+        assert_eq!(status.signal(), Some(SESSION_LOST));
+        assert!(!status.success());
+
+        let (tx, rx) = bounded(1);
+        drop(tx);
+        let status = smol::block_on(child(rx).async_wait()).unwrap();
+        assert_eq!(status.signal(), Some(SESSION_LOST));
+    }
+
+    #[test]
+    fn an_exit_status_is_passed_on_as_it_is() {
+        let (tx, rx) = bounded(1);
+        smol::block_on(tx.send(ExitStatus::with_exit_code(0))).unwrap();
+        let status = child(rx).try_wait().unwrap().unwrap();
+        assert!(status.success());
+        assert_eq!(status.signal(), None);
     }
 }

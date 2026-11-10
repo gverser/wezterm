@@ -76,6 +76,13 @@ Double clicking an ssh entry connects to it. All the tabs opened from one entry
 share a single connection. It stays open after the last of them closes, so
 that opening the entry again is quick, and goes when wezterm exits.
 
+The connection sends a keepalive every 30 seconds, so one that has dropped
+(wifi, VPN, sleep, the server going away) is noticed even while nobody is
+typing. Its tabs then stay open with **⚠️ SSH 连接已断开** at the bottom
+instead of disappearing; double clicking the entry again connects afresh,
+whether or not those tabs have been closed yet. A tab whose shell exits
+normally closes as before.
+
 The first time a password is typed at the prompt and accepted, the terminal
 asks whether to save it; once saved, later connections log in without asking.
 If the server rejects a saved password, the terminal says so, and the next

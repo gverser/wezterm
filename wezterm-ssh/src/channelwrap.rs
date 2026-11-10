@@ -55,6 +55,19 @@ impl ChannelWrap {
         }
     }
 
+    /// Whether the channel is closed: by the server, or because the session
+    /// itself has died. ssh2 doesn't say, so it is never reported closed and
+    /// behaves as it always did.
+    pub fn is_closed(&self) -> bool {
+        match self {
+            #[cfg(feature = "ssh2")]
+            Self::Ssh2(_) => false,
+
+            #[cfg(feature = "libssh-rs")]
+            Self::LibSsh(chan) => chan.is_closed(),
+        }
+    }
+
     pub fn reader(&mut self, idx: usize) -> Box<dyn std::io::Read + '_> {
         match self {
             #[cfg(feature = "ssh2")]

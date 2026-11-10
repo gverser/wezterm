@@ -444,12 +444,23 @@ impl SessionInner {
         }
     }
 
+    /// The loop's idle backoff doubles without limit, so after a quiet
+    /// stretch poll could sleep for hours; the keepalive is sent when the loop
+    /// comes round, and would go out that late too, leaving a dead connection
+    /// unnoticed. See [`poll_timeout`].
     fn request_loop(&mut self, sess: &mut SessionWrap) -> anyhow::Result<()> {
         let mut sleep_delay = Duration::from_millis(100);
 
         loop {
             self.do_keepalive(sess)?;
             self.tick_io()?;
+            if !sess.is_connected() {
+                // End the session rather than keep a dead one: its channels
+                // go with it, so every pane hears now that the connection is
+                // lost, and the next spawn finds a DeadSession and connects
+                // afresh instead of failing on the old socket.
+                anyhow::bail!("the connection to the server was lost");
+            }
             self.drain_request_pipe();
             self.dispatch_pending_requests(sess)?;
             self.connect_pending_agent_forward_channels(sess);
@@ -494,7 +505,15 @@ impl SessionInner {
                 }
             }
 
-            poll(&mut poll_array, Some(sleep_delay)).context("poll")?;
+            poll(
+                &mut poll_array,
+                Some(poll_timeout(
+                    sleep_delay,
+                    self.keep_alive,
+                    self.last_keep_alive.elapsed(),
+                )),
+            )
+            .context("poll")?;
             sleep_delay += sleep_delay;
 
             for (idx, poll) in poll_array.iter().enumerate() {
@@ -555,11 +574,24 @@ impl SessionInner {
         let mut dead = vec![];
         for (id, chan) in self.channels.iter_mut() {
             if chan.exit.is_some() {
-                if let Some(status) = chan.channel.exit_status() {
-                    log::trace!("channel {id} has exit status {status:?}");
-                    chan.exited = true;
-                    let exit = chan.exit.take().unwrap();
-                    smol::block_on(exit.send(status)).ok();
+                let status = chan.channel.exit_status();
+                match channel_end(status, chan.channel.is_closed()) {
+                    ChannelEnd::Exited(status) => {
+                        log::trace!("channel {id} has exit status {status:?}");
+                        chan.exited = true;
+                        let exit = chan.exit.take().unwrap();
+                        smol::block_on(exit.send(status)).ok();
+                    }
+                    ChannelEnd::Lost => {
+                        // Tell the pane now. Otherwise it would only find out
+                        // when a keystroke failed to send, since the channel
+                        // stays open until its stdin does.
+                        log::debug!("channel {id} closed without an exit status");
+                        chan.exited = true;
+                        // Dropping the sender reports SESSION_LOST.
+                        chan.exit.take();
+                    }
+                    ChannelEnd::Running => {}
                 }
             }
 
@@ -1101,6 +1133,39 @@ fn write_from_buf<W: Write>(w: &mut W, buf: &mut VecDeque<u8>) -> std::io::Resul
     }
 }
 
+/// Where a shell's channel stands, as far as its exit goes.
+enum ChannelEnd {
+    /// The exit status came back.
+    Exited(ExitStatus),
+    /// The channel is closed with no status: the connection is gone.
+    Lost,
+    Running,
+}
+
+/// `status` is what the channel reports, `closed` whether it is closed --
+/// by the server after the status, or because the whole session died.
+fn channel_end(status: Option<ExitStatus>, closed: bool) -> ChannelEnd {
+    match (status, closed) {
+        (Some(status), _) => ChannelEnd::Exited(status),
+        (None, true) => ChannelEnd::Lost,
+        (None, false) => ChannelEnd::Running,
+    }
+}
+
+/// How long the request loop may wait in poll: its idle `backoff`, but no
+/// longer than until the next keepalive is due, so that one goes out on time
+/// however long the connection has been quiet.
+fn poll_timeout(
+    backoff: Duration,
+    keep_alive: Option<Duration>,
+    since_keep_alive: Duration,
+) -> Duration {
+    match keep_alive {
+        Some(interval) => backoff.min(interval.saturating_sub(since_keep_alive)),
+        None => backoff,
+    }
+}
+
 fn read_into_buf<R: Read>(r: &mut R, buf: &mut VecDeque<u8>) -> std::io::Result<()> {
     let current_len = buf.len();
     buf.resize(buf.capacity(), 0);
@@ -1152,5 +1217,31 @@ impl Drop for KillOnDropChild {
         if let Err(err) = self.0.wait() {
             log::error!("Error waiting for ProxyCommand to finish: {}", err);
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_closed_channel_without_an_exit_status_has_lost_its_session() {
+        let done = || Some(ExitStatus::with_exit_code(0));
+        // A normal close: the status comes before the channel closes.
+        assert!(matches!(channel_end(done(), true), ChannelEnd::Exited(s) if s.success()));
+        assert!(matches!(channel_end(done(), false), ChannelEnd::Exited(s) if s.success()));
+        assert!(matches!(channel_end(None, true), ChannelEnd::Lost));
+        assert!(matches!(channel_end(None, false), ChannelEnd::Running));
+    }
+
+    #[test]
+    fn poll_wakes_in_time_for_the_next_keepalive() {
+        let s = Duration::from_secs;
+        // Idle backoff has grown past the keepalive: wake when it is due.
+        assert_eq!(poll_timeout(s(400), Some(s(30)), s(10)), s(20));
+        assert_eq!(poll_timeout(s(1), Some(s(30)), s(10)), s(1));
+        // Already due: don't wait at all.
+        assert_eq!(poll_timeout(s(400), Some(s(30)), s(45)), Duration::ZERO);
+        assert_eq!(poll_timeout(s(400), None, s(10)), s(400));
     }
 }

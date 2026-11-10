@@ -224,21 +224,19 @@ impl Pane for LocalPane {
     }
 
     fn exit_behavior(&self) -> Option<ExitBehavior> {
-        // If we are ssh, and we've not yet fully connected,
-        // then override exit_behavior so that we can show
-        // connection issues
-        let mut pty = self.pty.lock();
-        let is_ssh_connecting = pty
-            .downcast_mut::<crate::ssh::WrappedSshPty>()
-            .map(|s| s.is_connecting())
-            .unwrap_or(false);
-        let is_failed_spawn = pty.is::<crate::domain::FailedSpawnPty>();
-
-        if is_ssh_connecting || is_failed_spawn {
-            Some(ExitBehavior::CloseOnCleanExit)
-        } else {
-            None
+        // The pty reader reads this once, as the pane starts, and on Close
+        // removes the pane as soon as its output ends. An ssh pane's output
+        // ends when the connection drops, before is_dead has seen the lost
+        // session that keeps the pane open to say so; leave closing it to
+        // is_dead, which goes by own_exit_behavior.
+        let is_ssh = {
+            let pty = self.pty.lock();
+            pty.is::<crate::ssh::WrappedSshPty>() || pty.is::<wezterm_ssh::SshPty>()
+        };
+        if is_ssh {
+            return Some(ExitBehavior::CloseOnCleanExit);
         }
+        self.own_exit_behavior()
     }
 
     fn kill(&self) {
@@ -287,7 +285,17 @@ impl Pane for LocalPane {
                     _ => Some(ExitStatus::with_exit_code(1)),
                 };
 
-                if let Some(status) = status {
+                if let Some(notice) = status
+                    .as_ref()
+                    .and_then(|status| lost_session_notice(status, *killed))
+                {
+                    // Whatever exit_behavior says: closing would make the
+                    // tab vanish with no hint of why.
+                    if configuration().exit_behavior_messaging != ExitBehaviorMessaging::None {
+                        emit_output_for_pane(self.pane_id, &notice);
+                    }
+                    *proc = ProcessState::DeadPendingClose { killed: false };
+                } else if let Some(status) = status {
                     let success = match status.success() {
                         true => true,
                         false => configuration()
@@ -296,7 +304,7 @@ impl Pane for LocalPane {
                     };
 
                     match (
-                        self.exit_behavior()
+                        self.own_exit_behavior()
                             .unwrap_or_else(|| configuration().exit_behavior),
                         success,
                         killed,
@@ -848,6 +856,19 @@ struct LocalPaneDCSHandler {
     tmux_domain: Option<Arc<TmuxDomainState>>,
 }
 
+/// What a pane shows when its ssh connection went away, which leaves the
+/// pane open to show it: None for any other end, including the user closing
+/// the pane. A normal `exit` brings an exit status and is not this.
+fn lost_session_notice(status: &ExitStatus, killed: bool) -> Option<String> {
+    if killed || status.signal() != Some(wezterm_ssh::SESSION_LOST) {
+        return None;
+    }
+    Some(format!(
+        "\r\n\r\n⚠️  {}。关闭这个标签后可以重新连接。\r\n",
+        wezterm_ssh::SESSION_LOST
+    ))
+}
+
 pub(crate) fn emit_output_for_pane(pane_id: PaneId, message: &str) {
     let mut parser = termwiz::escape::parser::Parser::new();
     let mut actions = vec![Action::CSI(CSI::Sgr(Sgr::Reset))];
@@ -1003,6 +1024,26 @@ fn split_child(
 }
 
 impl LocalPane {
+    /// How this pane closes once its process has ended; None for the
+    /// configured exit_behavior.
+    fn own_exit_behavior(&self) -> Option<ExitBehavior> {
+        // If we are ssh, and we've not yet fully connected,
+        // then override exit_behavior so that we can show
+        // connection issues
+        let mut pty = self.pty.lock();
+        let is_ssh_connecting = pty
+            .downcast_mut::<crate::ssh::WrappedSshPty>()
+            .map(|s| s.is_connecting())
+            .unwrap_or(false);
+        let is_failed_spawn = pty.is::<crate::domain::FailedSpawnPty>();
+
+        if is_ssh_connecting || is_failed_spawn {
+            Some(ExitBehavior::CloseOnCleanExit)
+        } else {
+            None
+        }
+    }
+
     pub fn new(
         pane_id: PaneId,
         mut terminal: Terminal,
@@ -1159,5 +1200,35 @@ impl Drop for LocalPane {
         if let ProcessState::Running { signaller, .. } = &mut *self.process.lock() {
             let _ = signaller.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_lost_ssh_session_is_held_with_a_notice() {
+        let lost = ExitStatus::with_signal(wezterm_ssh::SESSION_LOST);
+        let notice = lost_session_notice(&lost, false).expect("a notice");
+        assert!(notice.contains("SSH 连接已断开"), "{}", notice);
+    }
+
+    #[test]
+    fn other_ends_get_no_lost_session_notice() {
+        let lost = ExitStatus::with_signal(wezterm_ssh::SESSION_LOST);
+        assert_eq!(lost_session_notice(&lost, true), None, "closed by the user");
+        assert_eq!(
+            lost_session_notice(&ExitStatus::with_exit_code(0), false),
+            None
+        );
+        assert_eq!(
+            lost_session_notice(&ExitStatus::with_exit_code(1), false),
+            None
+        );
+        assert_eq!(
+            lost_session_notice(&ExitStatus::with_signal("Killed"), false),
+            None
+        );
     }
 }

@@ -203,6 +203,12 @@ As features stabilize some brief notes about them will accumulate here.
   `CTRL-u` to kill back to the start of the line. Thanks to @bew! #8013
 
 #### Fixed
+* ssh: a pane whose connection dropped went on looking connected until the
+  next keypress, and then vanished without a word. With libssh the session
+  now ends as soon as the connection is found gone, its panes stay open saying
+  **SSH 连接已断开**, and the next spawn connects afresh rather than failing
+  on the dead socket. `ServerAliveInterval` keepalives also go out on time
+  after a long idle stretch, which they didn't before.
 * macOS: Fix window border when opacity<1 and shadow enabled.
   Thanks to @Adams-Galaxy! #8038 #5158
 * perf: Terminal images were hashed three times each on the transmit path; the sha256
