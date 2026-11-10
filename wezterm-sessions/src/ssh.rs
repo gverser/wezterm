@@ -16,6 +16,22 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The gui registers each ssh node's domain under this prefix and the node
+/// id; the node's spawn names that domain. Shared so the mux-server bridge,
+/// which has no such domains, can tell an ssh node apart.
+pub const SSH_DOMAIN_PREFIX: &str = "sidebar-ssh:";
+
+pub fn ssh_domain_name(id: NodeId) -> String {
+    format!("{SSH_DOMAIN_PREFIX}{}", id.0)
+}
+
+pub fn node_of_domain_name(name: &str) -> Option<NodeId> {
+    name.strip_prefix(SSH_DOMAIN_PREFIX)?
+        .parse::<u64>()
+        .ok()
+        .map(NodeId)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SshAuth {
     #[default]

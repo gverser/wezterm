@@ -11,6 +11,8 @@ use crate::mux_access::MuxPane;
 use crate::proto::{Inbound, Outbound};
 use crate::state::BridgeState;
 use anyhow::Context;
+use config::keyassignment::SpawnTabDomain;
+use mux::domain::DomainId;
 use mux::{Mux, MuxNotification};
 use parking_lot::Mutex;
 use portable_pty::CommandBuilder;
@@ -20,6 +22,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
+use wezterm_sessions::ssh::SSH_DOMAIN_PREFIX;
 use wezterm_sessions::{NodeId, NodeKind, SessionStore};
 use wezterm_term::Alert;
 
@@ -295,26 +298,62 @@ fn serve_client(
     Ok(())
 }
 
+/// Which of the mux server's domains a node's spawn goes to: `Ok(None)` for
+/// the default one. `find` looks a domain up by name.
+///
+/// A name the mux server doesn't have falls back to the default domain, as
+/// the bridge always did: the gui's own client domain ("unix") is such a
+/// name, and its panes live in this default domain anyway. An ssh node is
+/// the exception. Its domain exists only in the gui process, which holds the
+/// connection, and the default domain would open a local shell under the
+/// server's name, where a command meant for the server runs here instead.
+fn bridge_spawn_domain(
+    domain: &SpawnTabDomain,
+    node_name: &str,
+    find: impl Fn(&str) -> Option<DomainId>,
+) -> Result<Option<DomainId>, String> {
+    match domain {
+        SpawnTabDomain::DefaultDomain | SpawnTabDomain::CurrentPaneDomain => Ok(None),
+        SpawnTabDomain::DomainId(id) => Ok(Some(*id)),
+        SpawnTabDomain::DomainName(name) => match find(name) {
+            Some(id) => Ok(Some(id)),
+            None if name.starts_with(SSH_DOMAIN_PREFIX) => Err(format!(
+                "「{node_name}」是 SSH 会话，飞书桥打不开，请在 wezterm 窗口里打开"
+            )),
+            None => Ok(None),
+        },
+    }
+}
+
 /// Start the session named by a node in sessions.json.
 ///
 /// Only entries already in the tree can be started, which is the line between
 /// this and a remote shell: the client picks a node, not a command.
 pub fn handle_spawn(node_id: u64) -> Vec<Outbound> {
     let store = SessionStore::load();
-    let spawn = match store.tree().find(NodeId(node_id)) {
+    let (name, spawn) = match store.tree().find(NodeId(node_id)) {
         None => {
             return vec![Outbound::Error {
                 message: format!("no such session node: {node_id}"),
             }]
         }
         Some(node) => match &node.kind {
-            NodeKind::Session { spawn } => spawn.clone(),
+            NodeKind::Session { spawn } => (node.name.clone(), spawn.clone()),
             NodeKind::Folder { .. } => {
                 return vec![Outbound::Error {
                     message: format!("session node {node_id} is a folder, not a session"),
                 }]
             }
         },
+    };
+    let target = bridge_spawn_domain(&spawn.domain, &name, |domain| {
+        Mux::try_get()
+            .and_then(|mux| mux.get_domain_by_name(domain))
+            .map(|domain| domain.domain_id())
+    });
+    let target = match target {
+        Ok(target) => target,
+        Err(message) => return vec![Outbound::Error { message }],
     };
 
     // NodeId::workspace_name is what the gui sidebar uses too, so a session
@@ -342,7 +381,9 @@ pub fn handle_spawn(node_id: u64) -> Vec<Outbound> {
             let cwd = spawn.cwd.as_ref().map(|p| p.to_string_lossy().to_string());
 
             let window_id = mux.new_empty_window(Some(workspace), None);
-            let domain = mux.default_domain();
+            let domain = target
+                .and_then(|id| mux.get_domain(id))
+                .unwrap_or_else(|| mux.default_domain());
             if let Err(err) = domain.spawn(size, Some(cmd), cwd, *window_id).await {
                 log::error!("bridge could not spawn session node {node_id}: {err:#}");
             }
@@ -369,4 +410,40 @@ fn json(msg: &Outbound) -> String {
     serde_json::to_string(msg).unwrap_or_else(|err| {
         format!(r#"{{"t":"error","message":"failed to serialize a reply: {err}"}}"#)
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn find(name: &str) -> Option<mux::domain::DomainId> {
+        match name {
+            "WSL:Ubuntu" => Some(3),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn spawn_goes_to_the_domain_the_node_names() {
+        let named = |n: &str| SpawnTabDomain::DomainName(n.to_string());
+        assert_eq!(
+            bridge_spawn_domain(&SpawnTabDomain::DefaultDomain, "dev", find),
+            Ok(None)
+        );
+        assert_eq!(
+            bridge_spawn_domain(&named("WSL:Ubuntu"), "wsl", find),
+            Ok(Some(3))
+        );
+        // Not in the mux server, e.g. the gui's "unix" client domain, whose
+        // panes live in the mux server's default domain anyway.
+        assert_eq!(bridge_spawn_domain(&named("unix"), "dev", find), Ok(None));
+    }
+
+    #[test]
+    fn an_ssh_node_is_refused_rather_than_opened_as_a_local_shell() {
+        let ssh = SpawnTabDomain::DomainName("sidebar-ssh:12".to_string());
+        let err = bridge_spawn_domain(&ssh, "web-01", find).unwrap_err();
+        assert!(err.contains("web-01"), "{}", err);
+        assert!(err.contains("SSH"), "{}", err);
+    }
 }

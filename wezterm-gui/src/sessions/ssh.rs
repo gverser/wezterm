@@ -20,19 +20,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub const SSH_DOMAIN_PREFIX: &str = "sidebar-ssh:";
-
-pub fn ssh_domain_name(id: NodeId) -> String {
-    format!("{SSH_DOMAIN_PREFIX}{}", id.0)
-}
-
-pub fn node_of_domain_name(name: &str) -> Option<NodeId> {
-    name.strip_prefix(SSH_DOMAIN_PREFIX)?
-        .parse::<u64>()
-        .ok()
-        .map(NodeId)
-}
-
 /// The domain definition for a saved host.
 ///
 /// The port goes in `ssh_option` rather than `remote_address`, because
