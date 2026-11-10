@@ -23,7 +23,7 @@ use mux::ssh::RemoteSshDomain;
 use std::future::Future;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use wezterm_ssh::{RenameOptions, Sftp, SftpChannelError};
+use wezterm_ssh::{Sftp, SftpChannelError};
 use wezterm_term::{KeyCode, KeyModifiers};
 
 /// Rows above the list: the path bar, the buttons, the follow checkbox.
@@ -685,7 +685,9 @@ impl crate::TermWindow {
                 tw.files_changed();
                 tw.files_ask_overwrite();
             })
-            .on_cancel(|tw| tw.files_ask_overwrite());
+            .on_cancel(|tw| tw.files_ask_overwrite())
+            // It appears a round trip after the drop, maybe while typing.
+            .ignore_early_enter();
         self.open_form(form);
     }
 
@@ -790,15 +792,7 @@ impl crate::TermWindow {
                 let old = old.clone();
                 let new = remote_join(&parent, &name);
                 tw.files_run(domain_id, move |sftp| async move {
-                    // Never clobber a file that already has the new name.
-                    let opts = RenameOptions {
-                        overwrite: false,
-                        atomic: false,
-                        native: false,
-                    };
-                    sftp.rename(old.as_str(), new.as_str(), opts)
-                        .await
-                        .map_err(|err| format!("重命名失败：{}", describe(err)))
+                    crate::sftp::rename_file(&sftp, &old, &new).await
                 });
             });
         self.open_form(form);

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use wezterm_ssh::Sftp;
+use wezterm_ssh::{FileType, Metadata, RenameOptions, Sftp};
 
 /// Bytes per read. Always the same: `wezterm_ssh`'s sftp `File` sizes its
 /// pending read from the first buffer it is polled with.
@@ -249,8 +249,18 @@ pub async fn run_download(
     result
 }
 
-/// Copy `local` to `remote`, which is removed again if the copy doesn't
-/// complete.
+/// Where an upload to `remote` is written until it is complete: beside it,
+/// so that putting it in place is a rename within one directory.
+pub fn partial_upload_path(remote: &str) -> String {
+    format!("{remote}.wezterm-part")
+}
+
+/// Copy `local` to `remote` by way of a partial file beside it, which is
+/// renamed over `remote` only once complete. Until then a file already at
+/// `remote` is untouched, so cancelling or losing the connection leaves it as
+/// it was; the partial file is removed. A replaced file's mode is kept, and
+/// its owner too where the server allows. Uploading to a symlink replaces
+/// the file it points at, as writing through it did.
 pub async fn run_upload(
     sftp: Sftp,
     local: PathBuf,
@@ -259,8 +269,19 @@ pub async fn run_upload(
     mut report: impl FnMut(u64),
 ) -> Result<(), String> {
     let mut src = smol::fs::File::open(&local).await.map_err(io_failure)?;
-    let mut dst = sftp.create(remote.as_str()).await.map_err(sftp_failure)?;
-    let result = async {
+    let target = match sftp.symlink_metadata(remote.as_str()).await {
+        Ok(meta) if meta.is_symlink() => sftp
+            .canonicalize(remote.as_str())
+            .await
+            .map_err(sftp_failure)?
+            .into_string(),
+        _ => remote,
+    };
+    let existing = sftp.metadata(target.as_str()).await.ok();
+    let partial = partial_upload_path(&target);
+
+    let mut dst = sftp.create(partial.as_str()).await.map_err(sftp_failure)?;
+    let written = async {
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         loop {
@@ -275,14 +296,79 @@ pub async fn run_upload(
             done += n as u64;
             report(done);
         }
-        dst.close().await.map_err(sftp_failure)
+        dst.close().await.map_err(sftp_failure)?;
+        if let Some(existing) = &existing {
+            keep_mode_and_owner(&sftp, &partial, existing).await?;
+        }
+        Ok(())
     }
     .await;
-    if result.is_err() {
-        drop(dst);
-        let _ = sftp.remove_file(remote.as_str()).await;
+    drop(dst);
+    if let Err(err) = written {
+        let _ = sftp.remove_file(partial.as_str()).await;
+        return Err(err);
     }
-    result
+    put_in_place(&sftp, &partial, &target, existing.is_some()).await
+}
+
+/// Give the finished upload at `partial` the mode of the file it replaces,
+/// and its owner and group if they differ, which only root can change; a
+/// refusal there is logged and otherwise ignored.
+async fn keep_mode_and_owner(
+    sftp: &Sftp,
+    partial: &str,
+    existing: &Metadata,
+) -> Result<(), String> {
+    let mut attrs = Metadata {
+        ty: FileType::File,
+        permissions: existing.permissions,
+        size: None,
+        uid: None,
+        gid: None,
+        accessed: None,
+        modified: None,
+    };
+    if attrs.permissions.is_some() {
+        sftp.set_metadata(partial, attrs)
+            .await
+            .map_err(sftp_failure)?;
+    }
+    let mine = sftp.metadata(partial).await.map_err(sftp_failure)?;
+    if (mine.uid, mine.gid) != (existing.uid, existing.gid) && existing.uid.is_some() {
+        attrs.permissions = None;
+        attrs.uid = existing.uid;
+        attrs.gid = existing.gid;
+        if let Err(err) = sftp.set_metadata(partial, attrs).await {
+            log::warn!("upload {partial}: keeping the replaced file's owner: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Rename the finished upload over `target`. OpenSSH replaces an existing
+/// file in one step; a server that refuses to rename onto an existing name
+/// gets the old file removed first, and if the rename still fails the upload
+/// is left at `partial` and the message says so.
+async fn put_in_place(
+    sftp: &Sftp,
+    partial: &str,
+    target: &str,
+    existed: bool,
+) -> Result<(), String> {
+    let Err(err) = sftp.rename(partial, target, RenameOptions::default()).await else {
+        return Ok(());
+    };
+    if !existed {
+        let _ = sftp.remove_file(partial).await;
+        return Err(sftp_failure(err));
+    }
+    if let Err(err) = sftp.remove_file(target).await {
+        let _ = sftp.remove_file(partial).await;
+        return Err(sftp_failure(err));
+    }
+    sftp.rename(partial, target, RenameOptions::default())
+        .await
+        .map_err(|err| format!("{}；上传的文件留在 {partial}", sftp_failure(err)))
 }
 
 #[cfg(test)]

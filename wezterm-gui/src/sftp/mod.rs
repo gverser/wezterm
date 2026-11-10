@@ -8,6 +8,8 @@
 //! `TermWindowNotif::Apply`.
 
 pub mod dialogs;
+#[cfg(test)]
+mod live_test;
 pub mod model;
 pub mod transfer;
 
@@ -16,7 +18,7 @@ use crate::sftp::transfer::{TransferJob, TransferQueue};
 use mux::domain::DomainId;
 use mux::pane::PaneId;
 use std::collections::{HashMap, VecDeque};
-use wezterm_ssh::Sftp;
+use wezterm_ssh::{RenameOptions, Sftp};
 
 fn describe(err: impl std::fmt::Display) -> String {
     explain_sftp_error(&err.to_string())
@@ -74,6 +76,27 @@ pub async fn dir_is_empty(sftp: &Sftp, path: &str) -> Result<bool, String> {
             return Ok(false);
         }
     }
+}
+
+/// Rename `old` to `new`, refusing if something already has the new name.
+///
+/// Asking the server not to overwrite isn't enough: libssh ignores the
+/// options and renames with OpenSSH's posix-rename, which replaces whatever
+/// was there. So look first; a file that appears in between is the one case
+/// this misses.
+pub async fn rename_file(sftp: &Sftp, old: &str, new: &str) -> Result<(), String> {
+    if sftp.symlink_metadata(new).await.is_ok() {
+        let name = new.rsplit('/').next().unwrap_or(new);
+        return Err(format!("重命名失败：已有同名的「{name}」"));
+    }
+    let opts = RenameOptions {
+        overwrite: false,
+        atomic: false,
+        native: false,
+    };
+    sftp.rename(old, new, opts)
+        .await
+        .map_err(|err| format!("重命名失败：{}", describe(err)))
 }
 
 /// The buttons along the top of the page.

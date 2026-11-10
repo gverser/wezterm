@@ -112,15 +112,24 @@ installed there; on servers without it, following does nothing.
 | Drop files from Explorer onto the page | Upload them to the directory shown |
 
 Only files and empty folders can be deleted, after a confirmation; a folder
-with anything in it is refused with 目录不为空. Folders can't be uploaded.
+with anything in it is refused with 目录不为空. Renaming onto a name that is
+already taken is refused. Folders can't be uploaded.
 
 Downloads ask where to save, starting in the Downloads folder. Uploads that
-would replace a file on the server ask first. Transfers run one at a time in
-the background, with a line at the bottom of the page showing progress and
-speed and a ✕ to cancel; a cancelled or failed transfer doesn't leave a partial
-file behind. (An upload that was replacing a file removes it entirely in that
-case: the old copy is already gone once the upload starts.) Failures show the
-server's own message.
+would replace a file on the server ask first; that question ignores
+<kbd>Enter</kbd> for its first second, since it appears by itself and may
+catch typing meant for the terminal. Transfers run one at a time in the
+background, with a line at the bottom of the page showing progress and speed
+and a ✕ to cancel.
+
+Each transfer writes to a partial file first — `name.part` for a download,
+`name.wezterm-part` beside the file on the server for an upload — and puts it
+in place only once complete, so a cancelled or failed transfer leaves nothing
+half-written and an existing file as it was. A file an upload replaces keeps
+its permissions, and its owner where the server allows that; uploading to a
+symlink replaces the file it points at. If wezterm exits in the middle of a
+transfer, the partial file stays behind. Failures show the server's own
+message.
 
 The sidebar takes its colors from the
 [tab_bar](../../appearance.md#tab-bar-appearance-colors) color settings.

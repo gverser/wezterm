@@ -322,6 +322,21 @@ enum Target {
     Reveal,
 }
 
+/// How long a form that pops up by itself ignores Enter.
+pub const EARLY_ENTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether an Enter at `now` comes too soon after a guarded form opened to
+/// be an answer to it, rather than typing meant for the terminal.
+fn enter_too_early(
+    guard: Option<(std::time::Instant, std::time::Duration)>,
+    now: std::time::Instant,
+) -> bool {
+    match guard {
+        Some((opened, wait)) => now.saturating_duration_since(opened) < wait,
+        None => false,
+    }
+}
+
 type Validate = Box<dyn Fn(&FormState) -> Vec<(usize, String)>>;
 type Submit = Box<dyn Fn(&FormState, &mut TermWindow)>;
 type Change = Box<dyn Fn(&mut FormState)>;
@@ -337,6 +352,7 @@ pub struct FormModal {
     on_change: Change,
     on_extra: Extra,
     on_cancel: Box<dyn Fn(&mut TermWindow)>,
+    enter_guard: Option<(std::time::Instant, std::time::Duration)>,
 }
 
 impl FormModal {
@@ -351,7 +367,16 @@ impl FormModal {
             on_change: Box::new(|_| {}),
             on_extra: Box::new(|_, _| {}),
             on_cancel: Box::new(|_| {}),
+            enter_guard: None,
         }
+    }
+
+    /// For a form that opens by itself rather than at the user's request:
+    /// an Enter in its first [`EARLY_ENTER`] was typed for something else,
+    /// and is ignored instead of submitting.
+    pub fn ignore_early_enter(mut self) -> Self {
+        self.enter_guard = Some((std::time::Instant::now(), EARLY_ENTER));
+        self
     }
 
     pub fn validate(mut self, f: impl Fn(&FormState) -> Vec<(usize, String)> + 'static) -> Self {
@@ -850,7 +875,9 @@ impl Modal for FormModal {
                 return Ok(true);
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                self.submit(term_window);
+                if !enter_too_early(self.enter_guard, std::time::Instant::now()) {
+                    self.submit(term_window);
+                }
                 return Ok(true);
             }
             (KeyCode::Char('v') | KeyCode::Char('V'), m) if m.contains(KeyModifiers::CTRL) => {
@@ -963,6 +990,20 @@ mod test {
                 FormButton::Cancel("取消".into()),
             ],
         )
+    }
+
+    #[test]
+    fn enter_right_after_a_guarded_form_opens_is_ignored() {
+        let opened = std::time::Instant::now();
+        let guard = Some((opened, EARLY_ENTER));
+        let ms = std::time::Duration::from_millis;
+        assert!(enter_too_early(guard, opened + ms(100)));
+        assert!(enter_too_early(guard, opened + ms(999)));
+        assert!(!enter_too_early(guard, opened + ms(1000)));
+        assert!(
+            !enter_too_early(None, opened),
+            "unguarded forms take it at once"
+        );
     }
 
     #[test]
