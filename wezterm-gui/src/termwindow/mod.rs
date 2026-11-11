@@ -939,7 +939,7 @@ impl TermWindow {
                 pixel_max: dimensions.pixel_width as f32,
                 pixel_cell: render_metrics.cell_size.width as f32,
             };
-            context.pixel_cell * crate::termwindow::sidebar::COLLAPSED_RAIL_CELLS
+            crate::termwindow::sidebar::rail_width(dimensions.dpi as f32)
                 + crate::sessions::clamp_width(
                     config.session_sidebar_width.evaluate_as_pixels(context),
                     dimensions.pixel_width as f32,

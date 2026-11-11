@@ -27,12 +27,14 @@ use wezterm_term::{KeyCode, KeyModifiers};
 /// Narrowest useful sidebar, in cells of the title font.
 pub const MIN_SIDEBAR_CELLS: f32 = 8.;
 
-/// Width of the page tab rail down the sidebar's left edge, in terminal
-/// cells.
+/// Width of the page tab rail down the sidebar's left edge at `dpi`: room
+/// for an icon over a two-character label.
 ///
 /// It stays when the panel is collapsed: collapsing to nothing would leave no
 /// way to bring the sidebar back short of the command palette.
-pub const COLLAPSED_RAIL_CELLS: f32 = 2.;
+pub fn rail_width(dpi: f32) -> f32 {
+    crate::termwindow::theme::px(dpi, 46.)
+}
 
 /// Row height as a multiple of the title font's cell height.
 pub const SIDEBAR_LINE_HEIGHT: f64 = 1.25;
@@ -196,12 +198,12 @@ impl super::TermWindow {
         self.sidebar_rail_width() + self.sidebar_panel_width()
     }
 
-    /// Width of the page tab rail; see [`COLLAPSED_RAIL_CELLS`].
+    /// Width of the page tab rail; see [`rail_width`].
     pub fn sidebar_rail_width(&self) -> f32 {
         if !self.sidebar_is_enabled() {
             return 0.;
         }
-        self.render_metrics.cell_size.width as f32 * COLLAPSED_RAIL_CELLS
+        rail_width(self.dimensions.dpi as f32)
     }
 
     /// Width of the panel to the right of the rail; 0 while collapsed.
@@ -1304,6 +1306,12 @@ impl super::TermWindow {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_rail_is_46_pixels_at_96_dpi_and_scales() {
+        assert_eq!(rail_width(96.), 46.);
+        assert_eq!(rail_width(120.), 57.5);
+    }
 
     #[test]
     fn a_paste_into_a_sidebar_field_keeps_only_its_first_line() {

@@ -295,7 +295,7 @@ impl crate::TermWindow {
         let pad = metrics.cell_size.width as f32 * 0.5;
         let capacity = self.sidebar_row_capacity();
 
-        let rail = self.sidebar_rail(&font, &metrics, &colors, self.sidebar_rail_bounds())?;
+        let rail = self.sidebar_rail(&font, &metrics, self.sidebar_rail_bounds())?;
         let bounds = self.sidebar_panel_bounds();
         if !self.sidebar_is_expanded() || bounds.width() <= 0. {
             return Ok(vec![rail]);
@@ -484,8 +484,8 @@ impl crate::TermWindow {
         )
     }
 
-    /// The column of page tabs down the sidebar's left edge, each tab's name
-    /// running top to bottom one character per line.
+    /// The column of page tabs down the sidebar's left edge: an icon over a
+    /// short label, the current page lit and marked by an accent bar.
     ///
     /// It is all that is left when the sidebar is collapsed, so a click on
     /// either tab brings the panel back on that page.
@@ -493,11 +493,11 @@ impl crate::TermWindow {
         &self,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
         bounds: RectF,
     ) -> anyhow::Result<ComputedElement> {
+        use crate::termwindow::theme::{icon, lin, palette, px, rounded};
         let expanded = self.sidebar_is_expanded();
-        let hover = colors.inactive_tab_hover();
+        let dpi = self.dimensions.dpi as f32;
         let context = LayoutContext {
             height: DimensionContext {
                 dpi: self.dimensions.dpi as f32,
@@ -526,58 +526,94 @@ impl crate::TermWindow {
             .unwrap_or(0.)
         };
 
-        let tabs = [
-            (SidebarPage::Sessions, "会话"),
-            (SidebarPage::Files, "文件"),
-        ]
-        .iter()
-        .map(|&(page, label)| {
-            // Marked only while the panel is actually showing it.
-            let style = if expanded && self.sidebar.page == page {
-                colors.active_tab()
-            } else {
-                colors.inactive_tab()
-            };
-            let chars = label
-                .chars()
-                .map(|c| {
-                    let text = c.to_string();
-                    let side = ((bounds.width() - glyph_width(&text)) / 2.).max(0.).floor();
-                    Element::new(font, ElementContent::Text(text))
-                        .display(DisplayType::Block)
-                        .padding(BoxDimension {
-                            left: Dimension::Pixels(side),
-                            right: Dimension::Pixels(0.),
-                            top: Dimension::Pixels(0.),
-                            bottom: Dimension::Pixels(0.),
-                        })
-                        .colors(ElementColors {
-                            border: BorderColor::default(),
-                            bg: InheritableColor::Inherited,
-                            text: InheritableColor::Inherited,
-                        })
-                })
-                .collect();
-            Element::new(font, ElementContent::Children(chars))
+        // Each tab sits inset in the rail, with a bar's width of border down
+        // its left side that only the current tab colours in.
+        let margin = px(dpi, 3.).floor();
+        let bar = px(dpi, 3.).floor();
+        let inner = (bounds.width() - margin * 2. - bar).max(0.);
+        let line = |text: &str| {
+            let side = ((inner - glyph_width(text)) / 2.).max(0.).floor();
+            Element::new(font, ElementContent::Text(text.to_string()))
                 .display(DisplayType::Block)
-                .item_type(UIItemType::SidebarPageTab(page))
                 .padding(BoxDimension {
-                    left: Dimension::Pixels(0.),
+                    left: Dimension::Pixels(side),
                     right: Dimension::Pixels(0.),
-                    top: Dimension::Cells(0.5),
-                    bottom: Dimension::Cells(0.5),
+                    top: Dimension::Pixels(0.),
+                    bottom: Dimension::Pixels(0.),
                 })
-                .min_width(Some(Dimension::Pixels(bounds.width())))
                 .colors(ElementColors {
                     border: BorderColor::default(),
-                    bg: style.bg_color.to_linear().into(),
-                    text: style.fg_color.to_linear().into(),
+                    bg: InheritableColor::Inherited,
+                    text: InheritableColor::Inherited,
                 })
-                .hover_colors(Some(ElementColors {
-                    border: BorderColor::default(),
-                    bg: hover.bg_color.to_linear().into(),
-                    text: hover.fg_color.to_linear().into(),
-                }))
+        };
+
+        let tabs = [
+            (SidebarPage::Sessions, icon::TERMINAL, "会话"),
+            (SidebarPage::Files, icon::FOLDER_OPEN, "文件"),
+        ]
+        .iter()
+        .map(|&(page, glyph, label)| {
+            // Marked only while the panel is actually showing it.
+            let current = expanded && self.sidebar.page == page;
+            let (bg, fg, edge) = if current {
+                (
+                    lin(palette::RAIL_ACTIVE),
+                    lin(palette::TEXT_STRONG),
+                    lin(palette::ACCENT),
+                )
+            } else {
+                let base = lin(palette::BASE);
+                (base, lin(palette::RAIL_TEXT), base)
+            };
+            let hover = lin(palette::ROW_HOVER);
+            Element::new(
+                font,
+                ElementContent::Children(vec![line(glyph), line(label)]),
+            )
+            .display(DisplayType::Block)
+            .item_type(UIItemType::SidebarPageTab(page))
+            .margin(BoxDimension {
+                left: Dimension::Pixels(margin),
+                right: Dimension::Pixels(margin),
+                top: Dimension::Pixels(margin),
+                bottom: Dimension::Pixels(0.),
+            })
+            .padding(BoxDimension {
+                left: Dimension::Pixels(0.),
+                right: Dimension::Pixels(0.),
+                top: Dimension::Cells(0.3),
+                bottom: Dimension::Cells(0.3),
+            })
+            .border(BoxDimension {
+                left: Dimension::Pixels(bar),
+                right: Dimension::Pixels(0.),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
+            // The corners take the top and bottom border colour, so those
+            // stay the fill while the left one is the bar.
+            .border_corners(Some(rounded(px(dpi, 6.))))
+            .min_width(Some(Dimension::Pixels(inner)))
+            .colors(ElementColors {
+                border: BorderColor {
+                    left: edge,
+                    top: bg,
+                    right: bg,
+                    bottom: bg,
+                },
+                bg: bg.into(),
+                text: fg.into(),
+            })
+            .hover_colors(if current {
+                None
+            } else {
+                Some(ElementColors {
+                    border: BorderColor::new(hover),
+                    bg: hover.into(),
+                    text: lin(palette::TEXT).into(),
+                })
+            })
         })
         .collect();
 
@@ -587,8 +623,8 @@ impl crate::TermWindow {
             .min_height(Some(Dimension::Pixels(bounds.height())))
             .colors(ElementColors {
                 border: BorderColor::default(),
-                bg: colors.background().to_linear().into(),
-                text: colors.inactive_tab().fg_color.to_linear().into(),
+                bg: lin(palette::BASE).into(),
+                text: lin(palette::RAIL_TEXT).into(),
             });
 
         self.compute_element(&context, &rail)
