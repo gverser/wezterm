@@ -102,6 +102,7 @@ wezterm-mux-server-impl.workspace = true
 wezterm-open-url.workspace = true
 wezterm-sessions.workspace = true
 wezterm-ssh.workspace = true
+encoding_rs.workspace = true
 wezterm-term.workspace = true
 wezterm-toast-notification.workspace = true
 wgpu.workspace = true

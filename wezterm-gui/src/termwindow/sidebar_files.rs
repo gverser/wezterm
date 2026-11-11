@@ -443,7 +443,10 @@ impl crate::TermWindow {
             (FilesMenuAction::CopyPath, Some(i)) => {
                 if let Some((path, _)) = self.files_entry(domain_id, i) {
                     if let Some(window) = self.window.as_ref() {
-                        window.set_clipboard(Clipboard::Clipboard, path);
+                        window.set_clipboard(
+                            Clipboard::Clipboard,
+                            crate::sftp::model::display_path(&path),
+                        );
                     }
                 }
             }
@@ -636,7 +639,8 @@ impl crate::TermWindow {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let name = path.rsplit('/').next().unwrap_or("download").to_string();
+        let name = path.rsplit('/').next().unwrap_or("download");
+        let name = crate::sftp::model::display_name(name).into_owned();
         promise::spawn::spawn(async move {
             let Some(local) = pick_save_file(&name).await else {
                 return;
@@ -787,11 +791,14 @@ impl crate::TermWindow {
             return;
         };
         let parent = remote_parent(&old);
-        let form = FormModal::new(name_form("重命名", &entry.name, "确定"))
+        // A name that isn't UTF-8 is offered as it reads; renaming it to
+        // anything else stores the new name in UTF-8.
+        let shown = crate::sftp::model::display_name(&entry.name).into_owned();
+        let form = FormModal::new(name_form("重命名", &shown, "确定"))
             .validate(name_errors)
             .on_submit(move |state, tw| {
                 let name = state.value("名称").trim().to_string();
-                if name == entry.name {
+                if name == shown {
                     return;
                 }
                 let old = old.clone();
@@ -809,7 +816,7 @@ impl crate::TermWindow {
             return;
         };
         let what = if entry.is_dir { "文件夹" } else { "文件" };
-        let message = format!("删除{what} {path}？");
+        let message = format!("删除{what} {}？", crate::sftp::model::display_path(&path));
         let form = FormModal::new(forms::confirm_form("删除", &message, "删除")).on_submit(
             move |_, tw| {
                 let path = path.clone();
@@ -823,7 +830,10 @@ impl crate::TermWindow {
                             .await
                             .map_err(|err| format!("删除失败：{err}"))?;
                         if !empty {
-                            return Err(format!("目录不为空：{path}"));
+                            return Err(format!(
+                                "目录不为空：{}",
+                                crate::sftp::model::display_path(&path)
+                            ));
                         }
                         sftp.remove_dir(path.as_str()).await.map_err(failed)
                     } else {

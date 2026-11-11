@@ -78,13 +78,17 @@ fn read_dir_should_return_list_of_directories_files_and_symlinks(
     })
 }
 
-/// A name that isn't UTF-8 can't be returned as a `Utf8PathBuf`. It used to
-/// panic the session thread, taking every channel on the connection with it.
+/// A name that isn't UTF-8 used to panic the session thread, then was left
+/// out of listings. Now its stray bytes travel as in `raw_names`, so it is
+/// listed and can be opened, and such names can be made.
 /// Linux only: APFS refuses names that aren't UTF-8.
 #[cfg(target_os = "linux")]
 #[rstest]
-fn read_dir_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSshd) {
+fn read_dir_lists_names_that_are_not_utf8_so_they_can_be_opened(
+    #[future] session: SessionWithSshd,
+) {
     use std::os::unix::ffi::OsStrExt;
+    use wezterm_ssh::raw_names;
     if !sshd_available() {
         return;
     }
@@ -92,42 +96,61 @@ fn read_dir_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSs
         let session: SessionWithSshd = session.await;
 
         let temp = TempDir::new().unwrap();
+        let root: Utf8PathBuf = temp.path().to_path_buf().try_into().unwrap();
         let good = temp.child("good");
         good.touch().unwrap();
         // "测试" in GBK
-        let bad = temp
-            .path()
-            .join(std::ffi::OsStr::from_bytes(b"\xb2\xe2\xca\xd4.txt"));
-        std::fs::write(&bad, b"x").unwrap();
+        let gbk = b"\xb2\xe2\xca\xd4.txt";
+        std::fs::write(temp.path().join(std::ffi::OsStr::from_bytes(gbk)), b"x").unwrap();
+        let carried = root.join(raw_names::from_bytes(gbk).as_ref());
 
-        let contents = session
+        let mut contents = session
             .sftp()
-            .read_dir(temp.path().to_path_buf())
+            .read_dir(root.clone())
             .await
             .expect("Failed to read directory")
             .into_iter()
             .map(|(p, _)| p)
             .collect::<Vec<Utf8PathBuf>>();
-        let expected: Vec<Utf8PathBuf> = vec![good.path().to_path_buf().try_into().unwrap()];
-        assert_eq!(contents, expected);
+        contents.sort();
+        assert_eq!(contents, vec![root.join("good"), carried.clone()]);
 
-        // The session is still usable afterwards.
+        let mut file = session
+            .sftp()
+            .open(carried.clone())
+            .await
+            .expect("open the file by the name it was listed under");
+        let mut body = vec![];
+        smol::io::AsyncReadExt::read_to_end(&mut file, &mut body)
+            .await
+            .unwrap();
+        assert_eq!(body, b"x");
+
+        // "新" in GBK
         session
             .sftp()
-            .read_dir(temp.path().to_path_buf())
+            .create_dir(
+                root.join(raw_names::from_bytes(b"\xd0\xc2").as_ref()),
+                0o755,
+            )
             .await
-            .expect("session survived");
+            .expect("make a directory with a GBK name");
+        assert!(temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"\xd0\xc2"))
+            .is_dir());
     })
 }
 
 /// The file page lists a directory with `Dir::read_dir_many`, which reads
 /// entries through a different path from `Sftp::read_dir`. A name that isn't
-/// UTF-8 must be skipped there as well, without losing its neighbours.
+/// UTF-8 must come through there as well, without losing its neighbours.
 /// Linux only, for the same reason as the test above.
 #[cfg(target_os = "linux")]
 #[rstest]
-fn read_dir_many_should_skip_names_that_are_not_utf8(#[future] session: SessionWithSshd) {
+fn read_dir_many_lists_names_that_are_not_utf8(#[future] session: SessionWithSshd) {
     use std::os::unix::ffi::OsStrExt;
+    use wezterm_ssh::raw_names;
     if !sshd_available() {
         return;
     }
@@ -139,12 +162,10 @@ fn read_dir_many_should_skip_names_that_are_not_utf8(#[future] session: SessionW
             temp.child(name).touch().unwrap();
         }
         // "测试" in GBK
-        let bad = temp
-            .path()
-            .join(std::ffi::OsStr::from_bytes(b"\xb2\xe2\xca\xd4.txt"));
-        std::fs::write(&bad, b"x").unwrap();
+        let gbk = b"\xb2\xe2\xca\xd4.txt";
+        std::fs::write(temp.path().join(std::ffi::OsStr::from_bytes(gbk)), b"x").unwrap();
 
-        // Batches of two, so the listing takes several and the skipped name
+        // Batches of two, so the listing takes several and the GBK name
         // falls inside one of them.
         let dir = session
             .sftp()
@@ -169,14 +190,8 @@ fn read_dir_many_should_skip_names_that_are_not_utf8(#[future] session: SessionW
             );
         }
         names.sort();
-        assert_eq!(names, vec!["good1", "good2", "good3"]);
-
-        // The session is still usable afterwards.
-        session
-            .sftp()
-            .read_dir(temp.path().to_path_buf())
-            .await
-            .expect("session survived");
+        let carried = raw_names::from_bytes(gbk).into_owned();
+        assert_eq!(names, vec!["good1", "good2", "good3", carried.as_str()]);
     })
 }
 

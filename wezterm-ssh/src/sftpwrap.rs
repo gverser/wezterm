@@ -206,20 +206,17 @@ impl SftpWrap {
                 let entries = sftp.read_dir(filename.as_str())?;
                 let mut mapped_entries = vec![];
                 for metadata in entries {
-                    // libssh gives no name for one that isn't UTF-8, and a
-                    // Utf8PathBuf couldn't hold it anyway. Leave it out:
-                    // panicking here would take down the session thread and
-                    // every channel on the connection.
+                    // A name that isn't UTF-8 comes with its stray bytes
+                    // carried as in libssh_rs::raw_names; only an entry with
+                    // no name at all is left out.
                     let Some(path) = metadata.name() else {
-                        log::warn!(
-                            "read_dir {filename}: skipping an entry whose name is not UTF-8"
-                        );
+                        log::warn!("read_dir {filename}: skipping an entry without a name");
                         continue;
                     };
                     if path == "." || path == ".." {
                         continue;
                     }
-                    mapped_entries.push((filename.join(path), metadata.into()));
+                    mapped_entries.push((filename.join(path.as_ref()), metadata.into()));
                 }
 
                 Ok(mapped_entries)

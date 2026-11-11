@@ -65,11 +65,10 @@ impl TransferJob {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| local.display().to_string()),
-            Direction::Download { remote, .. } => remote
-                .rsplit('/')
-                .next()
-                .unwrap_or(remote.as_str())
-                .to_string(),
+            Direction::Download { remote, .. } => crate::sftp::model::display_name(
+                remote.rsplit('/').next().unwrap_or(remote.as_str()),
+            )
+            .into_owned(),
         }
     }
 }

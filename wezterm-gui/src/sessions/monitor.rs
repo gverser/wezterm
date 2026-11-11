@@ -127,8 +127,10 @@ fn may_restart(state: MonitorState, failed_at: Option<Instant>, now: Instant) ->
     }
 }
 
-/// The lines of `reader`, with any bytes that aren't UTF-8 replaced. A
-/// directory name in another encoding must not end the stream.
+/// The lines of `reader`, with any bytes that aren't UTF-8 carried as in
+/// `wezterm_ssh::raw_names`: a directory named in another encoding must
+/// neither end the stream nor lose the bytes the file page needs to go
+/// there.
 fn lossy_lines<R: BufRead>(mut reader: R) -> impl Iterator<Item = String> {
     std::iter::from_fn(move || {
         let mut buf = vec![];
@@ -138,7 +140,7 @@ fn lossy_lines<R: BufRead>(mut reader: R) -> impl Iterator<Item = String> {
                 while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
                     buf.pop();
                 }
-                Some(String::from_utf8_lossy(&buf).into_owned())
+                Some(wezterm_ssh::raw_names::from_bytes(&buf).into_owned())
             }
         }
     })
@@ -531,9 +533,13 @@ mod test {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "@frame");
         assert!(lines[1].starts_with("cwd\t1\t/tmp/"));
-        assert!(lines[1].contains('\u{fffd}'));
         assert!(!lines[1].ends_with('\r'));
         assert_eq!(lines[2], "@end");
+        // Kept exactly, so that the file page can follow the shell there.
+        assert_eq!(
+            wezterm_ssh::raw_names::to_bytes(&lines[1]).as_ref(),
+            &b"cwd\t1\t/tmp/\xb2\xe2\xca\xd4"[..]
+        );
     }
 
     #[test]

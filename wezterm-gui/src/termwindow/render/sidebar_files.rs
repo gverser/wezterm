@@ -336,6 +336,7 @@ impl crate::TermWindow {
         let text = match (&self.files.path_edit, editing) {
             (Some(text), true) => {
                 let composing = self.sidebar.composing.as_deref().unwrap_or("");
+                let text = crate::sftp::model::display_path(text);
                 self.files_fit(
                     &format!("{text}{composing}_"),
                     self.files_inner_width(),
@@ -343,7 +344,11 @@ impl crate::TermWindow {
                 )
             }
             _ if conn.cwd.is_empty() => "…".to_string(),
-            _ => self.files_fit(&conn.cwd, self.files_inner_width(), elide_left),
+            _ => self.files_fit(
+                &crate::sftp::model::display_path(&conn.cwd),
+                self.files_inner_width(),
+                elide_left,
+            ),
         };
         let style = if editing {
             colors.active_tab()
@@ -514,7 +519,7 @@ impl crate::TermWindow {
         };
         let size_width = self.files_text_width(&size_text).unwrap_or(0.);
         let name = self.files_fit(
-            &format!("{prefix}{}", entry.name),
+            &format!("{prefix}{}", crate::sftp::model::display_name(&entry.name)),
             self.files_inner_width() - size_width,
             elide_right,
         );

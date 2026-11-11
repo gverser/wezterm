@@ -2,7 +2,36 @@
 //! and when following the terminal should move the page.
 
 use crate::sessions::monitor_proto::human_bytes;
+use std::borrow::Cow;
 use termwiz::cell::unicode_column_width;
+use wezterm_ssh::raw_names;
+
+/// A name as the user should see it. Names keep any bytes that aren't UTF-8
+/// (carried as in `raw_names`), so that they can be opened; those are read
+/// here as GBK, which is what Chinese names that aren't UTF-8 nearly always
+/// are, and failing that whatever can't be read shows as �.
+pub fn display_name(name: &str) -> Cow<'_, str> {
+    if !raw_names::has_raw_bytes(name) {
+        return Cow::Borrowed(name);
+    }
+    let bytes = raw_names::to_bytes(name);
+    match encoding_rs::GBK.decode_without_bom_handling_and_without_replacement(&bytes) {
+        Some(text) => Cow::Owned(text.into_owned()),
+        None => Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()),
+    }
+}
+
+/// A path as the user should see it: each part read on its own, since one
+/// directory's name being GBK says nothing about the others.
+pub fn display_path(path: &str) -> String {
+    if !raw_names::has_raw_bytes(path) {
+        return path.to_string();
+    }
+    path.split('/')
+        .map(display_name)
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileEntry {
@@ -218,6 +247,34 @@ mod test {
             is_link: false,
             size: if is_dir { None } else { Some(1) },
         }
+    }
+
+    /// A name as it comes from the server: "测试" in GBK.
+    fn gbk_name() -> String {
+        wezterm_ssh::raw_names::from_bytes(b"\xb2\xe2\xca\xd4").into_owned()
+    }
+
+    #[test]
+    fn names_that_are_not_utf8_show_as_gbk() {
+        assert_eq!(display_name(&gbk_name()), "测试");
+        assert!(matches!(
+            display_name("报告.txt"),
+            Cow::Borrowed("报告.txt")
+        ));
+    }
+
+    #[test]
+    fn names_that_are_not_gbk_either_show_what_can_be_read() {
+        // 0xff is never part of GBK.
+        let name = wezterm_ssh::raw_names::from_bytes(b"a\xffb").into_owned();
+        assert_eq!(display_name(&name), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn a_path_reads_each_part_on_its_own() {
+        let path = format!("/srv/报告/{}/a.txt", gbk_name());
+        assert_eq!(display_path(&path), "/srv/报告/测试/a.txt");
+        assert_eq!(display_path("/srv/a"), "/srv/a");
     }
 
     #[test]

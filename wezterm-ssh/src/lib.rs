@@ -26,4 +26,8 @@ pub use sftp::*;
 // NOTE: Re-exported as is exposed in a public API of this crate
 pub use camino::{Utf8Path, Utf8PathBuf};
 pub use filedescriptor::FileDescriptor;
+/// How sftp paths carry bytes that aren't UTF-8 (libssh backend only; ssh2
+/// still leaves such names out).
+#[cfg(feature = "libssh-rs")]
+pub use libssh_rs::raw_names;
 pub use portable_pty::{Child, ChildKiller, MasterPty, PtySize};

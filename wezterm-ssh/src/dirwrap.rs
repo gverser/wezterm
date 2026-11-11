@@ -74,13 +74,14 @@ impl DirWrap {
                     }
                     Some(Err(err)) => break Err(SftpChannelError::from(err)),
                     Some(Ok(metadata)) => {
-                        // A name that isn't UTF-8 has no Utf8PathBuf; skip
-                        // it rather than panic the session thread.
+                        // A name that isn't UTF-8 comes with its stray bytes
+                        // carried as in libssh_rs::raw_names; only an entry
+                        // with no name at all is left out.
                         let Some(name) = metadata.name() else {
-                            log::warn!("read_dir: skipping an entry whose name is not UTF-8");
+                            log::warn!("read_dir: skipping an entry without a name");
                             continue;
                         };
-                        let path: Utf8PathBuf = name.into();
+                        let path = Utf8PathBuf::from(name.as_ref());
                         let md: Metadata = metadata.into();
                         break Ok((path, md));
                     }

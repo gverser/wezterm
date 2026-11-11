@@ -87,6 +87,7 @@ pub async fn dir_is_empty(sftp: &Sftp, path: &str) -> Result<bool, String> {
 pub async fn rename_file(sftp: &Sftp, old: &str, new: &str) -> Result<(), String> {
     if sftp.symlink_metadata(new).await.is_ok() {
         let name = new.rsplit('/').next().unwrap_or(new);
+        let name = crate::sftp::model::display_name(name);
         return Err(format!("重命名失败：已有同名的「{name}」"));
     }
     let opts = RenameOptions {
