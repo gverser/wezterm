@@ -125,12 +125,23 @@ pub fn resolve_path_input(input: &str, cwd: &str, home: Option<&str>) -> Option<
     } else {
         remote_join(cwd, input)
     };
-    let trimmed = path.trim_end_matches('/');
-    Some(if trimmed.is_empty() {
-        "/".to_string()
-    } else {
-        trimmed.to_string()
-    })
+    Some(normalize_path(&path))
+}
+
+/// `path` without `.`, `..` and repeated slashes, the way a shell's `cd`
+/// reads it: `..` goes up from the directory as written, and stops at `/`.
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = vec![];
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    format!("/{}", parts.join("/"))
 }
 
 fn char_cells(c: char) -> usize {
@@ -252,6 +263,17 @@ mod test {
     /// A name as it comes from the server: "测试" in GBK.
     fn gbk_name() -> String {
         wezterm_ssh::raw_names::from_bytes(b"\xb2\xe2\xca\xd4").into_owned()
+    }
+
+    #[test]
+    fn dots_in_a_typed_path_are_resolved() {
+        let go = |input: &str, cwd: &str| resolve_path_input(input, cwd, Some("/home/u"));
+        assert_eq!(go("../x", "/a/b").as_deref(), Some("/a/x"));
+        assert_eq!(go("./c/../d", "/a").as_deref(), Some("/a/d"));
+        assert_eq!(go("/../..", "/a").as_deref(), Some("/"));
+        assert_eq!(go("~/../y", "/a").as_deref(), Some("/home/y"));
+        assert_eq!(go("a//b/", "/r").as_deref(), Some("/r/a/b"));
+        assert_eq!(go("..", "/").as_deref(), Some("/"));
     }
 
     #[test]

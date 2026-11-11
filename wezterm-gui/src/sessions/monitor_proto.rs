@@ -499,8 +499,15 @@ pub fn status_segments(s: &ServerStatus, max_cells: usize) -> Vec<Segment> {
     let fits = |segments: &[Segment]| segments_width(segments) <= max_cells;
 
     if !fits(&segments) && s.disks.len() > 1 {
+        // Folded to one, it shows the fullest disk: the colour is that
+        // disk's, and it is the one worth knowing about.
+        let fullest = s
+            .disks
+            .iter()
+            .max_by(|a, b| disk_pct(a).total_cmp(&disk_pct(b)))
+            .expect("more than one disk");
         if let Some(seg) = segments.iter_mut().find(|seg| seg.kind == Kind::Disks) {
-            seg.text = format!("{} +{}", disk_text(&s.disks[0]), s.disks.len() - 1);
+            seg.text = format!("{} +{}", disk_text(fullest), s.disks.len() - 1);
         }
     }
     // The host name tells you which server this is, so it outlasts the rest.
@@ -799,7 +806,9 @@ host web01
         let full = status_segments(&sample_status(), 200);
         let width = segments_width(&full);
         let segments = status_segments(&sample_status(), width - 1);
-        assert_eq!(segments.last().unwrap().text, "/ 45% +1");
+        // The disk shown for the lot is the fullest, so that the colour
+        // goes with what it says.
+        assert_eq!(segments.last().unwrap().text, "/data 81% +1");
         assert!(texts(&segments).contains(&"用户 root,ty"));
         assert_eq!(segments.last().unwrap().level, Level::Warn);
     }
