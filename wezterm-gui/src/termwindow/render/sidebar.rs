@@ -314,9 +314,7 @@ impl crate::TermWindow {
                 .unwrap_or_default(),
         };
 
-        // The light text colour of the active tab: the edge colours are all
-        // within a shade of the sidebar background in the default palette.
-        let color = self.sidebar_colors().active_tab().fg_color.to_linear();
+        let color = lin(palette::ACCENT);
         let gl_state = self.render_state.as_ref().unwrap();
         // Above the rows, alongside the resize handle; the context menu sits
         // above both, though a press always closes it before a drag can begin.
@@ -526,16 +524,30 @@ impl crate::TermWindow {
             (false, false) => (self.sidebar.search.clone(), palette::TEXT),
         };
 
-        let dpi = self.dimensions.dpi as f32;
         let raised = lin(palette::RAISED);
         let parts = vec![
             Element::new(font, ElementContent::Text(format!("{} ", icon::SEARCH)))
                 .colors(fill(raised, lin(palette::TEXT_FAINT))),
             Element::new(font, ElementContent::Text(text)).colors(fill(raised, lin(text_color))),
         ];
-        // Ring, margin and padding come out of the row's height rather than
-        // adding to it: the tree's row count and the IME position both count
-        // in whole rows.
+        let _ = pad;
+        self.sidebar_field(font, metrics, parts, focused, width)
+            .item_type(UIItemType::SidebarSearch)
+    }
+
+    /// A one-line input box in the panel: a rounded well ringed in the
+    /// input edge colour, or the accent while it has the keyboard. Ring,
+    /// margin and padding come out of the row's height rather than adding to
+    /// it: the rows below are counted, and the IME placed, in whole rows.
+    pub(crate) fn sidebar_field(
+        &self,
+        font: &Rc<LoadedFont>,
+        metrics: &RenderMetrics,
+        parts: Vec<Element>,
+        focused: bool,
+        width: f32,
+    ) -> Element {
+        let dpi = self.dimensions.dpi as f32;
         let one = px(dpi, 1.).max(1.).floor();
         let gap = px(dpi, 2.).floor();
         let cell = metrics.cell_size.height as f64;
@@ -555,24 +567,103 @@ impl crate::TermWindow {
                 bottom: Dimension::Pixels(0.),
             })
             .border_corners(Some(rounded(px(dpi, 5.))))
-            .min_width(Some(Dimension::Pixels(
-                (width - margin * 2. - px(dpi, 12.) - one * 2.).max(0.),
-            )))
-            .colors(fill(raised, lin(palette::TEXT)));
+            .min_width(Some(Dimension::Pixels(self.sidebar_field_room(width))))
+            .colors(fill(lin(palette::RAISED), lin(palette::TEXT)));
         let edge = if focused {
             lin(palette::ACCENT)
         } else {
             lin(palette::INPUT_EDGE)
         };
-        let _ = pad;
-        field_box(font, inner, edge, dpi)
-            .item_type(UIItemType::SidebarSearch)
+        field_box(font, inner, edge, dpi).margin(BoxDimension {
+            left: Dimension::Pixels(margin),
+            right: Dimension::Pixels(margin),
+            top: Dimension::Pixels(gap),
+            bottom: Dimension::Pixels(gap),
+        })
+    }
+
+    /// Room for text inside a `sidebar_field` across a panel `width` wide.
+    pub(crate) fn sidebar_field_room(&self, width: f32) -> f32 {
+        let dpi = self.dimensions.dpi as f32;
+        let one = px(dpi, 1.).max(1.).floor();
+        (width - px(dpi, 6.) * 2. - px(dpi, 6.) * 2. - one * 2.).max(0.)
+    }
+
+    /// A row of the panel: inset, rounded, lit under the pointer, and when
+    /// `selected` filled with the selection colour and marked by an accent
+    /// bar down its left side. `indent` shifts the content, not the row.
+    pub(crate) fn sidebar_row_shell(
+        &self,
+        font: &Rc<LoadedFont>,
+        parts: Vec<Element>,
+        item_type: UIItemType,
+        selected: bool,
+        indent: f32,
+        width: f32,
+        pad: f32,
+    ) -> Element {
+        let dpi = self.dimensions.dpi as f32;
+        let (bg, fg) = if selected {
+            (lin(palette::ROW_SELECTED), lin(palette::TEXT_STRONG))
+        } else {
+            (lin(palette::PANEL), lin(palette::TEXT))
+        };
+        let margin = px(dpi, 6.);
+        // The selected row's accent bar is its left border; other rows draw
+        // that border in their own fill, so that nothing shifts.
+        let bar = Self::sidebar_row_bar(dpi);
+        let edge = if selected { lin(palette::ACCENT) } else { bg };
+        Element::new(font, ElementContent::Children(parts))
+            .display(DisplayType::Block)
+            .line_height(Some(SIDEBAR_LINE_HEIGHT))
+            .item_type(item_type)
             .margin(BoxDimension {
                 left: Dimension::Pixels(margin),
                 right: Dimension::Pixels(margin),
-                top: Dimension::Pixels(gap),
-                bottom: Dimension::Pixels(gap),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
             })
+            .padding(BoxDimension {
+                left: Dimension::Pixels(pad + indent),
+                right: Dimension::Pixels(pad),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
+            .border(BoxDimension {
+                left: Dimension::Pixels(bar),
+                right: Dimension::Pixels(0.),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
+            .border_corners(Some(rounded(px(dpi, 6.))))
+            .min_width(Some(Dimension::Pixels(
+                self.sidebar_row_room(width, indent, pad),
+            )))
+            .colors(ElementColors {
+                border: BorderColor {
+                    left: edge,
+                    top: bg,
+                    right: bg,
+                    bottom: bg,
+                },
+                bg: bg.into(),
+                text: fg.into(),
+            })
+            .hover_colors(if selected {
+                None
+            } else {
+                Some(fill(lin(palette::ROW_HOVER), lin(palette::TEXT_STRONG)))
+            })
+    }
+
+    fn sidebar_row_bar(dpi: f32) -> f32 {
+        px(dpi, 2.).max(1.).floor()
+    }
+
+    /// Room for a row's content across a panel `width` wide.
+    pub(crate) fn sidebar_row_room(&self, width: f32, indent: f32, pad: f32) -> f32 {
+        let dpi = self.dimensions.dpi as f32;
+        (width - px(dpi, 6.) * 2. - Self::sidebar_row_bar(dpi) - pad * 2. - indent).max(0.)
     }
 
     /// The panel's background with `children` stacked down it.
@@ -820,12 +911,6 @@ impl crate::TermWindow {
             InheritableColor::Inherited
         };
 
-        let (bg, fg) = if selected {
-            (lin(palette::ROW_SELECTED), lin(palette::TEXT_STRONG))
-        } else {
-            (lin(palette::PANEL), lin(palette::TEXT))
-        };
-
         let chevron = match row.kind {
             RowKind::Folder { expanded: true } => Some(icon::CHEVRON_DOWN),
             RowKind::Folder { expanded: false } => Some(icon::CHEVRON_RIGHT),
@@ -881,54 +966,15 @@ impl crate::TermWindow {
         }
 
         let indent = row.depth as f32 * metrics.cell_size.width as f32 * INDENT_CELLS;
-        let margin = px(dpi, 6.);
-        // The selected row's accent bar is its left border; other rows draw
-        // that border in their own fill, so that nothing shifts.
-        let bar = px(dpi, 2.).max(1.).floor();
-        let edge = if selected { lin(palette::ACCENT) } else { bg };
-        let hover = lin(palette::ROW_HOVER);
-
-        Element::new(font, ElementContent::Children(parts))
-            .display(DisplayType::Block)
-            .line_height(Some(SIDEBAR_LINE_HEIGHT))
-            .item_type(UIItemType::SidebarNode(row.id))
-            .margin(BoxDimension {
-                left: Dimension::Pixels(margin),
-                right: Dimension::Pixels(margin),
-                top: Dimension::Pixels(0.),
-                bottom: Dimension::Pixels(0.),
-            })
-            .padding(BoxDimension {
-                left: Dimension::Pixels(pad + indent),
-                right: Dimension::Pixels(pad),
-                top: Dimension::Pixels(0.),
-                bottom: Dimension::Pixels(0.),
-            })
-            .border(BoxDimension {
-                left: Dimension::Pixels(bar),
-                right: Dimension::Pixels(0.),
-                top: Dimension::Pixels(0.),
-                bottom: Dimension::Pixels(0.),
-            })
-            .border_corners(Some(rounded(px(dpi, 6.))))
-            .min_width(Some(Dimension::Pixels(
-                (width - margin * 2. - bar - pad * 2. - indent).max(0.),
-            )))
-            .colors(ElementColors {
-                border: BorderColor {
-                    left: edge,
-                    top: bg,
-                    right: bg,
-                    bottom: bg,
-                },
-                bg: bg.into(),
-                text: fg.into(),
-            })
-            .hover_colors(if selected {
-                None
-            } else {
-                Some(fill(hover, lin(palette::TEXT_STRONG)))
-            })
+        self.sidebar_row_shell(
+            font,
+            parts,
+            UIItemType::SidebarNode(row.id),
+            selected,
+            indent,
+            width,
+            pad,
+        )
     }
 
     /// The strip along the right edge that starts a width drag.

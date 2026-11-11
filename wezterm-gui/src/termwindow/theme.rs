@@ -84,6 +84,9 @@ pub mod icon {
     pub const CLOSE: &str = "\u{ea76}";
     pub const CHECK: &str = "\u{eab2}";
     pub const DOT: &str = "\u{ea71}";
+    /// Material Design checkboxes: codicons have none.
+    pub const CHECKBOX_ON: &str = "\u{f0132}";
+    pub const CHECKBOX_OFF: &str = "\u{f0131}";
 
     pub const ALL: &[&str] = &[
         TERMINAL,
@@ -111,6 +114,8 @@ pub mod icon {
         CLOSE,
         CHECK,
         DOT,
+        CHECKBOX_ON,
+        CHECKBOX_OFF,
     ];
 }
 
