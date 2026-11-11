@@ -15,7 +15,7 @@ use crate::termwindow::theme::{
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use ::window::{Rect, RectF};
-use config::{Dimension, DimensionContext, TabBarColors};
+use config::{Dimension, DimensionContext};
 use std::rc::Rc;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::ColorPalette;
@@ -177,17 +177,6 @@ impl crate::TermWindow {
         ))
     }
 
-    pub(crate) fn sidebar_colors(&self) -> TabBarColors {
-        // The sidebar deliberately reuses the tab bar palette rather than
-        // introducing a dozen colour options of its own.
-        self.config
-            .colors
-            .as_ref()
-            .and_then(|c| c.tab_bar.as_ref())
-            .cloned()
-            .unwrap_or_else(TabBarColors::default)
-    }
-
     pub fn paint_sidebar(&mut self, palette: &ColorPalette) -> anyhow::Result<()> {
         if !self.sidebar_is_enabled() {
             return Ok(());
@@ -337,7 +326,6 @@ impl crate::TermWindow {
             return Ok(vec![]);
         }
 
-        let colors = self.sidebar_colors();
         let pad = metrics.cell_size.width as f32 * 0.5;
         let capacity = self.sidebar_row_capacity();
 
@@ -350,12 +338,10 @@ impl crate::TermWindow {
         if self.sidebar.page == SidebarPage::Files {
             let mut computed = vec![
                 rail,
-                self.build_files_page(&font, &metrics, &colors, palette, bounds, pad)?,
+                self.build_files_page(&font, &metrics, palette, bounds, pad)?,
             ];
-            computed.extend(
-                self.files_transfer_element(&font, &metrics, &colors, palette, bounds, pad)?,
-            );
-            computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
+            computed.extend(self.files_transfer_element(&font, &metrics, bounds, pad)?);
+            computed.push(self.sidebar_resize_handle(&font, &metrics, bounds)?);
             // Last, so that it takes clicks ahead of the rows under it.
             computed.extend(self.files_menu_element(&font, &metrics)?);
             return Ok(computed);
@@ -381,7 +367,7 @@ impl crate::TermWindow {
                 } else {
                     "没有匹配的会话"
                 };
-                children.push(self.sidebar_hint_element(hint, &font, &colors, bounds.width(), pad));
+                children.push(self.sidebar_hint_element(hint, &font, bounds.width(), pad));
                 return;
             }
 
@@ -428,12 +414,11 @@ impl crate::TermWindow {
                 Some(UIItemType::SidebarBackground),
                 &font,
                 &metrics,
-                &colors,
                 bounds,
             )?,
         ];
 
-        computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
+        computed.push(self.sidebar_resize_handle(&font, &metrics, bounds)?);
 
         if let Some(menu) = self.sidebar.menu.clone() {
             computed.extend(self.sidebar_menu_element(&menu, &font, &metrics)?);
@@ -674,7 +659,6 @@ impl crate::TermWindow {
         item_type: Option<UIItemType>,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
         bounds: RectF,
     ) -> anyhow::Result<ComputedElement> {
         let mut container = Element::new(font, ElementContent::Children(children))
@@ -686,7 +670,6 @@ impl crate::TermWindow {
                 bg: lin(palette::PANEL).into(),
                 text: lin(palette::TEXT).into(),
             });
-        let _ = colors;
         if let Some(item_type) = item_type {
             container = container.item_type(item_type);
         }
@@ -863,11 +846,9 @@ impl crate::TermWindow {
         &self,
         text: &str,
         font: &Rc<LoadedFont>,
-        colors: &TabBarColors,
         width: f32,
         pad: f32,
     ) -> Element {
-        let _ = colors;
         let indent = px(self.dimensions.dpi as f32, 6.);
         Element::new(font, ElementContent::Text(text.to_string()))
             .display(DisplayType::Block)
@@ -981,7 +962,6 @@ impl crate::TermWindow {
         &self,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
         bounds: RectF,
     ) -> anyhow::Result<ComputedElement> {
         // While a drag is in flight we draw the strip where the pointer is
@@ -996,7 +976,6 @@ impl crate::TermWindow {
 
         // A hairline divider at rest, over a wider strip that takes the drag;
         // the whole strip lights up while it is being dragged.
-        let _ = colors;
         let dragging = self.sidebar.pending_width.is_some();
         let line = px(self.dimensions.dpi as f32, 1.).max(1.).floor();
         let element = Element::new(font, ElementContent::Text(String::new()))

@@ -11,7 +11,7 @@ use crate::termwindow::theme::{fill, icon, lin, palette, px, rounded};
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use ::window::RectF;
-use config::{Dimension, DimensionContext, TabBarColors};
+use config::{Dimension, DimensionContext};
 use std::rc::Rc;
 use termwiz::cell::unicode_column_width;
 use wezterm_font::LoadedFont;
@@ -158,7 +158,6 @@ impl crate::TermWindow {
         &self,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
         palette: &ColorPalette,
         bounds: RectF,
         pad: f32,
@@ -174,7 +173,7 @@ impl crate::TermWindow {
                 } else {
                     "当前窗格不是 SSH 会话"
                 };
-                children.push(self.sidebar_hint_element(hint, font, colors, width, pad));
+                children.push(self.sidebar_hint_element(hint, font, width, pad));
             }
             Some(conn) => {
                 children.push(self.files_path_element(conn, font, metrics, palette, width));
@@ -194,7 +193,7 @@ impl crate::TermWindow {
                     } else {
                         "（空目录）"
                     };
-                    children.push(self.sidebar_hint_element(hint, font, colors, width, pad));
+                    children.push(self.sidebar_hint_element(hint, font, width, pad));
                 } else {
                     let capacity = self.files_list_capacity();
                     let end = (conn.scroll + capacity).min(conn.entries.len());
@@ -217,7 +216,6 @@ impl crate::TermWindow {
             Some(UIItemType::FilesBackground),
             font,
             metrics,
-            colors,
             bounds,
         )
     }
@@ -239,12 +237,9 @@ impl crate::TermWindow {
         &self,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
-        palette_: &ColorPalette,
         panel: RectF,
         pad: f32,
     ) -> anyhow::Result<Vec<ComputedElement>> {
-        let _ = (colors, palette_);
         let lines = self.files_transfer_lines();
         if lines.is_empty() {
             return Ok(vec![]);
