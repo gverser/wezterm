@@ -8,10 +8,7 @@
 use crate::sessions::store::with_store;
 use crate::termwindow::box_model::*;
 use crate::termwindow::modal::Modal;
-use crate::termwindow::render::corners::{
-    BOTTOM_LEFT_ROUNDED_CORNER, BOTTOM_RIGHT_ROUNDED_CORNER, TOP_LEFT_ROUNDED_CORNER,
-    TOP_RIGHT_ROUNDED_CORNER,
-};
+use crate::termwindow::theme::{fill, lin, palette, px, rounded};
 use crate::termwindow::DimensionContext;
 use crate::utilsprites::RenderMetrics;
 use crate::TermWindow;
@@ -33,6 +30,16 @@ enum Action {
 
 pub struct FeishuPanel {
     element: RefCell<Option<Vec<ComputedElement>>>,
+}
+
+/// The colour the service's state is told in.
+fn state_color(state: &FeishuState) -> u32 {
+    match state {
+        FeishuState::Connected => palette::OK,
+        FeishuState::Starting => palette::WARN,
+        FeishuState::Stopped => palette::TEXT_MUTED,
+        FeishuState::Failed => palette::DANGER,
+    }
 }
 
 impl FeishuPanel {
@@ -106,25 +113,14 @@ impl FeishuPanel {
         let subscribed = mux.feishu_panes();
         let labels = Self::session_labels();
 
-        // Borrowed from the command palette rather than given their own config
-        // keys: it is the same kind of surface, and one setting that moves both
-        // beats two that can disagree.
-        let panel_bg_linear = term_window.config.command_palette_bg_color.to_linear();
-        let text_color: InheritableColor = term_window
-            .config
-            .command_palette_fg_color
-            .to_linear()
-            .into();
-        let panel_bg: InheritableColor = panel_bg_linear.into();
-
         let mut elements = vec![];
 
-        let row = |text: String| {
+        let row = |text: String, color: u32| {
             Element::new(&font, ElementContent::Text(text))
                 .colors(ElementColors {
                     border: BorderColor::default(),
                     bg: InheritableColor::Inherited,
-                    text: text_color.clone(),
+                    text: lin(color).into(),
                 })
                 .padding(BoxDimension {
                     left: Dimension::Cells(0.5),
@@ -135,40 +131,79 @@ impl FeishuPanel {
                 .min_width(Some(Dimension::Percent(1.)))
                 .display(DisplayType::Block)
         };
+        // A label and its value on one line, the label quieter.
+        let pair = |label: &str, value: String, color: u32| {
+            Element::new(
+                &font,
+                ElementContent::Children(vec![
+                    Element::new(&font, ElementContent::Text(format!("  {label}  "))).colors(
+                        ElementColors {
+                            border: BorderColor::default(),
+                            bg: InheritableColor::Inherited,
+                            text: lin(palette::TEXT_MUTED).into(),
+                        },
+                    ),
+                    Element::new(&font, ElementContent::Text(value)).colors(ElementColors {
+                        border: BorderColor::default(),
+                        bg: InheritableColor::Inherited,
+                        text: lin(color).into(),
+                    }),
+                ]),
+            )
+            .padding(BoxDimension {
+                left: Dimension::Cells(0.5),
+                right: Dimension::Cells(0.5),
+                top: Dimension::Cells(0.),
+                bottom: Dimension::Cells(0.),
+            })
+            .min_width(Some(Dimension::Percent(1.)))
+            .display(DisplayType::Block)
+        };
 
-        elements.push(row("飞书".to_string()));
-        elements.push(row(format!(
-            "  状态    {}",
-            Self::describe_state(state, &detail)
-        )));
+        elements.push(row("飞书".to_string(), palette::TEXT_STRONG));
+        elements.push(pair(
+            "状态",
+            Self::describe_state(state, &detail),
+            state_color(&state),
+        ));
 
         // Only offer to stop something that is actually running.
         if !matches!(state, FeishuState::Stopped) {
-            elements.push(row("  [s] 关闭服务（同时取消所有订阅）".to_string()));
+            elements.push(row(
+                "  [s] 关闭服务（同时取消所有订阅）".to_string(),
+                palette::TEXT,
+            ));
         }
 
-        elements.push(row(String::new()));
+        elements.push(row(String::new(), palette::TEXT));
 
         match current {
             Some(pane_id) => {
                 let on = mux.pane_has_feishu(pane_id);
-                elements.push(row(format!(
-                    "  当前  {}",
-                    Self::pane_caption(&mux, &labels, pane_id)
-                )));
-                elements.push(row(format!(
-                    "  [空格] {}",
-                    if on {
-                        "停止镜像这个窗格"
-                    } else {
-                        "开始镜像这个窗格"
-                    }
-                )));
+                elements.push(pair(
+                    "当前",
+                    Self::pane_caption(&mux, &labels, pane_id),
+                    palette::TEXT,
+                ));
+                elements.push(row(
+                    format!(
+                        "  [空格] {}",
+                        if on {
+                            "停止镜像这个窗格"
+                        } else {
+                            "开始镜像这个窗格"
+                        }
+                    ),
+                    palette::TEXT,
+                ));
             }
             None => {
                 // An empty window has no pane to mirror. Saying so beats a
                 // toggle that silently does nothing.
-                elements.push(row("  这个窗口还没有会话，先开一个".to_string()));
+                elements.push(row(
+                    "  这个窗口还没有会话，先开一个".to_string(),
+                    palette::TEXT_MUTED,
+                ));
             }
         }
 
@@ -178,18 +213,18 @@ impl FeishuPanel {
             .filter(|id| Some(*id) != current)
             .collect();
         if !others.is_empty() {
-            elements.push(row(String::new()));
-            elements.push(row("  其他正在镜像的窗格".to_string()));
+            elements.push(row(String::new(), palette::TEXT));
+            elements.push(row("  其他正在镜像的窗格".to_string(), palette::TEXT_MUTED));
             for id in others {
-                elements.push(row(format!(
-                    "    {}",
-                    Self::pane_caption(&mux, &labels, id)
-                )));
+                elements.push(row(
+                    format!("    {}", Self::pane_caption(&mux, &labels, id)),
+                    palette::TEXT,
+                ));
             }
         }
 
-        elements.push(row(String::new()));
-        elements.push(row("  [Esc] 关闭这个面板".to_string()));
+        elements.push(row(String::new(), palette::TEXT));
+        elements.push(row("  [Esc] 关闭这个面板".to_string(), palette::TEXT_FAINT));
 
         let dimensions = term_window.dimensions;
         let size = term_window.terminal_size;
@@ -199,47 +234,30 @@ impl FeishuPanel {
         let desired_pixel_width =
             desired_width as f32 * term_window.render_metrics.cell_size.width as f32;
 
-        let element = Element::new(&font, ElementContent::Children(elements))
-            .colors(ElementColors {
-                border: BorderColor::new(panel_bg_linear),
-                bg: panel_bg,
-                text: text_color,
-            })
-            .margin(BoxDimension {
-                left: Dimension::Cells(0.25),
-                right: Dimension::Cells(0.25),
-                top: Dimension::Cells(0.25),
-                bottom: Dimension::Cells(0.25),
-            })
+        // A card like the forms': a rounded panel inside a one pixel ring,
+        // on a shadow.
+        let dpi = dimensions.dpi as f32;
+        let one = px(dpi, 1.).max(1.).floor();
+        let inner = Element::new(&font, ElementContent::Children(elements))
+            .colors(fill(lin(palette::RAISED), lin(palette::TEXT)))
             .padding(BoxDimension {
                 left: Dimension::Cells(0.5),
                 right: Dimension::Cells(0.5),
                 top: Dimension::Cells(0.5),
                 bottom: Dimension::Cells(0.5),
             })
-            .border(BoxDimension::new(Dimension::Pixels(1.)))
-            .border_corners(Some(Corners {
-                top_left: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: TOP_LEFT_ROUNDED_CORNER,
-                },
-                top_right: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: TOP_RIGHT_ROUNDED_CORNER,
-                },
-                bottom_left: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: BOTTOM_LEFT_ROUNDED_CORNER,
-                },
-                bottom_right: SizedPoly {
-                    width: Dimension::Cells(0.25),
-                    height: Dimension::Cells(0.25),
-                    poly: BOTTOM_RIGHT_ROUNDED_CORNER,
-                },
-            }))
+            .border_corners(Some(rounded(px(dpi, 7.))))
+            .min_width(Some(Dimension::Pixels(desired_pixel_width - one * 2.)));
+        let element = Element::new(&font, ElementContent::Children(vec![inner]))
+            .colors(fill(lin(palette::CARD_EDGE), lin(palette::TEXT)))
+            .margin(BoxDimension {
+                left: Dimension::Cells(0.25),
+                right: Dimension::Cells(0.25),
+                top: Dimension::Cells(0.25),
+                bottom: Dimension::Cells(0.25),
+            })
+            .padding(BoxDimension::new(Dimension::Pixels(one)))
+            .border_corners(Some(rounded(px(dpi, 8.))))
             .min_width(Some(Dimension::Pixels(desired_pixel_width)));
 
         let (padding_left, padding_top) = term_window.padding_left_top();
@@ -277,7 +295,9 @@ impl FeishuPanel {
             &element,
         )?;
 
-        Ok(vec![computed])
+        let mut all = term_window.theme_shadow(computed.bounds, px(dpi, 8.), 100)?;
+        all.push(computed);
+        Ok(all)
     }
 
     /// Carry out whatever the given row means.
@@ -352,5 +372,19 @@ impl Modal for FeishuPanel {
 
     fn reconfigure(&self, _term_window: &mut TermWindow) {
         self.element.borrow_mut().take();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::termwindow::theme::palette;
+
+    #[test]
+    fn the_service_state_is_coloured_by_how_it_is_doing() {
+        assert_eq!(state_color(&FeishuState::Connected), palette::OK);
+        assert_eq!(state_color(&FeishuState::Starting), palette::WARN);
+        assert_eq!(state_color(&FeishuState::Stopped), palette::TEXT_MUTED);
+        assert_eq!(state_color(&FeishuState::Failed), palette::DANGER);
     }
 }
