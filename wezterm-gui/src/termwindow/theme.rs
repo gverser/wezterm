@@ -299,11 +299,11 @@ mod test {
         for icon in icon::ALL {
             let mut chars = icon.chars();
             let c = chars.next().expect("an icon is one character") as u32;
-            assert!(chars.next().is_none(), "{icon:?} is one character");
+            assert!(chars.next().is_none(), "{:?} is one character", icon);
             let mut wanted = rangeset::RangeSet::new();
             wanted.add(c);
             let found = parsed.coverage_intersection(&wanted).unwrap();
-            assert!(found.contains(c), "U+{c:04X} is not in the symbols font");
+            assert!(found.contains(c), "U+{:04X} is not in the symbols font", c);
         }
     }
 

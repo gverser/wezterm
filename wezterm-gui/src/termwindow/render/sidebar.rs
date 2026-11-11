@@ -17,7 +17,6 @@ use crate::utilsprites::RenderMetrics;
 use ::window::{Rect, RectF};
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
-use termwiz::cell::unicode_column_width;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::ColorPalette;
 use window::color::LinearRgba;

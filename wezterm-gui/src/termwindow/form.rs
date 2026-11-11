@@ -83,6 +83,8 @@ pub struct FormState {
     pub reveal_password: bool,
     /// Validation messages, by field index.
     pub errors: Vec<(usize, String)>,
+    /// The primary button deletes something: drawn in the danger colour.
+    pub danger: bool,
 }
 
 impl FormState {
@@ -97,11 +99,35 @@ impl FormState {
             composing: None,
             reveal_password: false,
             errors: vec![],
+            danger: false,
         };
         if let Some(first) = state.fields.iter().position(|f| f.enabled) {
             state.focus_field(first);
         }
         state
+    }
+
+    /// What `c` does to a confirmation -- a form with nothing to type in:
+    /// y answers yes (Some(true)), n answers no (Some(false)). A form with
+    /// fields takes every letter as text.
+    pub fn shortcut(&self, c: char) -> Option<bool> {
+        if !self.fields.is_empty() {
+            return None;
+        }
+        match c {
+            'y' | 'Y' => Some(true),
+            'n' | 'N' => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The line of keys under the buttons.
+    pub fn key_hint(&self) -> &'static str {
+        if self.fields.is_empty() {
+            "Y 确定　N 取消　Enter 确定　Esc 取消"
+        } else {
+            "Tab 切换　Enter 确定　Esc 取消"
+        }
     }
 
     /// The value of the field with this label, or "" if there is none.
@@ -312,10 +338,6 @@ impl FormState {
 
 use crate::termwindow::box_model::*;
 use crate::termwindow::modal::Modal;
-use crate::termwindow::render::corners::{
-    BOTTOM_LEFT_ROUNDED_CORNER, BOTTOM_RIGHT_ROUNDED_CORNER, TOP_LEFT_ROUNDED_CORNER,
-    TOP_RIGHT_ROUNDED_CORNER,
-};
 use crate::termwindow::{DimensionContext, TermWindowNotif, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use crate::TermWindow;
@@ -324,7 +346,6 @@ use config::keyassignment::KeyAssignment;
 use config::Dimension;
 use std::cell::{Ref, RefCell};
 use termwiz::cell::unicode_column_width;
-use wezterm_term::color::ColorAttribute;
 use wezterm_term::{KeyCode, KeyModifiers, MouseEvent};
 use window::color::LinearRgba;
 
@@ -519,39 +540,33 @@ impl FormModal {
         let font = term_window.fonts.default_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let cell_w = metrics.cell_size.width as f32;
-        let colors = term_window.sidebar_colors();
-        let error_color = term_window
-            .palette()
-            .resolve_fg(ColorAttribute::PaletteIndex(1))
-            .to_linear();
-
-        let accent = term_window
-            .palette()
-            .resolve_fg(ColorAttribute::PaletteIndex(12))
-            .to_linear();
-
-        let panel_bg_linear = term_window.config.command_palette_bg_color.to_linear();
-        let text_linear = term_window.config.command_palette_fg_color.to_linear();
-        let panel_bg: InheritableColor = panel_bg_linear.into();
+        use crate::termwindow::theme::{fill, lin, palette, px, rounded};
+        let dpi = term_window.dimensions.dpi as f32;
+        let error_color = lin(palette::DANGER);
+        let accent = lin(palette::ACCENT);
+        let card = lin(palette::RAISED);
+        let text_linear = lin(palette::TEXT);
         let text_color: InheritableColor = text_linear.into();
-        let dim_text = colors.inactive_tab().fg_color.to_linear();
-        let shade = |c: LinearRgba, f: f32| LinearRgba(c.0 * f, c.1 * f, c.2 * f, c.3);
-        // Input boxes are a darker well in the panel, so that an empty one
-        // still shows where it is; the focused one is darker still and ringed
-        // in the accent colour.
-        let well = shade(panel_bg_linear, 0.55);
-        let focus_well = shade(panel_bg_linear, 0.2);
-        let hover_well = shade(panel_bg_linear, 1.6);
-        let colors_of = |bg: LinearRgba, fg: LinearRgba, border: LinearRgba| ElementColors {
-            border: BorderColor::new(border),
-            bg: bg.into(),
-            text: fg.into(),
+        let dim_text = lin(palette::TEXT_FAINT);
+        let label_text = lin(palette::TEXT_MUTED);
+        let well = lin(palette::PANEL);
+        let white = lin(palette::WHITE);
+        let one = px(dpi, 1.).max(1.).floor();
+        let radius = px(dpi, 6.);
+        // A field or option: a rounded well inside a one pixel ring. Nested
+        // because box_model paints rounded corners in the border colour.
+        let ringed = |inner: Element, edge: LinearRgba, hover_edge: Option<LinearRgba>| {
+            let mut outer = Element::new(&font, ElementContent::Children(vec![inner]))
+                .padding(BoxDimension::new(Dimension::Pixels(one)))
+                .border_corners(Some(rounded(radius)))
+                .colors(fill(edge, edge));
+            if let Some(hover) = hover_edge {
+                outer = outer.hover_colors(Some(fill(hover, hover)));
+            }
+            outer
         };
-        let idle_box = colors_of(well, text_linear, well);
-        let focus_box = colors_of(focus_well, text_linear, accent);
-        let hover_box = colors_of(hover_well, text_linear, hover_well);
-        let primary_box = colors_of(accent, LinearRgba(1., 1., 1., 1.), accent);
-        let disabled_box = colors_of(well, well, well);
+        let well_colors = |fg: LinearRgba| fill(well, fg);
+        let button_colors = |bg: LinearRgba| fill(bg, white);
         let placeholder_text: InheritableColor = dim_text.into();
 
         let state = self.state.borrow();
@@ -593,7 +608,13 @@ impl FormModal {
         };
 
         let mut rows = vec![];
-        rows.push(block(vec![plain(state.title.clone())]));
+        rows.push(block(vec![plain(state.title.clone()).colors(
+            ElementColors {
+                border: BorderColor::default(),
+                bg: InheritableColor::Inherited,
+                text: lin(palette::TEXT_STRONG).into(),
+            },
+        )]));
         rows.push(block(vec![plain(String::new())]));
         for line in &state.message {
             rows.push(block(vec![plain(line.clone())]));
@@ -605,15 +626,13 @@ impl FormModal {
             // Widths are set in cells rather than by padding with spaces: a
             // CJK glyph from a fallback font need not be exactly two cells
             // wide, and padding would then leave the boxes ragged.
-            let mut label =
-                plain(field.label.clone()).min_width(Some(Dimension::Cells(label_cells as f32)));
-            if !field.enabled {
-                label = label.colors(ElementColors {
+            let label = plain(field.label.clone())
+                .min_width(Some(Dimension::Cells(label_cells as f32)))
+                .colors(ElementColors {
                     border: BorderColor::default(),
                     bg: InheritableColor::Inherited,
-                    text: dim_text.into(),
+                    text: if field.enabled { label_text } else { dim_text }.into(),
                 });
-            }
             row.push(label);
 
             match &field.kind {
@@ -621,28 +640,33 @@ impl FormModal {
                     for option in options {
                         let selected = *option == field.value;
                         let text = format!(" {} {} ", if selected { "●" } else { "○" }, option);
-                        let c = if selected && focused {
-                            focus_box.clone()
+                        let fg = if !field.enabled {
+                            dim_text
                         } else if selected {
-                            colors_of(well, accent, well)
+                            accent
                         } else {
-                            idle_box.clone()
+                            label_text
                         };
-                        let mut e = Element::new(&font, ElementContent::Text(text))
-                            .colors(c)
-                            .border(BoxDimension::new(Dimension::Pixels(1.)))
-                            .margin(BoxDimension {
-                                left: Dimension::Cells(0.),
-                                right: Dimension::Cells(1.),
-                                top: Dimension::Cells(0.),
-                                bottom: Dimension::Cells(0.),
-                            });
+                        let edge = if selected && focused {
+                            accent
+                        } else {
+                            lin(palette::CARD_EDGE)
+                        };
+                        let mut inner = Element::new(&font, ElementContent::Text(text))
+                            .border_corners(Some(rounded(radius - one)))
+                            .colors(well_colors(fg));
                         if field.enabled {
-                            e = e
-                                .item_type(tag(Target::Choice(i, option.clone())))
-                                .hover_colors(Some(hover_box.clone()));
+                            inner = inner.item_type(tag(Target::Choice(i, option.clone())));
                         }
-                        row.push(e);
+                        row.push(
+                            ringed(inner, edge, field.enabled.then(|| lin(palette::INPUT_EDGE)))
+                                .margin(BoxDimension {
+                                    left: Dimension::Cells(0.),
+                                    right: Dimension::Cells(1.),
+                                    top: Dimension::Cells(0.),
+                                    bottom: Dimension::Cells(0.),
+                                }),
+                        );
                     }
                 }
                 FieldKind::Text | FieldKind::Password => {
@@ -657,23 +681,28 @@ impl FormModal {
                         shown.push_str(placeholder);
                     }
                     let mut c = if !field.enabled {
-                        disabled_box.clone()
+                        fill(lin(palette::BASE), dim_text)
                     } else if focused {
-                        focus_box.clone()
+                        well_colors(lin(palette::TEXT_STRONG))
                     } else {
-                        idle_box.clone()
+                        well_colors(text_linear)
                     };
                     if placeholder.is_some() && field.enabled {
                         c.text = placeholder_text.clone();
                     }
+                    let edge = if focused && field.enabled {
+                        accent
+                    } else {
+                        lin(palette::CARD_EDGE)
+                    };
                     let mut e = Element::new(&font, ElementContent::Text(shown))
                         .colors(c)
-                        .min_width(Some(Dimension::Cells(value_cells as f32)))
-                        .border(BoxDimension::new(Dimension::Pixels(1.)));
+                        .border_corners(Some(rounded(radius - one)))
+                        .min_width(Some(Dimension::Cells(value_cells as f32)));
                     if field.enabled {
                         e = e.item_type(tag(Target::Field(i)));
                     }
-                    row.push(e);
+                    row.push(ringed(e, edge, None));
 
                     if field.kind == FieldKind::Password && field.enabled {
                         let text = if state.reveal_password {
@@ -683,8 +712,9 @@ impl FormModal {
                         };
                         row.push(
                             Element::new(&font, ElementContent::Text(text.to_string()))
-                                .colors(idle_box.clone())
-                                .hover_colors(Some(hover_box.clone()))
+                                .border_corners(Some(rounded(radius)))
+                                .colors(fill(lin(palette::PILL), text_linear))
+                                .hover_colors(Some(fill(lin(palette::CARD_EDGE), text_linear)))
                                 .margin(BoxDimension {
                                     left: Dimension::Cells(1.),
                                     right: Dimension::Cells(0.),
@@ -702,8 +732,9 @@ impl FormModal {
                     if *f == i && field.enabled {
                         row.push(
                             Element::new(&font, ElementContent::Text(format!(" {label} ")))
-                                .colors(idle_box.clone())
-                                .hover_colors(Some(hover_box.clone()))
+                                .border_corners(Some(rounded(radius)))
+                                .colors(fill(lin(palette::PILL), text_linear))
+                                .hover_colors(Some(fill(lin(palette::CARD_EDGE), text_linear)))
                                 .margin(BoxDimension {
                                     left: Dimension::Cells(1.),
                                     right: Dimension::Cells(0.),
@@ -739,15 +770,29 @@ impl FormModal {
         rows.push(block(vec![plain(String::new())]));
         let mut buttons = vec![];
         for (b, button) in state.buttons.iter().enumerate() {
-            let (label, c) = match button {
-                FormButton::Primary(l) => (l, primary_box.clone()),
-                FormButton::Cancel(l) => (l, idle_box.clone()),
+            let (label, c, hover) = match button {
+                FormButton::Primary(l) if state.danger => (
+                    l,
+                    button_colors(lin(palette::DANGER_BUTTON)),
+                    button_colors(lin(palette::DANGER)),
+                ),
+                FormButton::Primary(l) => (
+                    l,
+                    button_colors(lin(palette::MENU_HOVER)),
+                    button_colors(accent),
+                ),
+                FormButton::Cancel(l) => (
+                    l,
+                    fill(lin(palette::PILL), text_linear),
+                    fill(lin(palette::CARD_EDGE), text_linear),
+                ),
                 FormButton::Extra(..) => continue,
             };
             buttons.push(
                 Element::new(&font, ElementContent::Text(format!("  {label}  ")))
+                    .border_corners(Some(rounded(radius)))
                     .colors(c)
-                    .hover_colors(Some(hover_box.clone()))
+                    .hover_colors(Some(hover))
                     .margin(BoxDimension {
                         left: Dimension::Cells(0.),
                         right: Dimension::Cells(2.),
@@ -758,40 +803,29 @@ impl FormModal {
             );
         }
         rows.push(block(buttons));
-        rows.push(block(vec![plain(
-            "Tab 切换  Enter 确定  Esc 取消".to_string(),
-        )
-        .colors(ElementColors {
-            border: BorderColor::default(),
-            bg: InheritableColor::Inherited,
-            text: dim_text.into(),
-        })]));
+        rows.push(block(vec![plain(state.key_hint().to_string()).colors(
+            ElementColors {
+                border: BorderColor::default(),
+                bg: InheritableColor::Inherited,
+                text: dim_text.into(),
+            },
+        )]));
 
-        let corner = |poly| SizedPoly {
-            width: Dimension::Cells(0.25),
-            height: Dimension::Cells(0.25),
-            poly,
-        };
         let desired_pixel_width = width_cells as f32 * cell_w;
-        let element = Element::new(&font, ElementContent::Children(rows))
-            .colors(ElementColors {
-                border: BorderColor::new(panel_bg_linear),
-                bg: panel_bg,
-                text: text_color,
-            })
+        let inner = Element::new(&font, ElementContent::Children(rows))
+            .colors(fill(card, text_linear))
             .padding(BoxDimension {
                 left: Dimension::Cells(1.),
                 right: Dimension::Cells(1.),
                 top: Dimension::Cells(0.5),
                 bottom: Dimension::Cells(0.5),
             })
-            .border(BoxDimension::new(Dimension::Pixels(1.)))
-            .border_corners(Some(Corners {
-                top_left: corner(TOP_LEFT_ROUNDED_CORNER),
-                top_right: corner(TOP_RIGHT_ROUNDED_CORNER),
-                bottom_left: corner(BOTTOM_LEFT_ROUNDED_CORNER),
-                bottom_right: corner(BOTTOM_RIGHT_ROUNDED_CORNER),
-            }))
+            .border_corners(Some(rounded(px(dpi, 7.))))
+            .min_width(Some(Dimension::Pixels(desired_pixel_width - one * 2.)));
+        let element = Element::new(&font, ElementContent::Children(vec![inner]))
+            .colors(fill(lin(palette::CARD_EDGE), text_linear))
+            .padding(BoxDimension::new(Dimension::Pixels(one)))
+            .border_corners(Some(rounded(px(dpi, 8.))))
             .min_width(Some(Dimension::Pixels(desired_pixel_width)));
 
         drop(state);
@@ -859,7 +893,9 @@ impl FormModal {
             ))
         });
 
-        Ok(vec![computed])
+        let mut all = term_window.theme_shadow(computed.bounds, px(dpi, 8.), 100)?;
+        all.push(computed);
+        Ok(all)
     }
 }
 
@@ -929,7 +965,18 @@ impl Modal for FormModal {
             (KeyCode::Backspace, KeyModifiers::NONE) => self.state.borrow_mut().backspace(),
             (KeyCode::Delete, KeyModifiers::NONE) => self.state.borrow_mut().delete(),
             (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
-                self.state.borrow_mut().insert(&c.to_string())
+                let shortcut = self.state.borrow().shortcut(c);
+                match shortcut {
+                    Some(true) => {
+                        self.submit(term_window);
+                        return Ok(true);
+                    }
+                    Some(false) => {
+                        self.cancel(term_window);
+                        return Ok(true);
+                    }
+                    None => self.state.borrow_mut().insert(&c.to_string()),
+                }
             }
             _ => return Ok(false),
         }
@@ -998,6 +1045,38 @@ impl Modal for FormModal {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn y_and_n_answer_a_confirmation_but_not_a_form_with_fields() {
+        let confirm = crate::sessions::forms::confirm_form("删除", "删除 x？", "删除");
+        assert_eq!(confirm.shortcut('y'), Some(true));
+        assert_eq!(confirm.shortcut('Y'), Some(true));
+        assert_eq!(confirm.shortcut('N'), Some(false));
+        assert_eq!(confirm.shortcut('q'), None);
+        let rename = FormState::new(
+            "重命名",
+            vec![Field::text("名称", "a")],
+            vec![
+                FormButton::Primary("确定".to_string()),
+                FormButton::Cancel("取消".to_string()),
+            ],
+        );
+        assert_eq!(rename.shortcut('n'), None, "n is a letter of a name");
+        assert_eq!(rename.shortcut('y'), None);
+    }
+
+    #[test]
+    fn deleting_asks_with_a_danger_button() {
+        assert!(crate::sessions::forms::danger_confirm_form("删除", "m", "删除").danger);
+        assert!(!crate::sessions::forms::confirm_form("关闭", "m", "关闭").danger);
+    }
+
+    #[test]
+    fn a_confirmation_mentions_its_keys() {
+        let confirm = crate::sessions::forms::confirm_form("删除", "m", "删除");
+        assert_eq!(confirm.key_hint(), "Y 确定　N 取消　Enter 确定　Esc 取消");
+        assert_eq!(form().key_hint(), "Tab 切换　Enter 确定　Esc 取消");
+    }
 
     fn form() -> FormState {
         FormState::new(

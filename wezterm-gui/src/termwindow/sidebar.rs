@@ -1361,7 +1361,7 @@ mod test {
     fn delete_is_the_only_dangerous_session_menu_item() {
         use MenuAction::*;
         for action in [NewSession, NewSshSession, NewFolder, Rename, Edit] {
-            assert!(!action.danger(), "{action:?}");
+            assert!(!action.danger(), "{:?}", action);
         }
         assert!(Delete.danger());
         assert_eq!(

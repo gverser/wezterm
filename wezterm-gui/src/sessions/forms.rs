@@ -217,6 +217,14 @@ pub fn local_form_values(state: &FormState, old: &SessionSpawn) -> (String, Sess
     )
 }
 
+/// `confirm_form` for something that can't be undone: the button that does
+/// it is red.
+pub fn danger_confirm_form(title: &str, message: &str, ok: &str) -> FormState {
+    let mut state = confirm_form(title, message, ok);
+    state.danger = true;
+    state
+}
+
 pub fn confirm_form(title: &str, message: &str, ok: &str) -> FormState {
     let mut state = FormState::new(
         title,

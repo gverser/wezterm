@@ -15,7 +15,7 @@ use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
 use termwiz::cell::unicode_column_width;
 use wezterm_font::LoadedFont;
-use wezterm_term::color::{ColorAttribute, ColorPalette};
+use wezterm_term::color::ColorPalette;
 use window::color::LinearRgba;
 
 /// Room given to text being measured, so that nothing clips it.

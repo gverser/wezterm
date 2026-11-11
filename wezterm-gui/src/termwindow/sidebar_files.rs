@@ -825,7 +825,7 @@ impl crate::TermWindow {
         };
         let what = if entry.is_dir { "文件夹" } else { "文件" };
         let message = format!("删除{what} {}？", crate::sftp::model::display_path(&path));
-        let form = FormModal::new(forms::confirm_form("删除", &message, "删除")).on_submit(
+        let form = FormModal::new(forms::danger_confirm_form("删除", &message, "删除")).on_submit(
             move |_, tw| {
                 let path = path.clone();
                 let is_dir = entry.is_dir;
