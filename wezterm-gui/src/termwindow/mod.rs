@@ -717,30 +717,21 @@ impl TermWindow {
                 front_end().forget_known_window(window);
             }
             WindowCloseConfirmation::AlwaysPrompt if prompt.is_some() => {
-                let tab = match mux.get_active_tab_for_window(self.mux_window_id) {
-                    Some(tab) => tab,
-                    None => {
-                        self.kill_unattended_windows();
-                        mux.kill_window(self.mux_window_id);
-                        window.close();
-                        front_end().forget_known_window(window);
-                        return;
-                    }
-                };
+                // Asked in a form like every other confirmation; once
+                // confirmed, everything goes as it does without the question.
                 let message = prompt.expect("checked by the match guard");
-                let mux_window_id = self.mux_window_id;
-                let window = self.window.clone().unwrap();
-                let (overlay, future) = start_overlay(self, &tab, move |tab_id, term| {
-                    crate::overlay::session_edit::confirm_close_sessions(
-                        term,
-                        message,
-                        mux_window_id,
-                        window,
-                        tab_id,
-                    )
+                let form = crate::termwindow::form::FormModal::new(
+                    crate::sessions::forms::confirm_form("关闭窗口", &message, "关闭"),
+                )
+                .on_submit(|_, tw| {
+                    tw.kill_unattended_windows();
+                    Mux::get().kill_window(tw.mux_window_id);
+                    if let Some(window) = tw.window.clone() {
+                        window.close();
+                        front_end().forget_known_window(&window);
+                    }
                 });
-                self.assign_overlay(tab.tab_id(), overlay);
-                promise::spawn::spawn(future).detach();
+                self.open_form(form);
             }
             WindowCloseConfirmation::AlwaysPrompt => {
                 let tab = match mux.get_active_tab_for_window(self.mux_window_id) {

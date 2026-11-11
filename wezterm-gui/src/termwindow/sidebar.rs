@@ -947,16 +947,16 @@ impl super::TermWindow {
             None => return,
         };
 
-        let tab = match Mux::get().get_active_tab_for_window(self.mux_window_id) {
-            Some(tab) => tab,
-            None => return,
-        };
-
-        let (overlay, future) = crate::overlay::start_overlay(self, &tab, move |_tab_id, term| {
-            crate::overlay::session_edit::confirm_delete_session_node(term, id, name)
-        });
-        self.assign_overlay(tab.tab_id(), overlay);
-        promise::spawn::spawn(future).detach();
+        // Removing the entry does not kill anything running under it: the
+        // workspace survives and is still reachable from the launcher.
+        let form = FormModal::new(crate::sessions::forms::delete_session_form(&name)).on_submit(
+            move |_, _tw| {
+                if let Some(removed) = with_store(|store| store.mutate(|tree| tree.remove(id))) {
+                    crate::sessions::ssh::forget_ssh_hosts(&removed.session_ids());
+                }
+            },
+        );
+        self.open_form(form);
     }
 
     fn delete_session_node(&mut self, id: NodeId) {

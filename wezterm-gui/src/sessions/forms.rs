@@ -217,6 +217,17 @@ pub fn local_form_values(state: &FormState, old: &SessionSpawn) -> (String, Sess
     )
 }
 
+/// Asked before a session that still has terminals running under it is
+/// removed from the tree. Only the entry goes; the terminals keep running.
+pub fn delete_session_form(name: &str) -> FormState {
+    let mut state = danger_confirm_form("删除会话", "", "删除");
+    state.message = vec![
+        format!("从侧边栏删除「{name}」吗？"),
+        "其下正在运行的终端会继续运行，只删除保存的条目。".to_string(),
+    ];
+    state
+}
+
 /// `confirm_form` for something that can't be undone: the button that does
 /// it is red.
 pub fn danger_confirm_form(title: &str, message: &str, ok: &str) -> FormState {
@@ -415,6 +426,21 @@ mod test {
             validate_local_form(&state),
             vec![(state.index_of("命令").unwrap(), "命令无法解析".to_string())]
         );
+    }
+
+    #[test]
+    fn deleting_a_session_with_terminals_asks_in_red_and_says_they_keep_running() {
+        let state = delete_session_form("web-01");
+        assert!(state.danger);
+        assert_eq!(state.title, "删除会话");
+        assert_eq!(
+            state.message,
+            vec![
+                "从侧边栏删除「web-01」吗？".to_string(),
+                "其下正在运行的终端会继续运行，只删除保存的条目。".to_string(),
+            ]
+        );
+        assert_eq!(state.shortcut('y'), Some(true));
     }
 
     #[test]
