@@ -88,6 +88,7 @@ mod selection;
 pub mod sidebar;
 pub mod sidebar_files;
 pub mod spawn;
+pub mod theme;
 pub mod webgpu;
 use crate::spawn::SpawnWhere;
 use prevcursor::PrevCursorPos;
