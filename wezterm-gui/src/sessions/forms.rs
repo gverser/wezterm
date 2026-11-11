@@ -245,7 +245,13 @@ pub fn confirm_form(title: &str, message: &str, ok: &str) -> FormState {
             FormButton::Cancel("取消".to_string()),
         ],
     );
-    state.message = vec![message.to_string()];
+    // A form draws each message line as a row and has no use for line
+    // breaks inside one; blank lines go too, the card spaces itself.
+    state.message = message
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect();
     state
 }
 
@@ -441,6 +447,20 @@ mod test {
             ]
         );
         assert_eq!(state.shortcut('y'), Some(true));
+    }
+
+    #[test]
+    fn a_message_over_several_lines_is_shown_line_by_line() {
+        let prompt = crate::sessions::close_prompt(&[("casb".to_string(), 1)]).unwrap();
+        let state = confirm_form("关闭窗口", &prompt, "关闭");
+        assert_eq!(
+            state.message,
+            vec![
+                "后台还有 1 个终端在运行：".to_string(),
+                "    casb（1）".to_string(),
+                "全部关闭并退出吗？".to_string(),
+            ]
+        );
     }
 
     #[test]

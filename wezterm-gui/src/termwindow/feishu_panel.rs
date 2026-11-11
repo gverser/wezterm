@@ -128,7 +128,6 @@ impl FeishuPanel {
                     top: Dimension::Cells(0.),
                     bottom: Dimension::Cells(0.),
                 })
-                .min_width(Some(Dimension::Percent(1.)))
                 .display(DisplayType::Block)
         };
         // A label and its value on one line, the label quieter.
@@ -156,7 +155,6 @@ impl FeishuPanel {
                 top: Dimension::Cells(0.),
                 bottom: Dimension::Cells(0.),
             })
-            .min_width(Some(Dimension::Percent(1.)))
             .display(DisplayType::Block)
         };
 
