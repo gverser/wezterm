@@ -867,8 +867,8 @@ impl super::TermWindow {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let owner = self.dialog_owner();
         promise::spawn::spawn(async move {
+            let owner = crate::sftp::dialogs::owner_of(&window);
             let picked = match crate::sftp::dialogs::pick_open_files(owner, false).await {
                 Ok(picked) => picked,
                 Err(why) => {

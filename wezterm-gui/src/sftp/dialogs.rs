@@ -34,6 +34,25 @@ fn parse_multi_select(buf: &[u16]) -> Vec<PathBuf> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Owner(pub isize);
 
+/// `window` as a dialog's owner. Call it from a spawned task, never while
+/// handling one of the window's own events: the handle is read through the
+/// window's state, which the event being handled already has borrowed, and
+/// that panics (it did, on the 上传 button).
+pub fn owner_of(window: &::window::Window) -> Owner {
+    #[cfg(windows)]
+    {
+        use ::window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                return Owner(h.hwnd.get());
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+    Owner::default()
+}
+
 /// How a dialog ended.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]

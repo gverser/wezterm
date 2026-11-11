@@ -505,8 +505,8 @@ impl crate::TermWindow {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let owner = self.dialog_owner();
         promise::spawn::spawn(async move {
+            let owner = crate::sftp::dialogs::owner_of(&window);
             match pick_open_files(owner, true).await {
                 Ok(paths) if paths.is_empty() => {}
                 Ok(paths) => window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
@@ -519,22 +519,6 @@ impl crate::TermWindow {
             }
         })
         .detach();
-    }
-
-    /// This window, as the owner of a file dialog.
-    pub fn dialog_owner(&self) -> crate::sftp::dialogs::Owner {
-        #[cfg(windows)]
-        {
-            use ::window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Some(window) = self.window.as_ref() {
-                if let Ok(handle) = window.window_handle() {
-                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                        return crate::sftp::dialogs::Owner(h.hwnd.get());
-                    }
-                }
-            }
-        }
-        crate::sftp::dialogs::Owner::default()
     }
 
     /// Files dropped on the window. Onto the file page they are uploaded to
@@ -664,8 +648,8 @@ impl crate::TermWindow {
         };
         let name = path.rsplit('/').next().unwrap_or("download");
         let name = crate::sftp::model::display_name(name).into_owned();
-        let owner = self.dialog_owner();
         promise::spawn::spawn(async move {
+            let owner = crate::sftp::dialogs::owner_of(&window);
             let Some(local) = pick_save_file(owner, &name).await else {
                 return;
             };
