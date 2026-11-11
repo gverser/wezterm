@@ -46,7 +46,7 @@ fn plain_colors(bg: LinearRgba, fg: LinearRgba) -> ElementColors {
 
 impl crate::TermWindow {
     /// Width of `text` in the sidebar's font, in pixels.
-    fn files_text_width(&self, text: &str) -> Option<f32> {
+    pub(crate) fn files_text_width(&self, text: &str) -> Option<f32> {
         let (font, metrics) = self.sidebar_font().ok()?;
         let bounds = self.sidebar_panel_bounds();
         let context = LayoutContext {

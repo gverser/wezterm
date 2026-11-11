@@ -522,7 +522,8 @@ impl crate::TermWindow {
         let thickness = crate::termwindow::theme::px(self.dimensions.dpi as f32, 2.).round();
         let rect = accent_line(tab.border_rect, inset, thickness);
         let gl_state = self.render_state.as_ref().unwrap();
-        let layer = gl_state.layer_for_zindex(computed.zindex)?;
+        // The tab sits a layer above the bar; under it, the line would be hidden.
+        let layer = gl_state.layer_for_zindex(tab.zindex)?;
         let mut layers = layer.quad_allocator();
         self.filled_rectangle(
             &mut layers,

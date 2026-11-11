@@ -824,16 +824,27 @@ impl crate::TermWindow {
             (lin(palette::PANEL), lin(palette::TEXT))
         };
 
-        let (chevron, chevron_color) = match row.kind {
-            RowKind::Folder { expanded: true } => (icon::CHEVRON_DOWN, lin(palette::TEXT_FAINT)),
-            RowKind::Folder { expanded: false } => (icon::CHEVRON_RIGHT, lin(palette::TEXT_FAINT)),
-            // The same glyph, unseen, so that names line up under folders.
-            RowKind::Session => (icon::CHEVRON_RIGHT, LinearRgba::TRANSPARENT),
+        let chevron = match row.kind {
+            RowKind::Folder { expanded: true } => Some(icon::CHEVRON_DOWN),
+            RowKind::Folder { expanded: false } => Some(icon::CHEVRON_RIGHT),
+            RowKind::Session => None,
+        };
+        let chevron = match chevron {
+            Some(chevron) => text_run(font, format!("{chevron} "), lin(palette::TEXT_FAINT).into()),
+            // A gap as wide as the arrow, so that names line up under
+            // folders. (Transparent text would still be drawn.)
+            None => {
+                let width = self
+                    .files_text_width(&format!("{} ", icon::CHEVRON_RIGHT))
+                    .unwrap_or(0.);
+                text_run(font, String::new(), InheritableColor::Inherited)
+                    .min_width(Some(Dimension::Pixels(width)))
+            }
         };
         let (glyph, glyph_color) = row_icon.glyph();
 
         let mut parts = vec![
-            text_run(font, format!("{chevron} "), chevron_color.into()),
+            chevron,
             text_run(font, format!("{glyph} "), lin(glyph_color).into()),
             text_run(font, name, name_color),
         ];
