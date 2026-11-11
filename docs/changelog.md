@@ -223,6 +223,22 @@ As features stabilize some brief notes about them will accumulate here.
   takes a patched libssh-rs, in `deps/libssh-rs`).
 * The session sidebar, its prompts, the window-close questions and the text of
   an ssh login now read in Chinese, as the rest of the sidebar did.
+* Sidebar file page: `..` in a typed path is resolved; the file dialogs belong
+  to the window, so they can't hide behind it or open twice, and picking more
+  files than they can hold says so; the overwrite question waits for another
+  open dialog instead of being skipped; transfer progress redraws twice a
+  second rather than ten times.
+* SSH status bar: with the disks folded into one entry, it shows the fullest
+  one, whose colour it already had.
+* Characters typed with AltGr reach the sidebar's fields and forms.
+* Sidebar ssh entries pick up changes to `~/.ssh/config` the next time they are
+  opened.
+* ssh: the server's protocol version line no longer shows while connecting,
+  and error causes read as one sentence. With the ssh2 backend a dropped
+  connection is now noticed through its keepalives.
+* Windows: where symlinks can't be made (no Developer Mode), panes were given
+  an `SSH_AUTH_SOCK` pointing at an agent link that never existed, cutting
+  `ssh` in them off from the OpenSSH agent; they now keep the one they had.
 * ssh: a pane whose connection dropped went on looking connected until the
   next keypress, and then vanished without a word. With libssh the session
   now ends as soon as the connection is found gone, its panes stay open saying

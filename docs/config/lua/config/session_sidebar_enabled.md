@@ -76,7 +76,11 @@ front of their name.
 
 Double clicking an ssh entry connects to it. All the tabs opened from one entry
 share a single connection. It stays open after the last of them closes, so
-that opening the entry again is quick, and goes when wezterm exits.
+that opening the entry again is quick, and goes when wezterm exits. An OpenSSH
+server allows ten sessions on a connection by default (`MaxSessions` in its
+`sshd_config`), and the file page and the status bar take one each, so an
+entry holds up to eight tabs unless that is raised. Changes to
+`~/.ssh/config` apply from the next time the entry is opened.
 
 While connecting, the tab says **正在连接 user@host:port …**. A host that
 doesn't answer within 10 seconds, a refused connection or a failed login ends
