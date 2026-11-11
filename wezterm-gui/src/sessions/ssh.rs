@@ -135,7 +135,7 @@ impl SshPasswordHelper for NodePasswordHelper {
 struct Registered {
     /// The host with its password blanked: changing only the password must
     /// not replace the domain, or every save would orphan the open panes.
-    shape: SshHost,
+    shape: RegistrationKey,
     domain_id: DomainId,
     helper: Arc<NodePasswordHelper>,
 }
@@ -151,6 +151,26 @@ fn without_password(host: &SshHost) -> SshHost {
     }
 }
 
+/// What decides whether a node's registered domain can be reused: the host
+/// as saved, less the password (a new one goes to the live helper), and the
+/// options the domain was built with, which depend on ~/.ssh/config too.
+#[derive(Debug, Clone, PartialEq)]
+struct RegistrationKey {
+    host: SshHost,
+    options: std::collections::BTreeMap<String, String>,
+}
+
+fn registration_key(host: &SshHost, domain: &SshDomain) -> RegistrationKey {
+    RegistrationKey {
+        host: without_password(host),
+        options: domain
+            .ssh_option
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    }
+}
+
 /// Make sure the mux has a domain for this node that matches its saved host.
 ///
 /// An unchanged host reuses the registered domain, and with it the live
@@ -161,7 +181,8 @@ pub fn ensure_ssh_domain(id: NodeId) -> anyhow::Result<Arc<dyn Domain>> {
     let host = with_ssh_hosts(|store| store.get(id).cloned())
         .ok_or_else(|| anyhow::anyhow!("session {id} has no ssh host"))?;
     let mux = Mux::get();
-    let shape = without_password(&host);
+    let wanted = ssh_domain_for(id, &host, &user_ssh_config(&host.host));
+    let shape = registration_key(&host, &wanted);
 
     let existing = REGISTERED.with(|reg| {
         reg.borrow().get(&id).and_then(|r| {
@@ -183,7 +204,7 @@ pub fn ensure_ssh_domain(id: NodeId) -> anyhow::Result<Arc<dyn Domain>> {
         rejected: AtomicBool::new(false),
     });
     let domain: Arc<dyn Domain> = Arc::new(RemoteSshDomain::with_ssh_domain_and_helper(
-        &ssh_domain_for(id, &host, &user_ssh_config(&host.host)),
+        &wanted,
         Some(Arc::clone(&helper) as Arc<dyn SshPasswordHelper>),
     )?);
     mux.add_domain(&domain);
@@ -296,6 +317,25 @@ mod test {
 
     fn no_config() -> wezterm_ssh::ConfigMap {
         wezterm_ssh::ConfigMap::new()
+    }
+
+    #[test]
+    fn a_change_in_ssh_config_makes_the_next_connection_use_a_new_domain() {
+        let h = host("root", SshAuth::Password);
+        let key = |h: &SshHost, config: &wezterm_ssh::ConfigMap| {
+            registration_key(h, &ssh_domain_for(NodeId(3), h, config))
+        };
+        let mut config = no_config();
+        config.insert("serveraliveinterval".to_string(), "60".to_string());
+        assert_ne!(key(&h, &no_config()), key(&h, &config));
+        assert_eq!(key(&h, &no_config()), key(&h, &no_config()));
+        let mut new_password = h.clone();
+        new_password.password = "other".to_string();
+        assert_eq!(
+            key(&h, &no_config()),
+            key(&new_password, &no_config()),
+            "a new password goes to the live connection's helper instead"
+        );
     }
 
     #[test]
