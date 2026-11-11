@@ -263,7 +263,7 @@ impl Pane for LocalPane {
     fn is_dead(&self) -> bool {
         let mut proc = self.process.lock();
 
-        const EXIT_BEHAVIOR: &str = "This message is shown because \
+        const EXIT_BEHAVIOR: &str = "显示这条消息是因为 \
             \x1b]8;;https://wezterm.org/\
             config/lua/config/exit_behavior.html\
             \x1b\\exit_behavior\x1b]8;;\x1b\\";
@@ -311,8 +311,8 @@ impl Pane for LocalPane {
                     ) {
                         (ExitBehavior::Close, _, _) => *proc = ProcessState::Dead,
                         (ExitBehavior::CloseOnCleanExit, false, _) => {
-                            brief = format!("⚠️  Process {cmd} didn't exit cleanly");
-                            terse = format!("{status}.");
+                            brief = format!("⚠️  进程 {cmd} 没有正常退出");
+                            terse = format!("{}。", exit_status_text(&status));
                             trailer = format!("{EXIT_BEHAVIOR}=\"CloseOnCleanExit\"");
 
                             *proc = ProcessState::DeadPendingClose { killed: false }
@@ -322,11 +322,11 @@ impl Pane for LocalPane {
                             trailer = format!("{EXIT_BEHAVIOR}=\"Hold\"");
 
                             if success {
-                                brief = format!("👍 Process {cmd} completed.");
+                                brief = format!("👍 进程 {cmd} 已结束。");
                                 terse = "done".to_string();
                             } else {
-                                brief = format!("⚠️  Process {cmd} didn't exit cleanly");
-                                terse = format!("{status}");
+                                brief = format!("⚠️  进程 {cmd} 没有正常退出");
+                                terse = exit_status_text(&status);
                             }
                             *proc = ProcessState::DeadPendingClose { killed: false }
                         }
@@ -859,6 +859,19 @@ struct LocalPaneDCSHandler {
 /// What a pane shows when its ssh connection went away, which leaves the
 /// pane open to show it: None for any other end, including the user closing
 /// the pane. A normal `exit` brings an exit status and is not this.
+/// How a process ended, for the line a held pane shows. The `Display` of
+/// `ExitStatus` belongs to portable-pty and stays English for its other users.
+fn exit_status_text(status: &ExitStatus) -> String {
+    if status.success() {
+        "正常结束".to_string()
+    } else {
+        match status.signal() {
+            Some(signal) => format!("被 {signal} 终止"),
+            None => format!("退出码 {}", status.exit_code()),
+        }
+    }
+}
+
 fn lost_session_notice(status: &ExitStatus, killed: bool) -> Option<String> {
     if killed {
         return None;
@@ -1249,6 +1262,16 @@ mod test {
         let notice = lost_session_notice(&lost, false).unwrap();
         assert!(notice.contains("再次打开这个会话会重新连接"), "{}", notice);
         assert!(!notice.contains("关闭这个标签"), "{}", notice);
+    }
+
+    #[test]
+    fn how_a_process_ended_reads_in_chinese() {
+        assert_eq!(exit_status_text(&ExitStatus::with_exit_code(0)), "正常结束");
+        assert_eq!(exit_status_text(&ExitStatus::with_exit_code(2)), "退出码 2");
+        assert_eq!(
+            exit_status_text(&ExitStatus::with_signal("Killed")),
+            "被 Killed 终止"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ pub fn confirm_close_pane(
     mux_window_id: WindowId,
     window: ::window::Window,
 ) -> anyhow::Result<()> {
-    if confirm::run_confirmation("🛑 Really kill this pane?", &mut term)? {
+    if confirm::run_confirmation("🛑 确定关闭这个窗格吗？", &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
             let tab = match mux.get_active_tab_for_window(mux_window_id) {
@@ -38,10 +38,8 @@ pub fn confirm_close_tab(
     _mux_window_id: WindowId,
     window: ::window::Window,
 ) -> anyhow::Result<()> {
-    if confirm::run_confirmation(
-        "🛑 Really kill this tab and all contained panes?",
-        &mut term,
-    )? {
+    if confirm::run_confirmation("🛑 确定关闭这个标签页和其中的所有窗格吗？", &mut term)?
+    {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
             mux.remove_tab(tab_id);
@@ -59,10 +57,8 @@ pub fn confirm_close_window(
     window: ::window::Window,
     tab_id: TabId,
 ) -> anyhow::Result<()> {
-    if confirm::run_confirmation(
-        "🛑 Really kill this window and all contained tabs and panes?",
-        &mut term,
-    )? {
+    if confirm::run_confirmation("🛑 确定关闭这个窗口和其中的所有标签页、窗格吗？", &mut term)?
+    {
         promise::spawn::spawn_into_main_thread(async move {
             let mux = Mux::get();
             mux.kill_window(mux_window_id);
@@ -88,16 +84,14 @@ pub fn confirm_stop_mux_server(
     other_sessions: usize,
 ) -> anyhow::Result<()> {
     let first_line = if other_sessions == 0 {
-        "🛑 This session will keep running on the mux server.".to_string()
+        "🛑 这个会话会在 mux 服务器上继续运行。".to_string()
     } else {
-        format!(
-            "🛑 This session and {other_sessions} other(s) will keep running on the mux server."
-        )
+        format!("🛑 这个会话和另外 {other_sessions} 个会话会在 mux 服务器上继续运行。")
     };
     let prompt = format!(
         "{first_line}\n\
-         y = stop the mux server and close this window\n\
-         n = close this window and leave the server running"
+         y = 停止 mux 服务器并关闭这个窗口\n\
+         n = 关闭这个窗口，服务器继续运行"
     );
     let stop_server = confirm::run_confirmation(&prompt, &mut term)?;
 
@@ -142,7 +136,7 @@ pub fn confirm_quit_program(
     window: ::window::Window,
     tab_id: TabId,
 ) -> anyhow::Result<()> {
-    if confirm::run_confirmation("🛑 Really Quit WezTerm?", &mut term)? {
+    if confirm::run_confirmation("🛑 确定退出 WezTerm 吗？", &mut term)? {
         promise::spawn::spawn_into_main_thread(async move {
             use ::window::{Connection, ConnectionOps};
             let con = Connection::get().expect("call on gui thread");

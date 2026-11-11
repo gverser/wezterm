@@ -44,9 +44,9 @@ impl crate::sessioninner::SessionInner {
                 self.tx_event
                     .try_send(SessionEvent::HostVerify(HostVerificationEvent {
                         message: format!(
-                            "SSH host {}:{} is not yet trusted.\n\
-                                    Fingerprint: {}.\n\
-                                    Trust and continue connecting?",
+                            "还没有信任过 SSH 主机 {}:{}。\n\
+                                    指纹：{}。\n\
+                                    信任它并继续连接吗？",
                             hostname, port, key
                         ),
                         reply,
@@ -57,7 +57,7 @@ impl crate::sessioninner::SessionInner {
                     .context("waiting for host verification confirmation from user")?;
 
                 if !trusted {
-                    anyhow::bail!("user declined to trust host");
+                    anyhow::bail!("没有信任这台主机");
                 }
 
                 Ok(sess.update_known_hosts_file()?)
@@ -79,14 +79,12 @@ impl crate::sessioninner::SessionInner {
                 self.tx_event
                     .try_send(SessionEvent::HostVerificationFailed(failed))
                     .context("sending HostVerificationFailed event to user")?;
-                anyhow::bail!("Host key verification failed");
+                anyhow::bail!("主机密钥验证失败");
             }
             libssh_rs::KnownHosts::Other => {
                 anyhow::bail!(
-                    "The host key for this server was not found, but another\n\
-            type of key exists. An attacker might change the default\n\
-            server key to confuse your client into thinking the key\n\
-            does not exist"
+                    "known_hosts 里没有这台服务器这种类型的密钥，却有另一种类型的。\n\
+            攻击者可能换掉了服务器的默认密钥，好让客户端以为它从没记录过"
                 );
             }
         }
@@ -159,9 +157,9 @@ impl crate::sessioninner::SessionInner {
                     self.tx_event
                         .try_send(SessionEvent::HostVerify(HostVerificationEvent {
                             message: format!(
-                                "SSH host {} is not yet trusted.\n\
-                                {:?} Fingerprint: {}.\n\
-                                Trust and continue connecting?",
+                                "还没有信任过 SSH 主机 {}。\n\
+                                {:?} 指纹：{}。\n\
+                                信任它并继续连接吗？",
                                 remote_address, key_type, fingerprint
                             ),
                             reply,
@@ -172,7 +170,7 @@ impl crate::sessioninner::SessionInner {
                         .context("waiting for host verification confirmation from user")?;
 
                     if !trusted {
-                        anyhow::bail!("user declined to trust host");
+                        anyhow::bail!("没有信任这台主机");
                     }
 
                     let host_and_port = if port != 22 {
@@ -198,10 +196,10 @@ impl crate::sessioninner::SessionInner {
                     self.tx_event
                         .try_send(SessionEvent::HostVerificationFailed(failed))
                         .context("sending HostVerificationFailed event to user")?;
-                    anyhow::bail!("Host key verification failed");
+                    anyhow::bail!("主机密钥验证失败");
                 }
                 ssh2::CheckResult::Failure => {
-                    anyhow::bail!("failed to check the known hosts");
+                    anyhow::bail!("检查 known_hosts 失败");
                 }
             }
         }

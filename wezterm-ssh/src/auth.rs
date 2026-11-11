@@ -93,7 +93,7 @@ impl crate::sessioninner::SessionInner {
                                 instructions: "".to_string(),
                                 prompts: vec![AuthenticationPrompt {
                                     prompt: format!(
-                                        "Passphrase to decrypt {} for {}@{}:\n> ",
+                                        "解开 {} 的口令（{}@{}）：\n> ",
                                         file.display(),
                                         user,
                                         host
@@ -108,7 +108,7 @@ impl crate::sessioninner::SessionInner {
                             .context("waiting for authentication answers from user")?;
 
                         if answers.is_empty() {
-                            anyhow::bail!("user cancelled authentication");
+                            anyhow::bail!("已取消登录");
                         }
 
                         let passphrase = &answers[0];
@@ -212,7 +212,7 @@ impl crate::sessioninner::SessionInner {
                         }
                         AuthStatus::Partial => continue,
                         status => {
-                            anyhow::bail!("interactive auth status: {:?}", status);
+                            anyhow::bail!("交互式登录没有通过（{:?}）", status);
                         }
                     }
                 }
@@ -225,7 +225,7 @@ impl crate::sessioninner::SessionInner {
                         username: "".to_string(),
                         instructions: "".to_string(),
                         prompts: vec![AuthenticationPrompt {
-                            prompt: "Password: ".to_string(),
+                            prompt: "密码：".to_string(),
                             echo: false,
                         }],
                         reply,
@@ -240,12 +240,12 @@ impl crate::sessioninner::SessionInner {
                 match sess.userauth_password(None, Some(&pw))? {
                     AuthStatus::Success => return Ok(()),
                     AuthStatus::Partial => continue,
-                    status => anyhow::bail!("password auth status: {:?}", status),
+                    status => anyhow::bail!("密码登录没有通过（{:?}）", status),
                 }
             }
 
             anyhow::bail!(
-                "unhandled auth case; methods={:?}, status={:?}",
+                "没有能用的登录方式（服务器接受：{:?}，各方式结果：{:?}）",
                 auth_methods,
                 status_by_method
             );
@@ -289,7 +289,7 @@ impl crate::sessioninner::SessionInner {
                         username: user.to_string(),
                         instructions: "".to_string(),
                         prompts: vec![AuthenticationPrompt {
-                            prompt: format!("Password for {}@{}: ", user, host),
+                            prompt: format!("{}@{} 的密码：", user, host),
                             echo: false,
                         }],
                         reply,
@@ -300,7 +300,7 @@ impl crate::sessioninner::SessionInner {
                     .context("waiting for authentication answers from user")?;
 
                 if answers.is_empty() {
-                    anyhow::bail!("user cancelled authentication");
+                    anyhow::bail!("已取消登录");
                 }
 
                 if let Err(err) = sess.userauth_password(user, &answers[0]) {

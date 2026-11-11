@@ -159,16 +159,16 @@ impl FeishuPanel {
                 elements.push(row(format!(
                     "  [空格] {}",
                     if on {
-                        "停止镜像这个 pane"
+                        "停止镜像这个窗格"
                     } else {
-                        "开始镜像这个 pane"
+                        "开始镜像这个窗格"
                     }
                 )));
             }
             None => {
                 // An empty window has no pane to mirror. Saying so beats a
                 // toggle that silently does nothing.
-                elements.push(row("  这个窗口还没有 session，先开一个".to_string()));
+                elements.push(row("  这个窗口还没有会话，先开一个".to_string()));
             }
         }
 
@@ -179,7 +179,7 @@ impl FeishuPanel {
             .collect();
         if !others.is_empty() {
             elements.push(row(String::new()));
-            elements.push(row("  其他镜像中的 pane".to_string()));
+            elements.push(row("  其他正在镜像的窗格".to_string()));
             for id in others {
                 elements.push(row(format!(
                     "    {}",

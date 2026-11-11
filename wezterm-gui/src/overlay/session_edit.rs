@@ -53,9 +53,8 @@ pub fn confirm_delete_session_node(
     name: String,
 ) -> anyhow::Result<()> {
     let message = format!(
-        "Delete \"{name}\" from the sidebar?\n\n\
-         Terminals running under it will keep running; only the saved entry \
-         goes away."
+        "从侧边栏删除「{name}」吗？\n\n\
+         其下正在运行的终端会继续运行，只删除保存的条目。"
     );
 
     if crate::overlay::confirm::run_confirmation(&message, &mut term)? {

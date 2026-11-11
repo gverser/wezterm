@@ -381,7 +381,7 @@ impl SessionInner {
         let addr = (hostname, port)
             .to_socket_addrs()?
             .find(|addr| self.filter_sock_addr(addr))
-            .with_context(|| format!("resolving address for {}", hostname))?;
+            .with_context(|| format!("解析 {} 的地址", hostname))?;
         if verbose {
             log::info!("resolved {hostname}:{port} -> {addr:?}");
         }
@@ -465,7 +465,7 @@ impl SessionInner {
                 // go with it, so every pane hears now that the connection is
                 // lost, and the next spawn finds a DeadSession and connects
                 // afresh instead of failing on the old socket.
-                anyhow::bail!("the connection to the server was lost");
+                anyhow::bail!("与服务器的连接已断开");
             }
             self.drain_request_pipe();
             self.dispatch_pending_requests(sess)?;

@@ -165,7 +165,7 @@ pub fn ssh_connect_with_ui(
         let remote_address = ssh_config
             .get("hostname")
             .expect("ssh config to always set hostname");
-        ui.output_str(&format!("Connecting to {} using SSH\n", remote_address));
+        ui.output_str(&format!("正在通过 SSH 连接 {} …\n", remote_address));
         let (session, events) = Session::connect(ssh_config.clone())?;
 
         while let Ok(event) = smol::block_on(events.recv()) {
@@ -177,7 +177,7 @@ pub fn ssh_connect_with_ui(
                 }
                 SessionEvent::HostVerify(verify) => {
                     ui.output_str(&format!("{}\n", verify.message));
-                    let ok = if let Ok(line) = ui.input("Enter [y/n]> ") {
+                    let ok = if let Ok(line) = ui.input("输入 y 或 n> ") {
                         match line.as_ref() {
                             "y" | "Y" | "yes" | "YES" => true,
                             "n" | "N" | "no" | "NO" | _ => false,
@@ -189,7 +189,7 @@ pub fn ssh_connect_with_ui(
                 }
                 SessionEvent::Authenticate(auth) => {
                     if !auth.username.is_empty() {
-                        ui.output_str(&format!("Authentication for {}\n", auth.username));
+                        ui.output_str(&format!("以 {} 登录\n", auth.username));
                     }
                     if !auth.instructions.is_empty() {
                         ui.output_str(&format!("{}\n", auth.instructions));
@@ -209,7 +209,7 @@ pub fn ssh_connect_with_ui(
                         if let Ok(line) = res {
                             answers.push(line);
                         } else {
-                            anyhow::bail!("Authentication was cancelled");
+                            anyhow::bail!("已取消登录");
                         }
                     }
                     smol::block_on(auth.answer(answers))?;
@@ -217,15 +217,15 @@ pub fn ssh_connect_with_ui(
                 SessionEvent::HostVerificationFailed(failed) => {
                     let message = format_host_verification_for_terminal(failed);
                     ui.output(message);
-                    anyhow::bail!("Host key verification failed");
+                    anyhow::bail!("主机密钥验证失败");
                 }
                 SessionEvent::Error(err) => {
-                    anyhow::bail!("Error: {}", err);
+                    anyhow::bail!("连接失败：{}", err);
                 }
                 SessionEvent::Authenticated => return Ok(session),
             }
         }
-        bail!("unable to authenticate session");
+        bail!("登录失败");
     })
 }
 
@@ -233,35 +233,30 @@ fn format_host_verification_for_terminal(failed: HostVerificationFailed) -> Vec<
     vec![
         AttributeChange::Intensity(Intensity::Bold).into(),
         LineAttribute::DoubleHeightTopHalfLine.into(),
-        Change::Text("REMOTE HOST IDENTIFICATION CHANGED\r\n".to_string()),
+        Change::Text("远程主机的身份变了\r\n".to_string()),
         LineAttribute::DoubleHeightBottomHalfLine.into(),
-        Change::Text("REMOTE HOST IDENTIFICATION CHANGED\r\n".to_string()),
-        Change::Text("SOMEONE MAY BE DOING SOMETHING NASTY!\r\n".to_string()),
+        Change::Text("远程主机的身份变了\r\n".to_string()),
+        Change::Text("可能有人在搞鬼！\r\n".to_string()),
         AttributeChange::Intensity(Intensity::Normal).into(),
-        Change::Text("\r\nThere are two likely causes for this:\r\n".to_string()),
-        Change::Text(
-            " 1. Someone is eavesdropping right now (man-in-the-middle attack)\r\n".to_string(),
-        ),
-        Change::Text(" 2. The host key may have been changed by the administrator\r\n".to_string()),
+        Change::Text("\r\n通常有两种可能：\r\n".to_string()),
+        Change::Text(" 1. 有人正在窃听（中间人攻击）\r\n".to_string()),
+        Change::Text(" 2. 管理员更换了这台主机的密钥\r\n".to_string()),
         Change::Text("\r\n".to_string()),
         AttributeChange::Intensity(Intensity::Bold).into(),
-        Change::Text(
-            "Please contact your system administrator to discuss how to proceed!\r\n".to_string(),
-        ),
+        Change::Text("请先和系统管理员确认，再决定怎么做！\r\n".to_string()),
         AttributeChange::Intensity(Intensity::Normal).into(),
         Change::Text("\r\n".to_string()),
         match failed.file {
             Some(file) => Change::Text(format!(
-                "The host is {}, and its fingerprint is\r\n{}\r\n\
-                If the administrator confirms that the key has changed, you can\r\n\
-                fix this for yourself by removing the offending entry from\r\n\
-                {} and then try connecting again.\r\n",
+                "主机是 {}，它现在的指纹是\r\n{}\r\n\
+                如果管理员确认密钥确实换了，可以从\r\n\
+                {} 里删掉这台主机的旧条目，再重新连接。\r\n",
                 failed.remote_address,
                 failed.key,
                 file.display(),
             )),
             None => Change::Text(format!(
-                "The host is {}, and its fingerprint is\r\n{}\r\n",
+                "主机是 {}，它现在的指纹是\r\n{}\r\n",
                 failed.remote_address, failed.key
             )),
         },
@@ -786,7 +781,7 @@ fn connect_ssh_session(
                 let mut editor = LineEditor::new(&mut shim);
                 let mut host = PasswordPromptHost::default();
                 host.echo = true;
-                editor.set_prompt("Enter [y/n]> ");
+                editor.set_prompt("输入 y 或 n> ");
                 let ok = if let Some(line) = editor.read_line(&mut host)? {
                     match line.as_ref() {
                         "y" | "Y" | "yes" | "YES" => true,
@@ -799,7 +794,7 @@ fn connect_ssh_session(
             }
             SessionEvent::Authenticate(auth) => {
                 if !auth.username.is_empty() {
-                    shim.output_line(&format!("Authentication for {}", auth.username))?;
+                    shim.output_line(&format!("以 {} 登录", auth.username))?;
                 }
                 if !auth.instructions.is_empty() {
                     shim.output_line(&auth.instructions)?;
@@ -825,7 +820,7 @@ fn connect_ssh_session(
                         autofill.record_typed(prompt, &line);
                         answers.push(line);
                     } else {
-                        anyhow::bail!("Authentication was cancelled");
+                        anyhow::bail!("已取消登录");
                     }
                 }
                 smol::block_on(auth.answer(answers))?;
@@ -855,7 +850,7 @@ fn connect_ssh_session(
                     Some(env),
                 )) {
                     Err(err) => {
-                        shim.output_line(&format!("Failed to spawn command: {:#}", err))?;
+                        shim.output_line(&format!("无法启动远程命令：{:#}", err))?;
                         break;
                     }
                     Ok((pty, child)) => {

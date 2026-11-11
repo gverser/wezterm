@@ -282,7 +282,7 @@ impl FeishuService {
             };
             match status {
                 Ok(Some(status)) => {
-                    let detail = format!("the service exited with {status}");
+                    let detail = format!("服务退出了（{status}）");
                     log::warn!("{detail}");
                     me.child.lock().take();
                     *me.crashed.lock() = Some(detail);

@@ -65,12 +65,12 @@ pub enum MenuAction {
 impl MenuAction {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::NewSession => "New Session",
-            Self::NewSshSession => "New SSH Session",
-            Self::NewFolder => "New Folder",
-            Self::Rename => "Rename",
-            Self::Edit => "Edit...",
-            Self::Delete => "Delete",
+            Self::NewSession => "新建会话",
+            Self::NewSshSession => "新建 SSH 会话",
+            Self::NewFolder => "新建文件夹",
+            Self::Rename => "重命名",
+            Self::Edit => "编辑…",
+            Self::Delete => "删除",
         }
     }
 }
@@ -699,9 +699,9 @@ impl super::TermWindow {
                     store.mutate(|tree| {
                         let id = tree.alloc_id();
                         let node = if is_folder {
-                            SessionNode::folder(id, "New Folder")
+                            SessionNode::folder(id, "新建文件夹")
                         } else {
-                            SessionNode::session(id, "New Session", SessionSpawn::default())
+                            SessionNode::session(id, "新建会话", SessionSpawn::default())
                         };
                         if tree.insert(parent, node.clone()) {
                             Some(id)

@@ -328,9 +328,9 @@ impl crate::TermWindow {
                 // An empty sidebar with no affordance just looks broken; say
                 // how to get started, or why the list came back empty.
                 let hint = if tree.is_empty() {
-                    "Right click to add a session"
+                    "右键添加会话"
                 } else {
-                    "No matching sessions"
+                    "没有匹配的会话"
                 };
                 children.push(self.sidebar_hint_element(hint, &font, &colors, bounds.width(), pad));
                 return;
@@ -391,9 +391,9 @@ impl crate::TermWindow {
         };
 
         let text = match (focused, self.sidebar.search.is_empty()) {
-            (true, _) => format!("Search: {}{composing}_", self.sidebar.search),
-            (false, true) => "Search...".to_string(),
-            (false, false) => format!("Search: {}", self.sidebar.search),
+            (true, _) => format!("搜索：{}{composing}_", self.sidebar.search),
+            (false, true) => "搜索…".to_string(),
+            (false, false) => format!("搜索：{}", self.sidebar.search),
         };
 
         let style = if focused {

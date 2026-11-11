@@ -1592,8 +1592,8 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("fa_long_arrow_down"),
         },
         SpawnCommandInPaneStack(_) => CommandDef {
-            brief: label_string(action, "Spawn a new pane in this pane stack".to_string()).into(),
-            doc: "Spawns a new pane as a member of the current pane's stack".into(),
+            brief: label_string(action, "在当前窗格堆叠中新建窗格".to_string()).into(),
+            doc: "新建一个窗格，放进当前窗格所在的堆叠".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["Window"],
@@ -1601,11 +1601,11 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         },
         ActivatePaneStackRelative(n) => CommandDef {
             brief: match *n {
-                1 => "Activate the next pane in this stack".into(),
-                -1 => "Activate the previous pane in this stack".into(),
-                n => format!("Activate the pane {n} places along in this stack").into(),
+                1 => "切换到堆叠中的下一个窗格".into(),
+                -1 => "切换到堆叠中的上一个窗格".into(),
+                n => format!("切换到堆叠中往后数第 {n} 个窗格").into(),
             },
-            doc: "Changes which member of the current pane stack is visible".into(),
+            doc: "切换当前窗格堆叠里显示的是哪一个".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["Window"],
@@ -1613,11 +1613,18 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         },
         MovePaneToStack(direction) => CommandDef {
             brief: format!(
-                "Move pane into the {} pane stack",
-                format!("{direction:?}").to_lowercase()
+                "把窗格移进{}边的窗格堆叠",
+                match direction {
+                    PaneDirection::Up => "上",
+                    PaneDirection::Down => "下",
+                    PaneDirection::Left => "左",
+                    PaneDirection::Right => "右",
+                    PaneDirection::Next => "下一个",
+                    PaneDirection::Prev => "上一个",
+                }
             )
             .into(),
-            doc: "Moves the active pane into the neighbouring pane stack in that direction".into(),
+            doc: "把当前窗格移进该方向上相邻的窗格堆叠".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["Window"],
@@ -2045,16 +2052,16 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: None,
         },
         ToggleKeywordHighlight => CommandDef {
-            brief: "Toggle Keyword Highlight".into(),
-            doc: "Turn keyword highlighting in terminal output on or off for this window".into(),
+            brief: "切换关键词高亮".into(),
+            doc: "为这个窗口打开或关闭终端输出的关键词高亮".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["View"],
             icon: Some("md_format_color_highlight"),
         },
         ToggleSessionSidebar => CommandDef {
-            brief: "Toggle Session Sidebar".into(),
-            doc: "Show or hide the session sidebar along the left edge of the window".into(),
+            brief: "显示/隐藏会话侧边栏".into(),
+            doc: "显示或隐藏窗口左侧的会话侧边栏".into(),
             // No default binding: the sidebar is opt-in, and claiming a chord
             // for it would collide with existing user bindings.
             keys: vec![],
@@ -2063,26 +2070,24 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("cod_layout_sidebar_left"),
         },
         ShowFeishuPanel => CommandDef {
-            brief: "Feishu Panel".into(),
-            doc: "Show what the Feishu service is doing and which panes it mirrors".into(),
+            brief: "飞书面板".into(),
+            doc: "查看飞书服务的状态和它正在镜像的窗格".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["View"],
             icon: Some("md_cellphone_link"),
         },
         FocusSessionSidebarSearch => CommandDef {
-            brief: "Search Sessions".into(),
-            doc: "Focus the session sidebar's search box".into(),
+            brief: "搜索会话".into(),
+            doc: "把焦点移到会话侧边栏的搜索框".into(),
             keys: vec![],
             args: &[ArgType::ActivePane],
             menubar: &["View"],
             icon: Some("md_magnify"),
         },
         CloseAllSessions => CommandDef {
-            brief: "Close All Sessions".into(),
-            doc: "End every session, including the ones running in background \
-                  workspaces, and quit"
-                .into(),
+            brief: "关闭所有会话".into(),
+            doc: "结束所有会话（包括后台工作区里的）并退出".into(),
             // No default binding: this ends work that is deliberately still
             // running, so it should take a moment to reach for.
             keys: vec![],

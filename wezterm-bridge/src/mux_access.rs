@@ -74,7 +74,7 @@ impl PaneAccess for MuxPane {
 
     fn send_key(&self, key: &str, modifiers: &[String]) -> anyhow::Result<()> {
         let code =
-            crate::keys::parse_key(key).ok_or_else(|| anyhow::anyhow!("unknown key: {key}"))?;
+            crate::keys::parse_key(key).ok_or_else(|| anyhow::anyhow!("不认识的按键：{key}"))?;
         let mods = crate::keys::parse_modifiers(modifiers);
         self.0.key_down(code, mods)?;
         self.0.key_up(code, mods)?;

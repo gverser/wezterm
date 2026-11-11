@@ -164,7 +164,7 @@ pub fn local_form(name: &str, spawn: &SessionSpawn) -> FormState {
         "编辑会话",
         vec![
             Field::text("名称", name),
-            Field::text("Domain", &domain_to_string(&spawn.domain)),
+            Field::text("域", &domain_to_string(&spawn.domain)),
             Field::text(
                 "目录",
                 &spawn
@@ -194,7 +194,7 @@ pub fn validate_local_form(state: &FormState) -> Vec<(usize, String)> {
 /// default", as in the prompts this form replaced; `env` is not on the form
 /// and is carried over from `old`.
 pub fn local_form_values(state: &FormState, old: &SessionSpawn) -> (String, SessionSpawn) {
-    let domain = match state.value("Domain").trim() {
+    let domain = match state.value("域").trim() {
         "" => SpawnTabDomain::DefaultDomain,
         name => SpawnTabDomain::DomainName(name.to_string()),
     };
@@ -381,10 +381,10 @@ mod test {
                 .collect(),
         };
         let mut state = local_form("casb", &old);
-        assert_eq!(state.value("Domain"), "main");
+        assert_eq!(state.value("域"), "main");
         assert_eq!(state.value("目录"), "D:/work");
         assert_eq!(state.value("命令"), "bash");
-        set(&mut state, "Domain", "");
+        set(&mut state, "域", "");
         set(&mut state, "目录", " ");
         set(&mut state, "命令", "htop -d 5");
         assert!(validate_local_form(&state).is_empty());

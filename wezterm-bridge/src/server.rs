@@ -5,17 +5,17 @@ use crate::proto::Inbound;
 /// The socket is on loopback, which every process on this machine can reach,
 /// so being able to connect proves nothing. Reading the token file does.
 pub fn authenticate(first_line: &str, expected_token: &str) -> Result<(), String> {
-    let msg: Inbound = serde_json::from_str(first_line)
-        .map_err(|err| format!("the first line must be an auth message: {err}"))?;
+    let msg: Inbound =
+        serde_json::from_str(first_line).map_err(|err| format!("第一行必须是认证消息：{err}"))?;
     match msg {
         Inbound::Auth { token } => {
             if crate::token::verify(expected_token, &token) {
                 Ok(())
             } else {
-                Err("auth token rejected".to_string())
+                Err("认证令牌被拒绝".to_string())
             }
         }
-        _ => Err("the first line must be an auth message".to_string()),
+        _ => Err("第一行必须是认证消息".to_string()),
     }
 }
 
@@ -40,8 +40,9 @@ mod test {
         let line = r#"{"t":"send","pane":7,"text":"hi"}"#;
         let err = authenticate(line, "secret").expect_err("to refuse");
         assert!(
-            err.contains("auth"),
-            "the client needs to be told what was wrong: {err}"
+            err.contains("认证消息"),
+            "the client needs to be told what was wrong: {}",
+            err
         );
     }
 

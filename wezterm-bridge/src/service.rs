@@ -276,7 +276,7 @@ fn serve_client(
             Ok(msg) => msg,
             Err(err) => {
                 tx.send(Outbound::Error {
-                    message: format!("bad message: {err}"),
+                    message: format!("消息格式不对：{err}"),
                 })
                 .ok();
                 continue;
@@ -334,14 +334,14 @@ pub fn handle_spawn(node_id: u64) -> Vec<Outbound> {
     let (name, spawn) = match store.tree().find(NodeId(node_id)) {
         None => {
             return vec![Outbound::Error {
-                message: format!("no such session node: {node_id}"),
+                message: format!("没有这个会话节点：{node_id}"),
             }]
         }
         Some(node) => match &node.kind {
             NodeKind::Session { spawn } => (node.name.clone(), spawn.clone()),
             NodeKind::Folder { .. } => {
                 return vec![Outbound::Error {
-                    message: format!("session node {node_id} is a folder, not a session"),
+                    message: format!("会话节点 {node_id} 是文件夹，不是会话"),
                 }]
             }
         },
@@ -407,9 +407,8 @@ pub fn handle_kill(pane: mux::pane::PaneId) -> Vec<Outbound> {
 }
 
 fn json(msg: &Outbound) -> String {
-    serde_json::to_string(msg).unwrap_or_else(|err| {
-        format!(r#"{{"t":"error","message":"failed to serialize a reply: {err}"}}"#)
-    })
+    serde_json::to_string(msg)
+        .unwrap_or_else(|err| format!(r#"{{"t":"error","message":"回复序列化失败：{err}"}}"#))
 }
 
 #[cfg(test)]

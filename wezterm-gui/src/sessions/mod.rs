@@ -110,10 +110,9 @@ pub fn close_prompt(hidden: &[(String, usize)]) -> Option<String> {
 
     let terminals: usize = hidden.iter().map(|(_, n)| n).sum();
     let mut text = format!(
-        "{} terminal{} still running out of sight:
+        "后台还有 {} 个终端在运行：
 ",
         terminals,
-        if terminals == 1 { "" } else { "s" },
     );
 
     // A long list would push the buttons off the bottom of a short window.
@@ -121,13 +120,13 @@ pub fn close_prompt(hidden: &[(String, usize)]) -> Option<String> {
     for (label, count) in hidden.iter().take(MAX_LISTED) {
         text.push_str(&format!(
             "
-    {label}  ({count})"
+    {label}（{count}）"
         ));
     }
     if hidden.len() > MAX_LISTED {
         text.push_str(&format!(
             "
-    ... and {} more",
+    …另外还有 {} 个",
             hidden.len() - MAX_LISTED
         ));
     }
@@ -135,7 +134,7 @@ pub fn close_prompt(hidden: &[(String, usize)]) -> Option<String> {
     text.push_str(
         "
 
-Close them all and quit?",
+全部关闭并退出吗？",
     );
     Some(text)
 }
@@ -272,43 +271,35 @@ mod test {
     #[test]
     fn a_single_terminal_reads_singular() {
         let text = close_prompt(&hidden(&[("casb", 1)])).unwrap();
-        assert!(
-            text.contains("1 terminal still running out of sight"),
-            "{text}"
-        );
-        assert!(text.contains("casb  (1)"), "{text}");
+        assert!(text.contains("后台还有 1 个终端在运行"), "{}", text);
+        assert!(text.contains("casb（1）"), "{}", text);
     }
 
     #[test]
     fn totals_are_summed_across_workspaces() {
         let text = close_prompt(&hidden(&[("casb", 2), ("wezterm", 3)])).unwrap();
-        assert!(
-            text.contains("5 terminals still running out of sight"),
-            "{text}"
-        );
-        assert!(text.contains("casb  (2)"), "{text}");
-        assert!(text.contains("wezterm  (3)"), "{text}");
+        assert!(text.contains("后台还有 5 个终端在运行"), "{}", text);
+        assert!(text.contains("casb（2）"), "{}", text);
+        assert!(text.contains("wezterm（3）"), "{}", text);
     }
 
     #[test]
     fn a_long_list_is_truncated() {
         let many: Vec<(String, usize)> = (0..12).map(|i| (format!("s{i}"), 1)).collect();
         let text = close_prompt(&many).unwrap();
-        assert!(
-            text.contains("12 terminals still running out of sight"),
-            "{text}"
-        );
-        assert!(text.contains("... and 4 more"), "{text}");
+        assert!(text.contains("后台还有 12 个终端在运行"), "{}", text);
+        assert!(text.contains("…另外还有 4 个"), "{}", text);
         assert!(
             !text.contains("s8"),
-            "entries past the cap are not listed: {text}"
+            "entries past the cap are not listed: {}",
+            text
         );
     }
 
     #[test]
     fn always_asks_the_question() {
         let text = close_prompt(&hidden(&[("casb", 1)])).unwrap();
-        assert!(text.ends_with("Close them all and quit?"), "{text}");
+        assert!(text.ends_with("全部关闭并退出吗？"), "{}", text);
     }
 
     #[test]

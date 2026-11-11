@@ -70,7 +70,7 @@ fn run_confirmation_impl(message: &str, term: &mut TermWizTerminal) -> anyhow::R
         if active == ActiveButton::Yes {
             changes.push(AttributeChange::Reverse(true).into());
         }
-        changes.push(" [Y]es ".into());
+        changes.push(" [Y]是 ".into());
         if active == ActiveButton::Yes {
             changes.push(AttributeChange::Reverse(false).into());
         }
@@ -80,7 +80,7 @@ fn run_confirmation_impl(message: &str, term: &mut TermWizTerminal) -> anyhow::R
         if active == ActiveButton::No {
             changes.push(AttributeChange::Reverse(true).into());
         }
-        changes.push(" [N]o ".into());
+        changes.push(" [N]否".into());
         if active == ActiveButton::No {
             changes.push(AttributeChange::Reverse(false).into());
         }

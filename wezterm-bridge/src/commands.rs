@@ -18,7 +18,7 @@ where
 {
     match msg {
         Inbound::Auth { .. } => vec![Outbound::Error {
-            message: "already authenticated".to_string(),
+            message: "已经认证过了".to_string(),
         }],
 
         Inbound::Read { pane, max_lines } => match lookup(pane) {
@@ -41,7 +41,7 @@ where
             Some(p) => match p.send_text(&text, submit) {
                 Ok(()) => vec![],
                 Err(err) => vec![Outbound::Error {
-                    message: format!("send to pane {pane} failed: {err:#}"),
+                    message: format!("发送到窗格 {pane} 失败：{err:#}"),
                 }],
             },
         },
@@ -55,7 +55,7 @@ where
             Some(p) => match p.send_key(&key, &modifiers) {
                 Ok(()) => vec![],
                 Err(err) => vec![Outbound::Error {
-                    message: format!("key {key} to pane {pane} failed: {err:#}"),
+                    message: format!("向窗格 {pane} 发送按键 {key} 失败：{err:#}"),
                 }],
             },
         },
@@ -94,7 +94,7 @@ pub fn describe<P: PaneAccess>(pane: &P, state: &BridgeState) -> PaneInfo {
 
 fn no_such_pane(pane: PaneId) -> Outbound {
     Outbound::Error {
-        message: format!("no such pane: {pane}"),
+        message: format!("没有这个窗格：{pane}"),
     }
 }
 
@@ -158,7 +158,7 @@ mod test {
         }
         fn send_key(&self, key: &str, modifiers: &[String]) -> anyhow::Result<()> {
             if crate::keys::parse_key(key).is_none() {
-                anyhow::bail!("unknown key: {key}");
+                anyhow::bail!("不认识的按键：{key}");
             }
             self.keys.lock().push((key.to_string(), modifiers.to_vec()));
             Ok(())
@@ -265,7 +265,7 @@ mod test {
         assert_eq!(
             out,
             vec![Outbound::Error {
-                message: "no such pane: 99".to_string()
+                message: "没有这个窗格：99".to_string()
             }],
             "a stale pane id from the client must not take the service down"
         );
