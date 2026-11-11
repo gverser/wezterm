@@ -1,12 +1,17 @@
 //! The ssh status bar: one row under the terminal area showing the server
 //! the active pane is connected to.
 
-use crate::sessions::monitor::{ensure_monitor, monitor_view, MonitorState};
+use crate::sessions::monitor::{
+    age_text, bar_text, ensure_monitor, is_authenticated, monitor_view, BarText,
+};
 use crate::sessions::monitor_proto::{status_segments, Level, SegmentKind};
 use crate::termwindow::box_model::*;
 use crate::termwindow::DimensionContext;
 use crate::utilsprites::RenderMetrics;
 use config::Dimension;
+use mux::localpane::LocalPane;
+use std::time::Instant;
+use termwiz::cell::unicode_column_width;
 use wezterm_term::color::ColorAttribute;
 use window::color::LinearRgba;
 
@@ -52,43 +57,70 @@ impl crate::TermWindow {
         let dim = colors.inactive_tab().fg_color.to_linear();
         let bg = colors.background().to_linear();
 
+        // A pane held open after its connection failed or dropped.
+        let pane_ended = self
+            .get_active_pane_no_overlay()
+            .and_then(|pane| {
+                pane.downcast_ref::<LocalPane>()
+                    .map(|local| local.process_ended())
+            })
+            .unwrap_or(false);
+        let view = monitor_view(domain_id);
+        let text = bar_text(
+            pane_ended,
+            is_authenticated(domain_id),
+            view.as_ref(),
+            Instant::now(),
+        );
+
         let mut runs: Vec<(String, LinearRgba)> = vec![];
-        match monitor_view(domain_id) {
-            Some(view) if view.state == MonitorState::Unsupported => {
-                runs.push(("仅支持 Linux 服务器".to_string(), color(11)));
-            }
-            Some(view) if view.state == MonitorState::Failed && view.status.is_none() => {
-                runs.push(("状态不可用".to_string(), color(9)));
-            }
-            Some(view) => match view.status {
-                Some(status) => {
-                    for (i, seg) in status_segments(&status, max_cells).into_iter().enumerate() {
-                        if i > 0 {
-                            runs.push((SEPARATOR.to_string(), dim));
-                        }
-                        let c = match seg.level {
-                            Level::Crit => color(9),
-                            Level::Warn => color(11),
-                            Level::Normal => match seg.kind {
-                                SegmentKind::Host => color(14),
-                                SegmentKind::Cpu => color(10),
-                                SegmentKind::Mem => color(13),
-                                SegmentKind::Net => color(12),
-                                SegmentKind::Uptime => color(7),
-                                SegmentKind::Users => color(6),
-                                SegmentKind::Disks => color(10),
-                            },
-                        };
-                        runs.push((seg.text, c));
-                    }
-                    if view.state == MonitorState::Failed {
+        let mut say = |text: &str, c: LinearRgba| runs.push((text.to_string(), c));
+        match text {
+            BarText::Connecting => say("正在连接…", dim),
+            BarText::ConnectFailed => say("连接失败", color(9)),
+            BarText::Disconnected => say("连接已断开", color(9)),
+            BarText::Fetching => say("正在获取服务器状态…", dim),
+            BarText::Unsupported => say("仅支持 Linux 服务器", color(11)),
+            BarText::Unavailable => say("状态不可用", color(9)),
+            BarText::Values { stale_for } => {
+                let stale = stale_for.map(|secs| format!("数据已过期（{}）", age_text(secs)));
+                // Room for the note, so that the numbers give way to it.
+                let note_cells = stale.as_ref().map_or(0, |note| {
+                    unicode_column_width(note, None) + unicode_column_width(SEPARATOR, None)
+                });
+                let status = view.and_then(|view| view.status);
+                let segments = status
+                    .as_ref()
+                    .map(|status| status_segments(status, max_cells.saturating_sub(note_cells)))
+                    .unwrap_or_default();
+                for (i, seg) in segments.into_iter().enumerate() {
+                    if i > 0 {
                         runs.push((SEPARATOR.to_string(), dim));
-                        runs.push(("状态不可用".to_string(), color(9)));
                     }
+                    let c = match (stale_for, seg.level) {
+                        // Old numbers are greyed out, warnings and all.
+                        (Some(_), _) => dim,
+                        (None, Level::Crit) => color(9),
+                        (None, Level::Warn) => color(11),
+                        (None, Level::Normal) => match seg.kind {
+                            SegmentKind::Host => color(14),
+                            SegmentKind::Cpu => color(10),
+                            SegmentKind::Mem => color(13),
+                            SegmentKind::Net => color(12),
+                            SegmentKind::Uptime => color(7),
+                            SegmentKind::Users => color(6),
+                            SegmentKind::Disks => color(10),
+                        },
+                    };
+                    runs.push((seg.text, c));
                 }
-                None => runs.push(("正在获取服务器状态…".to_string(), dim)),
-            },
-            None => runs.push(("正在获取服务器状态…".to_string(), dim)),
+                if let Some(note) = stale {
+                    if !runs.is_empty() {
+                        runs.push((SEPARATOR.to_string(), dim));
+                    }
+                    runs.push((note, color(11)));
+                }
+            }
         }
 
         let key = format!(

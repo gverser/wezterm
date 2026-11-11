@@ -1032,6 +1032,12 @@ fn split_child(
 }
 
 impl LocalPane {
+    /// Whether the process has ended, including while the pane is kept open
+    /// to say how: `is_dead` is false then, so that the pane stays.
+    pub fn process_ended(&self) -> bool {
+        !matches!(&*self.process.lock(), ProcessState::Running { .. })
+    }
+
     /// How this pane closes once its process has ended; None for the
     /// configured exit_behavior.
     fn own_exit_behavior(&self) -> Option<ExitBehavior> {
