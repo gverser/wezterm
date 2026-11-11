@@ -96,7 +96,7 @@ As features stabilize some brief notes about them will accumulate here.
   [SpawnCommandInPaneStack](config/lua/keyassignment/SpawnCommandInPaneStack.md),
   [ActivatePaneStackRelative](config/lua/keyassignment/ActivatePaneStackRelative.md)
   and [MovePaneToStack](config/lua/keyassignment/MovePaneToStack.md).
-* SSH sessions in the session sidebar, after MobaXterm: *New SSH Session* saves
+* SSH sessions in the session sidebar, after MobaXterm: *新建 SSH 会话* saves
   a host, port, user and password or key file, edited in a form; a double click
   connects, and the tabs opened from one entry share a connection. A password
   typed at the first login can be saved (in plain text, in `ssh_hosts.json`)
@@ -203,6 +203,26 @@ As features stabilize some brief notes about them will accumulate here.
   `CTRL-u` to kill back to the start of the line. Thanks to @bew! #8013
 
 #### Fixed
+* ssh: connecting showed nothing until it worked or the system gave up on the
+  host. The pane now says **正在连接** at once, `ConnectTimeout` from the ssh
+  config is honoured (sidebar entries default to 10 seconds), and a failed
+  connection or login says **连接失败** with the reason and keeps the pane
+  open instead of printing an exit status.
+* Sidebar ssh form: the port was always saved, as 22 by default, overriding
+  any `Port` in `~/.ssh/config`; it can now be left blank. The sidebar's
+  keepalive and connect timeout likewise give way to the ssh config.
+* SSH status bar: it kept showing the last figures when the connection
+  stalled, and said nothing while connecting or after a failure. It now marks
+  figures more than five seconds old as out of date, gives up on a silent
+  collector after fifteen, says 正在连接 / 连接失败 / 连接已断开, and only
+  redraws the windows that show it, when it changes.
+* Sidebar file page: closing the window left a transfer running out of sight;
+  it now asks, then cancels it. Files dropped before the page had a directory
+  vanished silently; it now says so. Names that aren't UTF-8 were left out;
+  they are now listed, shown as GBK, and can be opened (libssh backend; this
+  takes a patched libssh-rs, in `deps/libssh-rs`).
+* The session sidebar, its prompts, the window-close questions and the text of
+  an ssh login now read in Chinese, as the rest of the sidebar did.
 * ssh: a pane whose connection dropped went on looking connected until the
   next keypress, and then vanished without a word. With libssh the session
   now ends as soon as the connection is found gone, its panes stay open saying
