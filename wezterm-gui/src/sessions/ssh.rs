@@ -20,20 +20,44 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The domain definition for a saved host.
+/// What `~/.ssh/config` says about `host`, as the connection will read it.
+pub fn user_ssh_config(host: &str) -> wezterm_ssh::ConfigMap {
+    let mut config = wezterm_ssh::Config::new();
+    config.add_default_config_files();
+    config.for_host(host.trim())
+}
+
+/// The domain definition for a saved host. `ssh_config` is what
+/// `user_ssh_config` reads for it: anything set there for the host is left
+/// alone, and only the gaps get this sidebar's defaults.
 ///
 /// The port goes in `ssh_option` rather than `remote_address`, because
 /// `ssh_domain_to_ssh_config` splits the address on ':' and would misread an
-/// IPv6 address. `assume_shell = Posix` makes the remote command line carry
-/// `WEZTERM_REMOTE_PANE` itself, independent of the server's `AcceptEnv`; the
-/// directory probe relies on finding it.
-pub fn ssh_domain_for(id: NodeId, host: &SshHost) -> SshDomain {
+/// IPv6 address. `ssh_option` overrides `~/.ssh/config`, so a port is only
+/// put there when the form has one. `assume_shell = Posix` makes the remote
+/// command line carry `WEZTERM_REMOTE_PANE` itself, independent of the
+/// server's `AcceptEnv`; the directory probe relies on finding it.
+pub fn ssh_domain_for(
+    id: NodeId,
+    host: &SshHost,
+    ssh_config: &wezterm_ssh::ConfigMap,
+) -> SshDomain {
     let mut ssh_option = HashMap::new();
-    ssh_option.insert("port".to_string(), host.port.to_string());
+    if let Some(port) = host.port {
+        ssh_option.insert("port".to_string(), port.to_string());
+    }
+    let mut default = |key: &str, value: &str| {
+        if !ssh_config.contains_key(key) {
+            ssh_option.insert(key.to_string(), value.to_string());
+        }
+    };
     // A connection that dies quietly (wifi, VPN, sleep, a NAT timeout) sends
     // nothing back; only something sent out finds it dead. Without this an
     // idle pane looks connected until the next keystroke, then vanishes.
-    ssh_option.insert("serveraliveinterval".to_string(), "30".to_string());
+    default("serveraliveinterval", "30");
+    // A host that doesn't answer would otherwise hold the pane blank until
+    // the system gives up on the connection.
+    default("connecttimeout", "10");
     if host.auth == SshAuth::Key {
         ssh_option.insert("identityfile".to_string(), host.key_path.trim().to_string());
         ssh_option.insert("identitiesonly".to_string(), "yes".to_string());
@@ -159,7 +183,7 @@ pub fn ensure_ssh_domain(id: NodeId) -> anyhow::Result<Arc<dyn Domain>> {
         rejected: AtomicBool::new(false),
     });
     let domain: Arc<dyn Domain> = Arc::new(RemoteSshDomain::with_ssh_domain_and_helper(
-        &ssh_domain_for(id, &host),
+        &ssh_domain_for(id, &host, &user_ssh_config(&host.host)),
         Some(Arc::clone(&helper) as Arc<dyn SshPasswordHelper>),
     )?);
     mux.add_domain(&domain);
@@ -239,7 +263,7 @@ mod test {
     fn host(user: &str, auth: SshAuth) -> SshHost {
         SshHost {
             host: "10.0.0.5".to_string(),
-            port: 2222,
+            port: Some(2222),
             user: user.to_string(),
             auth,
             password: "pw".to_string(),
@@ -260,7 +284,7 @@ mod test {
 
     #[test]
     fn password_host_maps_to_posix_domain() {
-        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password));
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password), &no_config());
         assert_eq!(dom.name, "sidebar-ssh:3");
         assert_eq!(dom.remote_address, "10.0.0.5");
         assert_eq!(dom.ssh_option.get("port").map(|s| s.as_str()), Some("2222"));
@@ -270,9 +294,40 @@ mod test {
         assert!(dom.ssh_option.get("identityfile").is_none());
     }
 
+    fn no_config() -> wezterm_ssh::ConfigMap {
+        wezterm_ssh::ConfigMap::new()
+    }
+
+    #[test]
+    fn an_unset_port_is_left_to_ssh_config() {
+        let mut h = host("root", SshAuth::Password);
+        h.port = None;
+        let dom = ssh_domain_for(NodeId(3), &h, &no_config());
+        assert!(dom.ssh_option.get("port").is_none());
+    }
+
+    #[test]
+    fn connections_give_up_after_ten_seconds() {
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password), &no_config());
+        assert_eq!(
+            dom.ssh_option.get("connecttimeout").map(|s| s.as_str()),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn ssh_config_settings_for_the_host_win_over_the_defaults() {
+        let mut config = no_config();
+        config.insert("serveraliveinterval".to_string(), "60".to_string());
+        config.insert("connecttimeout".to_string(), "3".to_string());
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password), &config);
+        assert!(dom.ssh_option.get("serveraliveinterval").is_none());
+        assert!(dom.ssh_option.get("connecttimeout").is_none());
+    }
+
     #[test]
     fn saved_hosts_send_keepalives() {
-        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password));
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Password), &no_config());
         assert_eq!(
             dom.ssh_option
                 .get("serveraliveinterval")
@@ -283,7 +338,7 @@ mod test {
 
     #[test]
     fn key_host_sets_identity() {
-        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Key));
+        let dom = ssh_domain_for(NodeId(3), &host("root", SshAuth::Key), &no_config());
         assert_eq!(
             dom.ssh_option.get("identityfile").map(|s| s.as_str()),
             Some(r"C:\keys\id_ed25519")
@@ -298,14 +353,14 @@ mod test {
     fn ipv6_host_keeps_address_whole() {
         let mut h = host("root", SshAuth::Password);
         h.host = "fe80::1".to_string();
-        let dom = ssh_domain_for(NodeId(3), &h);
+        let dom = ssh_domain_for(NodeId(3), &h, &no_config());
         assert_eq!(dom.remote_address, "fe80::1");
         assert_eq!(dom.ssh_option.get("port").map(|s| s.as_str()), Some("2222"));
     }
 
     #[test]
     fn empty_user_leaves_username_unset() {
-        let dom = ssh_domain_for(NodeId(3), &host("", SshAuth::Password));
+        let dom = ssh_domain_for(NodeId(3), &host("", SshAuth::Password), &no_config());
         assert_eq!(dom.username, None);
     }
 
@@ -313,7 +368,7 @@ mod test {
     fn surrounding_spaces_are_trimmed() {
         let mut h = host(" root ", SshAuth::Password);
         h.host = " 10.0.0.5 ".to_string();
-        let dom = ssh_domain_for(NodeId(3), &h);
+        let dom = ssh_domain_for(NodeId(3), &h, &no_config());
         assert_eq!(dom.remote_address, "10.0.0.5");
         assert_eq!(dom.username.as_deref(), Some("root"));
     }

@@ -40,15 +40,14 @@ pub enum SshAuth {
     Key,
 }
 
-fn default_port() -> u16 {
-    22
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshHost {
     pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// None leaves the port to `~/.ssh/config`, and failing that 22. Left
+    /// out of the file then, so that an older build, which needs a number,
+    /// takes its own default of 22.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// Empty means "let wezterm-ssh decide", as plain `ssh host` would.
     #[serde(default)]
     pub user: String,
@@ -236,7 +235,7 @@ mod test {
     fn sample_host() -> SshHost {
         SshHost {
             host: "10.0.0.5".to_string(),
-            port: 2222,
+            port: Some(2222),
             user: "root".to_string(),
             auth: SshAuth::Password,
             password: "密码!@#".to_string(),
@@ -300,10 +299,37 @@ mod test {
         std::fs::write(&path, r#"{"hosts": {"7": {"host": "example.com"}}}"#).unwrap();
         let hosts = load_ssh_hosts_from(&path);
         let host = &hosts.hosts[&NodeId(7)];
-        assert_eq!(host.port, 22);
+        assert_eq!(host.port, None, "no port: ~/.ssh/config or 22 decides");
         assert_eq!(host.auth, SshAuth::Password);
         assert_eq!(host.user, "");
         assert_eq!(host.password, "");
+    }
+
+    #[test]
+    fn an_unset_port_is_left_out_of_the_file() {
+        let dir = scratch();
+        let path = dir.path().join("ssh_hosts.json");
+        let mut hosts = SshHosts::default();
+        hosts.hosts.insert(
+            NodeId(1),
+            SshHost {
+                port: None,
+                ..sample_host()
+            },
+        );
+        save_ssh_hosts_to(&path, &hosts).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"port\""), "{text}");
+        assert_eq!(load_ssh_hosts_from(&path), hosts);
+    }
+
+    #[test]
+    fn a_port_saved_by_an_earlier_build_is_kept() {
+        let dir = scratch();
+        let path = dir.path().join("ssh_hosts.json");
+        std::fs::write(&path, r#"{"hosts": {"7": {"host": "h", "port": 22}}}"#).unwrap();
+        let hosts = load_ssh_hosts_from(&path);
+        assert_eq!(hosts.hosts[&NodeId(7)].port, Some(22));
     }
 
     #[test]

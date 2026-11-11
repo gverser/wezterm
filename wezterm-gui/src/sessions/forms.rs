@@ -30,7 +30,7 @@ pub fn ssh_form(name: &str, host: Option<&SshHost>) -> FormState {
     };
     let blank = SshHost {
         host: String::new(),
-        port: 22,
+        port: None,
         user: String::new(),
         auth: SshAuth::Password,
         password: String::new(),
@@ -46,7 +46,11 @@ pub fn ssh_form(name: &str, host: Option<&SshHost>) -> FormState {
         vec![
             Field::text(SSH_FIELDS[0], name),
             Field::text(SSH_FIELDS[1], &h.host),
-            Field::text(SSH_FIELDS[2], &h.port.to_string()),
+            Field::text(
+                SSH_FIELDS[2],
+                &h.port.map(|p| p.to_string()).unwrap_or_default(),
+            )
+            .with_placeholder("默认 22"),
             Field::text(SSH_FIELDS[3], &h.user),
             Field::choice(SSH_FIELDS[4], &[AUTH_PASSWORD, AUTH_KEY], auth),
             Field::password(SSH_FIELDS[5], &h.password),
@@ -66,10 +70,15 @@ pub fn ssh_form(name: &str, host: Option<&SshHost>) -> FormState {
     state
 }
 
-fn parse_port(text: &str) -> Option<u16> {
-    match text.trim().parse::<u16>() {
-        Ok(0) | Err(_) => None,
-        Ok(port) => Some(port),
+/// A blank port is fine and means "not set"; anything else must be a port.
+fn parse_port(text: &str) -> Result<Option<u16>, ()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<u16>() {
+        Ok(0) | Err(_) => Err(()),
+        Ok(port) => Ok(Some(port)),
     }
 }
 
@@ -78,7 +87,7 @@ pub fn validate_ssh_form(state: &FormState) -> Vec<(usize, String)> {
     if state.value("主机").trim().is_empty() {
         errors.push((state.index_of("主机").unwrap(), "主机不能为空".to_string()));
     }
-    if parse_port(state.value("端口")).is_none() {
+    if parse_port(state.value("端口")).is_err() {
         errors.push((
             state.index_of("端口").unwrap(),
             "端口必须是 1–65535 的整数".to_string(),
@@ -104,7 +113,7 @@ pub fn ssh_form_values(state: &FormState) -> (String, SshHost) {
         name,
         SshHost {
             host,
-            port: parse_port(state.value("端口")).unwrap_or(22),
+            port: parse_port(state.value("端口")).unwrap_or(None),
             user: state.value("用户名").trim().to_string(),
             auth: if state.value("认证方式") == AUTH_KEY {
                 SshAuth::Key
@@ -230,7 +239,7 @@ mod test {
     fn saved() -> SshHost {
         SshHost {
             host: "10.0.0.5".to_string(),
-            port: 2222,
+            port: Some(2222),
             user: "root".to_string(),
             auth: SshAuth::Password,
             password: "pw".to_string(),
@@ -244,9 +253,11 @@ mod test {
     }
 
     #[test]
-    fn new_ssh_form_defaults_port_22() {
+    fn new_ssh_form_leaves_port_blank() {
         let state = ssh_form("", None);
-        assert_eq!(state.value("端口"), "22");
+        let port = state.index_of("端口").unwrap();
+        assert_eq!(state.value("端口"), "");
+        assert_eq!(state.fields[port].placeholder, "默认 22");
         assert_eq!(state.value("认证方式"), "密码");
         assert_eq!(state.title, "新建 SSH 会话");
         let labels: Vec<&str> = state.fields.iter().map(|f| f.label.as_str()).collect();
@@ -276,7 +287,7 @@ mod test {
 
     #[test]
     fn port_out_of_range_is_rejected() {
-        for bad in ["0", "65536", "abc", ""] {
+        for bad in ["0", "65536", "abc"] {
             let mut state = ssh_form("", None);
             set(&mut state, "主机", "h");
             set(&mut state, "端口", bad);
@@ -290,6 +301,15 @@ mod test {
                 "port {bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_typed_port_is_kept() {
+        let mut state = ssh_form("", None);
+        set(&mut state, "主机", "h");
+        set(&mut state, "端口", " 2200 ");
+        assert!(validate_ssh_form(&state).is_empty());
+        assert_eq!(ssh_form_values(&state).1.port, Some(2200));
     }
 
     #[test]
@@ -318,7 +338,7 @@ mod test {
         assert_eq!(name, "10.0.0.9");
         assert_eq!(host.host, "10.0.0.9");
         assert_eq!(host.user, "tester");
-        assert_eq!(host.port, 22);
+        assert_eq!(host.port, None, "a blank port leaves it to ~/.ssh/config");
         assert_eq!(host.password, " p w ", "passwords are kept verbatim");
         assert_eq!(host.auth, SshAuth::Password);
     }

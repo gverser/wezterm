@@ -19,6 +19,8 @@ pub struct Field {
     pub kind: FieldKind,
     pub value: String,
     pub enabled: bool,
+    /// Shown dimmed while the field is empty, saying what empty means.
+    pub placeholder: String,
 }
 
 impl Field {
@@ -28,7 +30,13 @@ impl Field {
             kind: FieldKind::Text,
             value: value.to_string(),
             enabled: true,
+            placeholder: String::new(),
         }
+    }
+
+    pub fn with_placeholder(mut self, placeholder: &str) -> Self {
+        self.placeholder = placeholder.to_string();
+        self
     }
 
     pub fn password(label: &str, value: &str) -> Self {
@@ -278,6 +286,19 @@ impl FormState {
                 "•".repeat(composing.chars().count())
             }
             _ => composing,
+        }
+    }
+
+    /// The placeholder to draw in place of field `i`'s value: only while
+    /// nothing is in it, committed or still being composed.
+    pub fn placeholder_shown(&self, i: usize) -> Option<&str> {
+        let field = self.fields.get(i)?;
+        let composing =
+            self.focus == i && self.composing.as_deref().map_or(false, |c| !c.is_empty());
+        if field.value.is_empty() && !composing && !field.placeholder.is_empty() {
+            Some(&field.placeholder)
+        } else {
+            None
         }
     }
 
@@ -531,6 +552,7 @@ impl FormModal {
         let hover_box = colors_of(hover_well, text_linear, hover_well);
         let primary_box = colors_of(accent, LinearRgba(1., 1., 1., 1.), accent);
         let disabled_box = colors_of(well, well, well);
+        let placeholder_text: InheritableColor = dim_text.into();
 
         let state = self.state.borrow();
         let mut targets = vec![];
@@ -624,19 +646,26 @@ impl FormModal {
                     }
                 }
                 FieldKind::Text | FieldKind::Password => {
+                    let placeholder = state.placeholder_shown(i);
                     let mut shown = state.display_value(i);
                     if focused && field.enabled {
                         let at = FormState::byte_offset(&shown, state.cursor);
                         let composing = state.display_composing(i);
                         shown.insert_str(at, &format!("{composing}\u{258f}"));
                     }
-                    let c = if !field.enabled {
+                    if let Some(placeholder) = placeholder {
+                        shown.push_str(placeholder);
+                    }
+                    let mut c = if !field.enabled {
                         disabled_box.clone()
                     } else if focused {
                         focus_box.clone()
                     } else {
                         idle_box.clone()
                     };
+                    if placeholder.is_some() && field.enabled {
+                        c.text = placeholder_text.clone();
+                    }
                     let mut e = Element::new(&font, ElementContent::Text(shown))
                         .colors(c)
                         .min_width(Some(Dimension::Cells(value_cells as f32)))
@@ -1096,6 +1125,23 @@ mod test {
         assert_eq!(f.display_composing(1), "pass");
         f.composing = None;
         assert_eq!(f.display_composing(1), "");
+    }
+
+    #[test]
+    fn a_blank_field_shows_its_placeholder_until_something_is_typed() {
+        let mut f = FormState::new(
+            "t",
+            vec![Field::text("端口", "").with_placeholder("默认 22")],
+            vec![],
+        );
+        assert_eq!(f.placeholder_shown(0), Some("默认 22"));
+        f.composing = Some("2".into());
+        assert_eq!(f.placeholder_shown(0), None);
+        f.composing = None;
+        f.insert("2");
+        assert_eq!(f.placeholder_shown(0), None);
+        let bare = FormState::new("t", vec![Field::text("x", "")], vec![]);
+        assert_eq!(bare.placeholder_shown(0), None, "no placeholder set");
     }
 
     #[test]

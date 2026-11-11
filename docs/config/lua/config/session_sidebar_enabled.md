@@ -69,8 +69,9 @@ others running with nothing to reach them.
 name and either a password or a private key file; *Edit...* on an ssh entry
 opens the same form, and *Edit...* on any other entry a form for its domain,
 directory and command. Fields can be filled in any order; <kbd>Tab</kbd> moves
-between them, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. ssh entries
-show `⇄` in front of their name.
+between them, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. A blank port
+means the one `~/.ssh/config` gives the host, or 22. ssh entries show `⇄` in
+front of their name.
 
 Double clicking an ssh entry connects to it. All the tabs opened from one entry
 share a single connection. It stays open after the last of them closes, so
@@ -78,7 +79,9 @@ that opening the entry again is quick, and goes when wezterm exits.
 
 The connection sends a keepalive every 30 seconds, so one that has dropped
 (wifi, VPN, sleep, the server going away) is noticed even while nobody is
-typing. Its tabs then stay open with **⚠️ SSH 连接已断开** at the bottom
+typing, and gives up on a host that doesn't answer within 10 seconds.
+`ServerAliveInterval` and `ConnectTimeout` in `~/.ssh/config` take precedence
+for the hosts they are set for. Its tabs then stay open with **⚠️ SSH 连接已断开** at the bottom
 instead of disappearing; double clicking the entry again connects afresh,
 whether or not those tabs have been closed yet. A tab whose shell exits
 normally closes as before.
