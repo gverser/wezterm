@@ -592,7 +592,8 @@ impl crate::TermWindow {
         } else {
             (lin(palette::PANEL), lin(palette::TEXT))
         };
-        let margin = px(dpi, 6.);
+        let widths = row_widths(dpi, width, indent, pad);
+        let margin = widths.margin;
         // The selected row's accent bar is its left border; other rows draw
         // that border in their own fill, so that nothing shifts.
         let bar = Self::sidebar_row_bar(dpi);
@@ -620,9 +621,11 @@ impl crate::TermWindow {
                 bottom: Dimension::Pixels(0.),
             })
             .border_corners(Some(rounded(px(dpi, 6.))))
-            .min_width(Some(Dimension::Pixels(
-                self.sidebar_row_room(width, indent, pad),
-            )))
+            // Held to exactly the panel: the margins are not counted against
+            // the room a box may take, so without the cap a part floated right
+            // pushes the row past the panel's edge.
+            .min_width(Some(Dimension::Pixels(widths.content)))
+            .max_width(Some(Dimension::Pixels(widths.box_max)))
             .colors(ElementColors {
                 border: BorderColor {
                     left: edge,
@@ -646,8 +649,7 @@ impl crate::TermWindow {
 
     /// Room for a row's content across a panel `width` wide.
     pub(crate) fn sidebar_row_room(&self, width: f32, indent: f32, pad: f32) -> f32 {
-        let dpi = self.dimensions.dpi as f32;
-        (width - px(dpi, 6.) * 2. - Self::sidebar_row_bar(dpi) - pad * 2. - indent).max(0.)
+        row_widths(self.dimensions.dpi as f32, width, indent, pad).content
     }
 
     /// The panel's background with `children` stacked down it.
@@ -1179,5 +1181,50 @@ impl crate::TermWindow {
             &element,
         )?);
         Ok(computed)
+    }
+}
+
+/// How a sidebar row sits across a panel `width` wide.
+#[derive(Debug)]
+pub(crate) struct RowWidths {
+    /// Inset on each side.
+    pub margin: f32,
+    /// Accent bar, padding and indent: the box less its content.
+    pub border_and_padding: f32,
+    /// The room the row's content gets.
+    pub content: f32,
+    /// The most the row's box may take; with the margins, the panel.
+    pub box_max: f32,
+}
+
+pub(crate) fn row_widths(dpi: f32, width: f32, indent: f32, pad: f32) -> RowWidths {
+    let margin = px(dpi, 6.);
+    let border_and_padding = crate::TermWindow::sidebar_row_bar(dpi) + pad * 2. + indent;
+    let content = (width - margin * 2. - border_and_padding).max(0.);
+    RowWidths {
+        margin,
+        border_and_padding,
+        content,
+        box_max: content + border_and_padding,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_row_is_never_laid_out_wider_than_the_panel() {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        for dpi in [96., 120., 144.] {
+            for (indent, pad) in [(0., 6.), (24., 8.)] {
+                let w = row_widths(dpi, 260., indent, pad);
+                // The box with its margins fills the panel exactly...
+                assert!(near(w.margin * 2. + w.box_max, 260.), "{:?}", w);
+                // ...and the most its content may take is the least it gets,
+                // so a part floated right can't push it wider.
+                assert!(near(w.box_max - w.border_and_padding, w.content), "{:?}", w);
+            }
+        }
     }
 }

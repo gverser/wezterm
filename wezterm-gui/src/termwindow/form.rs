@@ -358,8 +358,30 @@ enum Target {
     Reveal,
 }
 
-/// How long a form that pops up by itself ignores Enter.
+/// How long a form that pops up by itself ignores Enter, y and n.
 pub const EARLY_ENTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What a character typed into a form does.
+#[derive(Debug, PartialEq, Eq)]
+enum Typed {
+    /// Answers a confirmation: yes or no.
+    Answer(bool),
+    /// Swallowed: typed for the terminal before the form showed up.
+    Ignore,
+    /// Text for the focused field.
+    Text,
+}
+
+/// `c` typed into `state`. `too_early` when the form popped up by itself a
+/// moment ago (see [`enter_too_early`]): a y or n then was more likely
+/// meant for the terminal than an answer, and is dropped like an Enter.
+fn typed(state: &FormState, c: char, too_early: bool) -> Typed {
+    match state.shortcut(c) {
+        Some(_) if too_early => Typed::Ignore,
+        Some(answer) => Typed::Answer(answer),
+        None => Typed::Text,
+    }
+}
 
 /// Whether an Enter at `now` comes too soon after a guarded form opened to
 /// be an answer to it, rather than typing meant for the terminal.
@@ -408,8 +430,8 @@ impl FormModal {
     }
 
     /// For a form that opens by itself rather than at the user's request:
-    /// an Enter in its first [`EARLY_ENTER`] was typed for something else,
-    /// and is ignored instead of submitting.
+    /// an Enter, y or n in its first [`EARLY_ENTER`] was typed for something
+    /// else, and is ignored instead of answering.
     pub fn ignore_early_enter(mut self) -> Self {
         self.enter_guard = Some((std::time::Instant::now(), EARLY_ENTER));
         self
@@ -965,17 +987,19 @@ impl Modal for FormModal {
             (KeyCode::Backspace, KeyModifiers::NONE) => self.state.borrow_mut().backspace(),
             (KeyCode::Delete, KeyModifiers::NONE) => self.state.borrow_mut().delete(),
             (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
-                let shortcut = self.state.borrow().shortcut(c);
-                match shortcut {
-                    Some(true) => {
+                let too_early = enter_too_early(self.enter_guard, std::time::Instant::now());
+                let what = typed(&self.state.borrow(), c, too_early);
+                match what {
+                    Typed::Answer(true) => {
                         self.submit(term_window);
                         return Ok(true);
                     }
-                    Some(false) => {
+                    Typed::Answer(false) => {
                         self.cancel(term_window);
                         return Ok(true);
                     }
-                    None => self.state.borrow_mut().insert(&c.to_string()),
+                    Typed::Ignore => return Ok(true),
+                    Typed::Text => self.state.borrow_mut().insert(&c.to_string()),
                 }
             }
             _ => return Ok(false),
@@ -1045,6 +1069,25 @@ impl Modal for FormModal {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_confirmation_that_just_popped_up_ignores_y_and_n() {
+        let confirm = crate::sessions::forms::confirm_form("覆盖文件", "m", "覆盖");
+        // Typed for the terminal before the form showed up: swallowed.
+        assert_eq!(typed(&confirm, 'y', true), Typed::Ignore);
+        assert_eq!(typed(&confirm, 'n', true), Typed::Ignore);
+        // Once it has been up long enough they answer it.
+        assert_eq!(typed(&confirm, 'y', false), Typed::Answer(true));
+        assert_eq!(typed(&confirm, 'n', false), Typed::Answer(false));
+        assert_eq!(typed(&confirm, 'x', false), Typed::Text);
+        // A form with fields takes them as text either way.
+        let form = FormState::new(
+            "f",
+            vec![Field::text("名称", "")],
+            vec![FormButton::Primary("确定".to_string())],
+        );
+        assert_eq!(typed(&form, 'y', true), Typed::Text);
+    }
 
     #[test]
     fn y_and_n_answer_a_confirmation_but_not_a_form_with_fields() {
