@@ -558,7 +558,11 @@ impl RemoteSshDomain {
                 password_helper,
                 authenticated,
             ) {
-                let _ = write!(stdout_write, "\r\n连接失败：{:#}\r\n", err);
+                let _ = write!(
+                    stdout_write,
+                    "\r\n连接失败：{}\r\n",
+                    wezterm_ssh::describe_error(&err)
+                );
                 log::error!("Failed to connect ssh: {:#}", err);
             }
             let _ = stdout_write.flush();
@@ -850,7 +854,10 @@ fn connect_ssh_session(
                     Some(env),
                 )) {
                     Err(err) => {
-                        shim.output_line(&format!("无法启动远程命令：{:#}", err))?;
+                        shim.output_line(&format!(
+                            "无法启动远程命令：{}",
+                            wezterm_ssh::describe_error(&err)
+                        ))?;
                         break;
                     }
                     Ok((pty, child)) => {
@@ -1384,6 +1391,20 @@ impl std::io::Read for PtyReader {
 mod autofill_test {
     use super::*;
     use wezterm_ssh::AuthenticationPrompt;
+
+    #[test]
+    fn the_prompts_wezterm_asks_in_chinese_are_still_told_apart() {
+        let p = |text: &str| AuthenticationPrompt {
+            prompt: text.to_string(),
+            echo: false,
+        };
+        assert!(is_password_prompt(&p("ty@127.0.0.1 的密码：")));
+        assert!(is_password_prompt(&p("密码：")));
+        // A key's passphrase is never filled in with the saved password.
+        assert!(!is_password_prompt(&p(
+            "解开 C:\\k\\id 的口令（ty@h）：\n> "
+        )));
+    }
 
     fn password() -> AuthenticationPrompt {
         AuthenticationPrompt {

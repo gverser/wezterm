@@ -19,6 +19,7 @@ pub use config::*;
 pub use host::*;
 pub use pty::*;
 pub use session::*;
+pub use sessioninner::describe_error;
 pub use sftp::error::*;
 pub use sftp::types::*;
 pub use sftp::*;

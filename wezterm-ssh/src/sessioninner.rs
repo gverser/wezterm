@@ -64,7 +64,7 @@ impl SessionInner {
     pub fn run(&mut self) {
         if let Err(err) = self.run_impl() {
             self.tx_event
-                .try_send(SessionEvent::Error(format!("{:#}", err)))
+                .try_send(SessionEvent::Error(describe_error(&err)))
                 .ok();
         }
     }
@@ -224,12 +224,14 @@ impl SessionInner {
         sess.set_option(libssh_rs::SshOption::Socket(raw))?;
 
         sess.connect()
-            .with_context(|| format!("Connecting to {hostname}:{port}"))?;
+            .with_context(|| format!("连接 {hostname}:{port}"))?;
 
-        let banner = sess.get_server_banner()?;
-        self.tx_event
-            .try_send(SessionEvent::Banner(Some(banner)))
-            .context("notifying user of banner")?;
+        // The server's protocol version ("SSH-2.0-OpenSSH_9.6"): for the
+        // log, not the pane. The issue banner further down is the one meant
+        // for people.
+        if let Ok(version) = sess.get_server_banner() {
+            log::info!("{hostname}:{port} is {version}");
+        }
 
         self.host_verification_libssh(&sess, &hostname, port)?;
         self.authenticate_libssh(&sess)?;
@@ -298,11 +300,17 @@ impl SessionInner {
         sess.set_blocking(true);
         sess.set_tcp_stream(sock);
         sess.handshake()
-            .with_context(|| format!("ssh handshake with {}", remote_address))?;
+            .with_context(|| format!("与 {} 握手", remote_address))?;
 
-        self.tx_event
-            .try_send(SessionEvent::Banner(sess.banner().map(|s| s.to_string())))
-            .context("notifying user of banner")?;
+        // The protocol version, as with libssh above: for the log.
+        if let Some(version) = sess.banner() {
+            log::info!("{remote_address} is {version}");
+        }
+        if let Some(interval) = self.keep_alive {
+            // keepalive_send in the request loop sends nothing unless an
+            // interval has been configured.
+            sess.set_keepalive(false, interval.as_secs().max(1) as u32);
+        }
 
         self.host_verification(&sess, &hostname, port, &remote_address)
             .context("host verification")?;
@@ -421,8 +429,25 @@ impl SessionInner {
 
     fn do_keepalive(&mut self, sess: &mut SessionWrap) -> anyhow::Result<()> {
         match sess {
+            // libssh2 has no way to ask whether the socket is still there,
+            // so the keepalive itself is the probe: one that can't go out
+            // means the connection is gone, and the session ends as it does
+            // for libssh below.
             #[cfg(feature = "ssh2")]
-            SessionWrap::Ssh2(_sess) => Ok(()),
+            SessionWrap::Ssh2(sess) => {
+                if let Some(duration) = self.keep_alive {
+                    if self.last_keep_alive.elapsed() >= duration {
+                        self.last_keep_alive = Instant::now();
+                        if let Err(err) = sess.sess.keepalive_send() {
+                            if keepalive_failure_is_fatal(err.code()) {
+                                log::warn!("ssh2 keepalive failed: {err:#}");
+                                anyhow::bail!("与服务器的连接已断开");
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
             #[cfg(feature = "libssh-rs")]
             SessionWrap::LibSsh(sess) => {
                 // We implement a very basic keep alive mechanism here;
@@ -1226,6 +1251,22 @@ impl Drop for KillOnDropChild {
     }
 }
 
+/// An error and what led to it, as the pane shows it: one sentence joined
+/// by full width colons, rather than anyhow's ": ".
+pub fn describe_error(err: &anyhow::Error) -> String {
+    err.chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join("：")
+}
+
+/// Whether a keepalive that libssh2 could not send means the connection is
+/// gone. Only LIBSSH2_ERROR_EAGAIN, a busy socket, doesn't.
+#[cfg(feature = "ssh2")]
+fn keepalive_failure_is_fatal(code: ssh2::ErrorCode) -> bool {
+    !matches!(code, ssh2::ErrorCode::Session(-37))
+}
+
 /// What is being connected to, for a message: the address it resolved to
 /// only when that says something the name and port don't.
 fn connect_target(hostname: &str, port: u16, addr: &std::net::SocketAddr) -> String {
@@ -1261,6 +1302,26 @@ fn connect_socket(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn an_error_reads_as_one_sentence() {
+        let err = anyhow::anyhow!("由于目标计算机积极拒绝，无法连接。").context("连接 127.0.0.1:1");
+        assert_eq!(
+            describe_error(&err),
+            "连接 127.0.0.1:1：由于目标计算机积极拒绝，无法连接。"
+        );
+        assert_eq!(describe_error(&anyhow::anyhow!("登录失败")), "登录失败");
+    }
+
+    #[cfg(feature = "ssh2")]
+    #[test]
+    fn an_ssh2_keepalive_that_cannot_go_out_means_the_connection_is_gone() {
+        // LIBSSH2_ERROR_EAGAIN: the socket is just busy.
+        assert!(!keepalive_failure_is_fatal(ssh2::ErrorCode::Session(-37)));
+        // LIBSSH2_ERROR_SOCKET_SEND, LIBSSH2_ERROR_SOCKET_RECV.
+        assert!(keepalive_failure_is_fatal(ssh2::ErrorCode::Session(-7)));
+        assert!(keepalive_failure_is_fatal(ssh2::ErrorCode::Session(-43)));
+    }
 
     #[test]
     fn the_address_is_named_once_when_it_is_what_was_asked_for() {
