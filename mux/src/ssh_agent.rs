@@ -83,11 +83,13 @@ fn update_symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> anyho
                     )
                 })
             } else {
-                anyhow::bail!(
-                    "failed to create symlink {} -> {}: {err:#}",
+                // Kept as the source, not flattened into the message:
+                // lacks_symlink_privilege looks for it.
+                Err(anyhow::Error::new(err).context(format!(
+                    "failed to create symlink {} -> {}",
                     link.display(),
                     original.display()
-                );
+                )))
             }
         }
     }
@@ -103,6 +105,21 @@ mod test {
         // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
         let err = anyhow::Error::new(std::io::Error::from_raw_os_error(1314)).context("symlink");
         assert!(lacks_symlink_privilege(&err));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_real_failed_symlink_is_recognised() {
+        // Whatever update_symlink actually returns, not a hand-made error:
+        // the first version of this check never matched one.
+        let link = std::env::temp_dir().join(format!("wezterm-agent-test.{}", std::process::id()));
+        match update_symlink(".", &link) {
+            Ok(()) => {
+                // Developer Mode or elevated: nothing to check.
+                let _ = std::fs::remove_file(&link);
+            }
+            Err(err) => assert!(lacks_symlink_privilege(&err), "{:#}", err),
+        }
     }
 
     #[test]
