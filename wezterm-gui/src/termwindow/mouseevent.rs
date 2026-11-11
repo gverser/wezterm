@@ -51,6 +51,7 @@ impl super::TermWindow {
             | UIItemType::SidebarSearch
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
+            | UIItemType::SidebarHeaderAction(_)
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
             | UIItemType::FilesRow(_)
@@ -79,6 +80,7 @@ impl super::TermWindow {
             | UIItemType::SidebarSearch
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
+            | UIItemType::SidebarHeaderAction(_)
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
             | UIItemType::FilesRow(_)
@@ -552,6 +554,7 @@ impl super::TermWindow {
             | UIItemType::SidebarSearch
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
+            | UIItemType::SidebarHeaderAction(_)
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_) => {
                 self.mouse_event_sidebar(item, event, context);

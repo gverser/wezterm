@@ -183,6 +183,9 @@ pub enum UIItemType {
     SidebarSearch,
     SidebarResizeHandle,
     SidebarMenuItem(crate::termwindow::sidebar::MenuAction),
+    /// A button on the session page's title row; does what the same entry
+    /// in the menu over empty space does.
+    SidebarHeaderAction(crate::termwindow::sidebar::MenuAction),
     /// The chevron that collapses the sidebar to a rail and back.
     SidebarCollapseToggle,
     /// A page tab on the sidebar's rail.

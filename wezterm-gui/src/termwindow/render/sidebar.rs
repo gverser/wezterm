@@ -6,7 +6,10 @@
 use crate::sessions::store::with_store;
 use crate::sessions::{visible_range, NodeId, Placement, RowKind, SidebarPage, VisibleRow};
 use crate::termwindow::box_model::*;
-use crate::termwindow::sidebar::{ContextMenu, SidebarFocus, SIDEBAR_LINE_HEIGHT};
+use crate::termwindow::sidebar::{
+    is_wsl_domain, tree_row_on_screen, ContextMenu, MenuAction, SidebarFocus, SIDEBAR_LINE_HEIGHT,
+};
+use crate::termwindow::theme::{fill, icon, lin, palette, px, rounded};
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use ::window::{Rect, RectF};
@@ -15,12 +18,55 @@ use std::rc::Rc;
 use termwiz::cell::unicode_column_width;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::ColorPalette;
+use window::color::LinearRgba;
 
 /// Width of the drag-to-resize strip along the sidebar's right edge.
 const RESIZE_HANDLE_WIDTH: f32 = 4.;
 
 /// Indent per tree level, in cells.
 const INDENT_CELLS: f32 = 1.5;
+
+/// What a tree row is, for its icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowIcon {
+    Folder,
+    Ssh,
+    Wsl,
+    Local,
+}
+
+impl RowIcon {
+    fn glyph(self) -> (&'static str, u32) {
+        match self {
+            Self::Folder => (icon::FOLDER, palette::ICON_FOLDER),
+            Self::Ssh => (icon::SERVER, palette::ICON_SSH),
+            Self::Wsl => (icon::LINUX, palette::ICON_WSL),
+            Self::Local => (icon::TERMINAL, palette::ICON_LOCAL),
+        }
+    }
+}
+
+/// The two nested boxes of a field: an edge `edge` drawn as a one pixel
+/// ring around `inner`. The pair fits in one sidebar row.
+fn field_box(font: &Rc<LoadedFont>, inner: Element, edge: LinearRgba, dpi: f32) -> Element {
+    let one = px(dpi, 1.).max(1.).floor();
+    Element::new(font, ElementContent::Children(vec![inner]))
+        .display(DisplayType::Block)
+        .padding(BoxDimension::new(Dimension::Pixels(one)))
+        .border_corners(Some(rounded(px(dpi, 6.))))
+        .colors(fill(edge, edge))
+}
+
+/// A run of text over whatever is behind it; `color` may be inherited, so
+/// that it follows its row's hover colour. No background of its own: a
+/// square one would cover the row's rounded corners.
+pub(crate) fn text_run(font: &Rc<LoadedFont>, text: String, color: InheritableColor) -> Element {
+    Element::new(font, ElementContent::Text(text)).colors(ElementColors {
+        border: BorderColor::default(),
+        bg: LinearRgba::TRANSPARENT.into(),
+        text: color,
+    })
+}
 
 impl crate::TermWindow {
     pub(crate) fn sidebar_font(&self) -> anyhow::Result<(Rc<LoadedFont>, RenderMetrics)> {
@@ -97,9 +143,11 @@ impl crate::TermWindow {
         let bounds = self.sidebar_panel_bounds();
         let row_height = self.sidebar_row_height();
 
-        // Row 0 is the search box; the tree starts below it.
+        // The session page has its title, then the search box, then the
+        // tree; the file page starts with its path bar.
         let row = match focus {
-            SidebarFocus::Search | SidebarFocus::FilesPath => 0,
+            SidebarFocus::FilesPath => 0,
+            SidebarFocus::Search => 1,
             SidebarFocus::Rename(id) => {
                 let search = self.sidebar.search.clone();
                 let index = with_store(|store| {
@@ -114,8 +162,7 @@ impl crate::TermWindow {
                     // placing the candidate window off screen.
                     None => 0,
                     Some(index) => {
-                        let visible = index.saturating_sub(self.sidebar.scroll_offset);
-                        visible + 1
+                        tree_row_on_screen(index.saturating_sub(self.sidebar.scroll_offset))
                     }
                 }
             }
@@ -315,7 +362,10 @@ impl crate::TermWindow {
             return Ok(computed);
         }
 
-        let mut children = vec![self.sidebar_search_element(&font, &colors, bounds.width(), pad)];
+        let mut children = vec![
+            self.sidebar_header_element(&font, bounds.width(), pad),
+            self.sidebar_search_element(&font, &metrics, bounds.width(), pad),
+        ];
 
         let search = self.sidebar.search.clone();
         let scroll_offset = self.sidebar.scroll_offset;
@@ -338,12 +388,34 @@ impl crate::TermWindow {
 
             let range = visible_range(rows.len(), scroll_offset, capacity);
             for row in &rows[range] {
+                let row_icon = match row.kind {
+                    RowKind::Folder { .. } => RowIcon::Folder,
+                    RowKind::Session
+                        if crate::sessions::ssh::with_ssh_hosts(|hosts| {
+                            hosts.get(row.id).is_some()
+                        }) =>
+                    {
+                        RowIcon::Ssh
+                    }
+                    RowKind::Session => match tree.find(row.id).map(|node| &node.kind) {
+                        Some(wezterm_sessions::tree::NodeKind::Session { spawn }) => {
+                            match &spawn.domain {
+                                config::keyassignment::SpawnTabDomain::DomainName(name)
+                                    if is_wsl_domain(name) =>
+                                {
+                                    RowIcon::Wsl
+                                }
+                                _ => RowIcon::Local,
+                            }
+                        }
+                        _ => RowIcon::Local,
+                    },
+                };
                 children.push(self.sidebar_row_element(
                     row,
+                    row_icon,
                     &font,
                     &metrics,
-                    &colors,
-                    palette,
                     bounds.width(),
                     pad,
                 ));
@@ -371,10 +443,63 @@ impl crate::TermWindow {
         Ok(computed)
     }
 
+    /// The session page's title row: its name, and buttons for what the
+    /// menu over empty space offers most, plus collapsing the sidebar.
+    fn sidebar_header_element(&self, font: &Rc<LoadedFont>, width: f32, pad: f32) -> Element {
+        let dpi = self.dimensions.dpi as f32;
+        let panel = lin(palette::PANEL);
+        let button = |glyph: &str, item: UIItemType| {
+            Element::new(font, ElementContent::Text(glyph.to_string()))
+                .float(Float::Right)
+                .item_type(item)
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(px(dpi, 5.)),
+                    right: Dimension::Pixels(px(dpi, 5.)),
+                    top: Dimension::Pixels(0.),
+                    bottom: Dimension::Pixels(0.),
+                })
+                .border_corners(Some(rounded(px(dpi, 6.))))
+                .colors(fill(panel, lin(palette::TEXT_MUTED)))
+                .hover_colors(Some(fill(
+                    lin(palette::ROW_HOVER),
+                    lin(palette::TEXT_STRONG),
+                )))
+        };
+        // Floats stack from the right edge in the order given.
+        let children = vec![
+            Element::new(font, ElementContent::Text("会话".to_string()))
+                .colors(fill(panel, lin(palette::TEXT_MUTED))),
+            // The only always-visible way to collapse the sidebar; the key
+            // assignment deliberately has no default binding.
+            button(icon::CHEVRON_LEFT, UIItemType::SidebarCollapseToggle),
+            button(
+                icon::NEW_FOLDER,
+                UIItemType::SidebarHeaderAction(MenuAction::NewFolder),
+            ),
+            button(
+                icon::ADD,
+                UIItemType::SidebarHeaderAction(MenuAction::NewSession),
+            ),
+        ];
+        Element::new(font, ElementContent::Children(children))
+            .display(DisplayType::Block)
+            .line_height(Some(SIDEBAR_LINE_HEIGHT))
+            .padding(BoxDimension {
+                left: Dimension::Pixels(pad + px(dpi, 6.)),
+                right: Dimension::Pixels(px(dpi, 4.)),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
+            .min_width(Some(Dimension::Pixels(
+                (width - pad - px(dpi, 10.)).max(0.),
+            )))
+            .colors(fill(panel, lin(palette::TEXT_MUTED)))
+    }
+
     fn sidebar_search_element(
         &self,
         font: &Rc<LoadedFont>,
-        colors: &TabBarColors,
+        metrics: &RenderMetrics,
         width: f32,
         pad: f32,
     ) -> Element {
@@ -390,52 +515,62 @@ impl crate::TermWindow {
             ""
         };
 
-        let text = match (focused, self.sidebar.search.is_empty()) {
-            (true, _) => format!("搜索：{}{composing}_", self.sidebar.search),
-            (false, true) => "搜索…".to_string(),
-            (false, false) => format!("搜索：{}", self.sidebar.search),
+        let (text, text_color) = match (focused, self.sidebar.search.is_empty()) {
+            (true, _) => (
+                format!("{}{composing}_", self.sidebar.search),
+                palette::TEXT_STRONG,
+            ),
+            (false, true) => ("搜索会话".to_string(), palette::TEXT_FAINT),
+            (false, false) => (self.sidebar.search.clone(), palette::TEXT),
         };
 
-        let style = if focused {
-            colors.active_tab()
+        let dpi = self.dimensions.dpi as f32;
+        let raised = lin(palette::RAISED);
+        let parts = vec![
+            Element::new(font, ElementContent::Text(format!("{} ", icon::SEARCH)))
+                .colors(fill(raised, lin(palette::TEXT_FAINT))),
+            Element::new(font, ElementContent::Text(text)).colors(fill(raised, lin(text_color))),
+        ];
+        // Ring, margin and padding come out of the row's height rather than
+        // adding to it: the tree's row count and the IME position both count
+        // in whole rows.
+        let one = px(dpi, 1.).max(1.).floor();
+        let gap = px(dpi, 2.).floor();
+        let cell = metrics.cell_size.height as f64;
+        let inner_height = if cell > 0. {
+            SIDEBAR_LINE_HEIGHT - f64::from(2. * one + 2. * gap) / cell
         } else {
-            colors.inactive_tab()
+            SIDEBAR_LINE_HEIGHT
         };
-
-        let hover = colors.inactive_tab_hover();
-        let field_colors = ElementColors {
-            border: BorderColor::default(),
-            bg: style.bg_color.to_linear().into(),
-            text: style.fg_color.to_linear().into(),
-        };
-
-        let label = Element::new(font, ElementContent::Text(text))
-            .item_type(UIItemType::SidebarSearch)
-            .colors(field_colors.clone());
-
-        // The only always-visible way to collapse the sidebar; the key
-        // assignment deliberately has no default binding.
-        let chevron = Element::new(font, ElementContent::Text("\u{00ab}".to_string()))
-            .float(Float::Right)
-            .item_type(UIItemType::SidebarCollapseToggle)
-            .colors(field_colors.clone())
-            .hover_colors(Some(ElementColors {
-                border: BorderColor::default(),
-                bg: hover.bg_color.to_linear().into(),
-                text: hover.fg_color.to_linear().into(),
-            }));
-
-        Element::new(font, ElementContent::Children(vec![label, chevron]))
+        let margin = px(dpi, 6.);
+        let inner = Element::new(font, ElementContent::Children(parts))
             .display(DisplayType::Block)
-            .line_height(Some(SIDEBAR_LINE_HEIGHT))
+            .line_height(Some(inner_height))
             .padding(BoxDimension {
-                left: Dimension::Pixels(pad),
-                right: Dimension::Pixels(pad),
+                left: Dimension::Pixels(px(dpi, 6.)),
+                right: Dimension::Pixels(px(dpi, 6.)),
                 top: Dimension::Pixels(0.),
                 bottom: Dimension::Pixels(0.),
             })
-            .min_width(Some(Dimension::Pixels((width - pad * 2.).max(0.))))
-            .colors(field_colors)
+            .border_corners(Some(rounded(px(dpi, 5.))))
+            .min_width(Some(Dimension::Pixels(
+                (width - margin * 2. - px(dpi, 12.) - one * 2.).max(0.),
+            )))
+            .colors(fill(raised, lin(palette::TEXT)));
+        let edge = if focused {
+            lin(palette::ACCENT)
+        } else {
+            lin(palette::INPUT_EDGE)
+        };
+        let _ = pad;
+        field_box(font, inner, edge, dpi)
+            .item_type(UIItemType::SidebarSearch)
+            .margin(BoxDimension {
+                left: Dimension::Pixels(margin),
+                right: Dimension::Pixels(margin),
+                top: Dimension::Pixels(gap),
+                bottom: Dimension::Pixels(gap),
+            })
     }
 
     /// The panel's background with `children` stacked down it.
@@ -456,9 +591,10 @@ impl crate::TermWindow {
             .min_height(Some(Dimension::Pixels(bounds.height())))
             .colors(ElementColors {
                 border: BorderColor::default(),
-                bg: colors.background().to_linear().into(),
-                text: colors.inactive_tab().fg_color.to_linear().into(),
+                bg: lin(palette::PANEL).into(),
+                text: lin(palette::TEXT).into(),
             });
+        let _ = colors;
         if let Some(item_type) = item_type {
             container = container.item_type(item_type);
         }
@@ -639,80 +775,68 @@ impl crate::TermWindow {
         width: f32,
         pad: f32,
     ) -> Element {
-        let style = colors.inactive_tab();
+        let _ = colors;
+        let indent = px(self.dimensions.dpi as f32, 6.);
         Element::new(font, ElementContent::Text(text.to_string()))
             .display(DisplayType::Block)
             .line_height(Some(SIDEBAR_LINE_HEIGHT))
             .padding(BoxDimension {
-                left: Dimension::Pixels(pad),
+                left: Dimension::Pixels(pad + indent),
                 right: Dimension::Pixels(pad),
                 top: Dimension::Pixels(0.),
                 bottom: Dimension::Pixels(0.),
             })
-            .min_width(Some(Dimension::Pixels((width - pad * 2.).max(0.))))
-            .colors(ElementColors {
-                border: BorderColor::default(),
-                bg: colors.background().to_linear().into(),
-                text: style.fg_color.to_linear().into(),
-            })
+            .min_width(Some(Dimension::Pixels((width - pad * 2. - indent).max(0.))))
+            .colors(fill(lin(palette::PANEL), lin(palette::TEXT_FAINT)))
     }
 
     fn sidebar_row_element(
         &self,
         row: &VisibleRow,
+        row_icon: RowIcon,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
-        palette: &ColorPalette,
         width: f32,
         pad: f32,
     ) -> Element {
+        let dpi = self.dimensions.dpi as f32;
         let renaming = self.sidebar.focus == Some(SidebarFocus::Rename(row.id));
+        let selected = renaming || self.sidebar.selected == Some(row.id);
 
-        let prefix = match row.kind {
-            RowKind::Folder { expanded: true } => "\u{25be} ",
-            RowKind::Folder { expanded: false } => "\u{25b8} ",
-            RowKind::Session
-                if crate::sessions::ssh::with_ssh_hosts(|store| store.get(row.id).is_some()) =>
-            {
-                "\u{21c4} "
-            }
-            RowKind::Session => "\u{2022} ",
-        };
-
-        let text = if renaming {
+        let name = if renaming {
             let composing = self.sidebar.composing.as_deref().unwrap_or("");
-            format!("{prefix}{}{composing}_", self.sidebar.edit_buffer)
+            format!("{}{composing}_", self.sidebar.edit_buffer)
         } else {
-            format!("{prefix}{}", row.name)
+            row.name.to_string()
         };
-
-        let selected = self.sidebar.selected == Some(row.id);
-        let style = if selected || renaming {
-            colors.active_tab()
-        } else {
-            colors.inactive_tab()
-        };
-        let hover = colors.inactive_tab_hover();
 
         // A node whose last launch failed is drawn in red, so that clicking it
         // and getting nothing doesn't just look like the sidebar is broken.
-        let text_color = if self.sidebar.failed.contains(&row.id) {
-            palette.resolve_fg(wezterm_term::color::ColorAttribute::PaletteIndex(1))
+        let name_color = if self.sidebar.failed.contains(&row.id) {
+            lin(palette::DANGER).into()
         } else {
-            style.fg_color.into()
+            InheritableColor::Inherited
         };
 
-        let indent = row.depth as f32 * metrics.cell_size.width as f32 * INDENT_CELLS;
-
-        let row_colors = ElementColors {
-            border: BorderColor::default(),
-            bg: style.bg_color.to_linear().into(),
-            text: text_color.to_linear().into(),
+        let (bg, fg) = if selected {
+            (lin(palette::ROW_SELECTED), lin(palette::TEXT_STRONG))
+        } else {
+            (lin(palette::PANEL), lin(palette::TEXT))
         };
 
-        let mut parts =
-            vec![Element::new(font, ElementContent::Text(text)).colors(row_colors.clone())];
+        let (chevron, chevron_color) = match row.kind {
+            RowKind::Folder { expanded: true } => (icon::CHEVRON_DOWN, lin(palette::TEXT_FAINT)),
+            RowKind::Folder { expanded: false } => (icon::CHEVRON_RIGHT, lin(palette::TEXT_FAINT)),
+            // The same glyph, unseen, so that names line up under folders.
+            RowKind::Session => (icon::CHEVRON_RIGHT, LinearRgba::TRANSPARENT),
+        };
+        let (glyph, glyph_color) = row_icon.glyph();
+
+        let mut parts = vec![
+            text_run(font, format!("{chevron} "), chevron_color.into()),
+            text_run(font, format!("{glyph} "), lin(glyph_color).into()),
+            text_run(font, name, name_color),
+        ];
 
         // How many terminals this session is holding. Sessions keep running in
         // the background once opened, so without this there is no way to see
@@ -722,30 +846,76 @@ impl crate::TermWindow {
             RowKind::Folder { .. } => 0,
         };
         if running > 0 {
+            let pill = lin(palette::PILL);
             parts.push(
-                Element::new(font, ElementContent::Text(format!("{running}")))
-                    .float(Float::Right)
-                    .colors(row_colors.clone()),
+                Element::new(
+                    font,
+                    ElementContent::Children(vec![
+                        text_run(font, format!("{} ", icon::DOT), lin(palette::OK).into()),
+                        text_run(font, format!("{running}"), lin(palette::TEXT).into()),
+                    ]),
+                )
+                .float(Float::Right)
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(px(dpi, 6.)),
+                    right: Dimension::Pixels(px(dpi, 6.)),
+                    top: Dimension::Pixels(0.),
+                    bottom: Dimension::Pixels(0.),
+                })
+                .border_corners(Some(rounded(px(dpi, 7.))))
+                .colors(fill(pill, lin(palette::TEXT))),
             );
         }
+
+        let indent = row.depth as f32 * metrics.cell_size.width as f32 * INDENT_CELLS;
+        let margin = px(dpi, 6.);
+        // The selected row's accent bar is its left border; other rows draw
+        // that border in their own fill, so that nothing shifts.
+        let bar = px(dpi, 2.).max(1.).floor();
+        let edge = if selected { lin(palette::ACCENT) } else { bg };
+        let hover = lin(palette::ROW_HOVER);
 
         Element::new(font, ElementContent::Children(parts))
             .display(DisplayType::Block)
             .line_height(Some(SIDEBAR_LINE_HEIGHT))
             .item_type(UIItemType::SidebarNode(row.id))
+            .margin(BoxDimension {
+                left: Dimension::Pixels(margin),
+                right: Dimension::Pixels(margin),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
             .padding(BoxDimension {
                 left: Dimension::Pixels(pad + indent),
                 right: Dimension::Pixels(pad),
                 top: Dimension::Pixels(0.),
                 bottom: Dimension::Pixels(0.),
             })
-            .min_width(Some(Dimension::Pixels((width - pad * 2. - indent).max(0.))))
-            .colors(row_colors)
-            .hover_colors(Some(ElementColors {
-                border: BorderColor::default(),
-                bg: hover.bg_color.to_linear().into(),
-                text: hover.fg_color.to_linear().into(),
-            }))
+            .border(BoxDimension {
+                left: Dimension::Pixels(bar),
+                right: Dimension::Pixels(0.),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
+            .border_corners(Some(rounded(px(dpi, 6.))))
+            .min_width(Some(Dimension::Pixels(
+                (width - margin * 2. - bar - pad * 2. - indent).max(0.),
+            )))
+            .colors(ElementColors {
+                border: BorderColor {
+                    left: edge,
+                    top: bg,
+                    right: bg,
+                    bottom: bg,
+                },
+                bg: bg.into(),
+                text: fg.into(),
+            })
+            .hover_colors(if selected {
+                None
+            } else {
+                Some(fill(hover, lin(palette::TEXT_STRONG)))
+            })
     }
 
     /// The strip along the right edge that starts a width drag.
@@ -766,19 +936,34 @@ impl crate::TermWindow {
 
         let handle_bounds = euclid::rect(x, bounds.min_y(), RESIZE_HANDLE_WIDTH, bounds.height());
 
+        // A hairline divider at rest, over a wider strip that takes the drag;
+        // the whole strip lights up while it is being dragged.
+        let _ = colors;
+        let dragging = self.sidebar.pending_width.is_some();
+        let line = px(self.dimensions.dpi as f32, 1.).max(1.).floor();
         let element = Element::new(font, ElementContent::Text(String::new()))
             .display(DisplayType::Block)
             .item_type(UIItemType::SidebarResizeHandle)
-            .min_width(Some(Dimension::Pixels(RESIZE_HANDLE_WIDTH)))
+            .min_width(Some(Dimension::Pixels(RESIZE_HANDLE_WIDTH - line)))
             .min_height(Some(Dimension::Pixels(handle_bounds.height())))
+            .border(BoxDimension {
+                left: Dimension::Pixels(0.),
+                right: Dimension::Pixels(line),
+                top: Dimension::Pixels(0.),
+                bottom: Dimension::Pixels(0.),
+            })
             .colors(ElementColors {
-                border: BorderColor::default(),
-                bg: if self.sidebar.pending_width.is_some() {
-                    colors.inactive_tab_edge_hover().to_linear().into()
+                border: BorderColor::new(if dragging {
+                    lin(palette::ACCENT)
                 } else {
-                    colors.inactive_tab_edge().to_linear().into()
+                    lin(palette::DIVIDER)
+                }),
+                bg: if dragging {
+                    lin(palette::ACCENT).into()
+                } else {
+                    lin(palette::PANEL).into()
                 },
-                text: colors.inactive_tab().fg_color.to_linear().into(),
+                text: lin(palette::TEXT).into(),
             });
 
         self.compute_element(

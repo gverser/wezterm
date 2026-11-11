@@ -27,6 +27,23 @@ use wezterm_term::{KeyCode, KeyModifiers};
 /// Narrowest useful sidebar, in cells of the title font.
 pub const MIN_SIDEBAR_CELLS: f32 = 8.;
 
+/// Rows above the tree on the session page: the page's title with its
+/// buttons, then the search box.
+pub const SESSIONS_HEADER_ROWS: usize = 2;
+
+/// The screen row, counting from the top of the panel, of the tree's
+/// `index_in_view`th visible row.
+pub fn tree_row_on_screen(index_in_view: usize) -> usize {
+    index_in_view + SESSIONS_HEADER_ROWS
+}
+
+/// Whether a session's domain is a WSL distribution (`WSL:Ubuntu`), which
+/// gets its own icon.
+pub fn is_wsl_domain(name: &str) -> bool {
+    name.get(..4)
+        .map_or(false, |prefix| prefix.eq_ignore_ascii_case("wsl:"))
+}
+
 /// Width of the page tab rail down the sidebar's left edge at `dpi`: room
 /// for an icon over a two-character label.
 ///
@@ -377,8 +394,8 @@ impl super::TermWindow {
             return 0;
         }
         let available = self.sidebar_bounds().height()
-            // the search box occupies one row
-            - row_height;
+            // the title and the search box above the tree
+            - row_height * SESSIONS_HEADER_ROWS as f32;
         (available / row_height).floor().max(0.) as usize
     }
 
@@ -1072,6 +1089,14 @@ impl super::TermWindow {
                     self.perform_sidebar_menu_action(action);
                 }
             }
+            UIItemType::SidebarHeaderAction(action) => {
+                // As if chosen from the menu over empty space: no target, so
+                // it lands at the top level.
+                if matches!(event.kind, WMEK::Press(MousePress::Left)) {
+                    self.close_sidebar_menu();
+                    self.perform_sidebar_menu_action(action);
+                }
+            }
             UIItemType::SidebarResizeHandle => {
                 context.set_cursor(Some(::window::MouseCursor::SizeLeftRight));
                 if event.kind == WMEK::Press(MousePress::Left) {
@@ -1306,6 +1331,21 @@ impl super::TermWindow {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_tree_starts_below_the_header_and_the_search_box() {
+        assert_eq!(SESSIONS_HEADER_ROWS, 2);
+        assert_eq!(tree_row_on_screen(0), 2);
+        assert_eq!(tree_row_on_screen(5), 7);
+    }
+
+    #[test]
+    fn wsl_sessions_are_told_apart_by_their_domain() {
+        assert!(is_wsl_domain("WSL:Ubuntu"));
+        assert!(is_wsl_domain("wsl:Debian"));
+        assert!(!is_wsl_domain("local"));
+        assert!(!is_wsl_domain("sidebar-ssh:3"));
+    }
 
     #[test]
     fn the_rail_is_46_pixels_at_96_dpi_and_scales() {
