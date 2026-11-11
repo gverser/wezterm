@@ -1339,6 +1339,18 @@ fn enable_blur_behind(hwnd: HWND) {
     }
 }
 
+/// Whether the title bar should be dark: when the system says so, and also
+/// when the terminal itself is dark, so that a light-mode system doesn't put
+/// a white bar over a black window. `terminal_bg` is sRGB 0..1; unset means
+/// the default background, which is black.
+fn caption_is_dark(system: Appearance, terminal_bg: Option<(f32, f32, f32)>) -> bool {
+    if matches!(system, Appearance::Dark | Appearance::DarkHighContrast) {
+        return true;
+    }
+    let (r, g, b) = terminal_bg.unwrap_or((0., 0., 0.));
+    0.299 * r + 0.587 * g + 0.114 * b < 0.5
+}
+
 fn apply_theme(hwnd: HWND) -> Option<LRESULT> {
     // Check for OS app theme, and set window attributes accordingly.
     // Note that the MS terminal app uses the logic found here for this stuff:
@@ -1399,12 +1411,17 @@ fn apply_theme(hwnd: HWND) -> Option<LRESULT> {
     unsafe {
         update_title_font(hwnd);
 
+        let terminal_bg = rc_from_hwnd(hwnd).and_then(|inner| {
+            let inner = inner.borrow();
+            inner
+                .config
+                .resolved_palette
+                .background
+                .map(|c| (c.0, c.1, c.2))
+        });
         let appearance = get_appearance();
-        let theme_string = if appearance == Appearance::Dark {
-            "DarkMode_Explorer"
-        } else {
-            ""
-        };
+        let dark = caption_is_dark(appearance, terminal_bg);
+        let theme_string = if dark { "DarkMode_Explorer" } else { "" };
 
         SetWindowTheme(
             hwnd as _,
@@ -1412,7 +1429,7 @@ fn apply_theme(hwnd: HWND) -> Option<LRESULT> {
             std::ptr::null_mut(),
         );
 
-        let mut enabled: BOOL = if appearance == Appearance::Dark { 1 } else { 0 };
+        let mut enabled: BOOL = if dark { 1 } else { 0 };
         DwmSetWindowAttribute(
             hwnd as _,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -3000,5 +3017,25 @@ unsafe extern "system" fn wnd_proc(
             log::error!("caught {:?}", e);
             std::process::exit(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod caption_test {
+    use super::*;
+
+    #[test]
+    fn caption_follows_a_dark_terminal_even_in_light_mode() {
+        assert!(caption_is_dark(Appearance::Light, None));
+        assert!(caption_is_dark(Appearance::Light, Some((0.07, 0.07, 0.09))));
+        assert!(!caption_is_dark(
+            Appearance::Light,
+            Some((0.99, 0.96, 0.89))
+        ));
+        assert!(caption_is_dark(Appearance::Dark, Some((0.99, 0.96, 0.89))));
+        assert!(caption_is_dark(
+            Appearance::DarkHighContrast,
+            Some((1., 1., 1.))
+        ));
     }
 }
