@@ -760,15 +760,19 @@ impl super::TermWindow {
                     self.key_table_state.did_process_key();
                 }
 
+                // What a text field should see: a character AltGr produced
+                // arrives here with the CTRL and ALT that make up AltGr.
+                let field_mods = text_field_modifiers(&key, modifiers);
+
                 if self.sidebar.focus.is_some() {
-                    if window_key.key_is_down && self.sidebar_key_down(&key, modifiers) {
+                    if window_key.key_is_down && self.sidebar_key_down(&key, field_mods) {
                         return;
                     }
                 }
 
                 if let Some(modal) = self.get_modal() {
                     if window_key.key_is_down {
-                        modal.key_down(key, modifiers, self).ok();
+                        modal.key_down(key, field_mods, self).ok();
                     }
                     return;
                 }
@@ -1006,9 +1010,47 @@ impl super::TermWindow {
     }
 }
 
+/// The modifiers to hand a text field along with `key`, on the path that
+/// sees characters as the keyboard layout produced them. On Windows AltGr is
+/// CTRL+ALT, and a character typed with it (`@` on a German layout) keeps
+/// them: the sidebar's fields and the forms would take it for a shortcut and
+/// drop it. Only printable characters lose them; this path never sees the
+/// layout's plain key for a shortcut such as Ctrl+C.
+fn text_field_modifiers(key: &::termwiz::input::KeyCode, mods: Modifiers) -> Modifiers {
+    let mods = mods.remove_positional_mods();
+    match key {
+        ::termwiz::input::KeyCode::Char(c)
+            if !c.is_control() && mods.contains(Modifiers::CTRL | Modifiers::ALT) =>
+        {
+            mods - (Modifiers::CTRL | Modifiers::ALT)
+        }
+        _ => mods,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_character_typed_with_altgr_reaches_text_fields_as_typed() {
+        use ::termwiz::input::KeyCode as K;
+        let altgr = Modifiers::CTRL | Modifiers::ALT | Modifiers::RIGHT_ALT;
+        assert_eq!(text_field_modifiers(&K::Char('@'), altgr), Modifiers::NONE);
+        assert_eq!(
+            text_field_modifiers(&K::Char('@'), altgr | Modifiers::SHIFT),
+            Modifiers::SHIFT
+        );
+        // Shortcuts keep their modifiers.
+        assert_eq!(
+            text_field_modifiers(&K::Char('c'), Modifiers::CTRL),
+            Modifiers::CTRL
+        );
+        assert_eq!(
+            text_field_modifiers(&K::Enter, Modifiers::CTRL | Modifiers::ALT),
+            Modifiers::CTRL | Modifiers::ALT
+        );
+    }
 
     #[test]
     fn keys_a_sidebar_field_leaves_stop_short_of_the_terminal() {
