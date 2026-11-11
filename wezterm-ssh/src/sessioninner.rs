@@ -399,12 +399,12 @@ impl SessionInner {
         }
 
         let timeout = connect_timeout(&self.config);
+        let target = connect_target(hostname, port, &addr);
         connect_socket(&sock, &addr, timeout).map_err(|err| match timeout {
-            Some(timeout) if err.kind() == std::io::ErrorKind::TimedOut => anyhow!(
-                "{} 秒内没有连上 {hostname}:{port}（{addr}）",
-                timeout.as_secs()
-            ),
-            _ => anyhow::Error::new(err).context(format!("连接 {hostname}:{port}（{addr}）")),
+            Some(timeout) if err.kind() == std::io::ErrorKind::TimedOut => {
+                anyhow!("{} 秒内没有连上 {target}", timeout.as_secs())
+            }
+            _ => anyhow::Error::new(err).context(format!("连接 {target}")),
         })?;
         Ok((sock, None))
     }
@@ -1226,6 +1226,17 @@ impl Drop for KillOnDropChild {
     }
 }
 
+/// What is being connected to, for a message: the address it resolved to
+/// only when that says something the name and port don't.
+fn connect_target(hostname: &str, port: u16, addr: &std::net::SocketAddr) -> String {
+    let asked = format!("{hostname}:{port}");
+    if addr.to_string() == asked {
+        asked
+    } else {
+        format!("{asked}（{addr}）")
+    }
+}
+
 /// OpenSSH's ConnectTimeout: how long to wait for the TCP connection, in
 /// seconds. None leaves it to the system's own limit.
 fn connect_timeout(config: &ConfigMap) -> Option<Duration> {
@@ -1250,6 +1261,19 @@ fn connect_socket(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_address_is_named_once_when_it_is_what_was_asked_for() {
+        let addr = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert_eq!(
+            connect_target("10.0.0.1", 22, &addr("10.0.0.1:22")),
+            "10.0.0.1:22"
+        );
+        assert_eq!(
+            connect_target("example.com", 22, &addr("93.184.216.34:22")),
+            "example.com:22（93.184.216.34:22）"
+        );
+    }
 
     #[test]
     fn connect_timeout_comes_from_the_config_in_seconds() {
