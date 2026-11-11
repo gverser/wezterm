@@ -222,25 +222,36 @@ fn invalidate_windows_showing(domain_id: DomainId) {
 /// of date as they age, and give up on a channel that has gone quiet.
 fn spawn_ticker(domain_id: DomainId, instance: u64) {
     promise::spawn::spawn(async move {
+        // The age last put on screen: past a minute it changes once a
+        // minute, and repainting every second would be for nothing.
+        let mut shown_age = None;
         loop {
             smol::Timer::after(Duration::from_secs(1)).await;
-            let action = MONITORS.with(|m| {
+            let now = Instant::now();
+            let tick = MONITORS.with(|m| {
                 let monitors = m.borrow();
                 let mon = monitors
                     .get(&domain_id)
                     .filter(|m| m.instance == instance)?;
-                Some(tick_action(
-                    mon.state,
-                    mon.status.is_some(),
-                    mon.last_frame,
-                    Instant::now(),
+                let age = now.saturating_duration_since(mon.last_frame).as_secs();
+                Some((
+                    tick_action(mon.state, mon.status.is_some(), mon.last_frame, now),
+                    age,
                 ))
             });
+            let Some((action, age)) = tick else {
+                break;
+            };
             match action {
-                None => break,
-                Some(Tick::Quiet) => {}
-                Some(Tick::Repaint) => invalidate_windows_showing(domain_id),
-                Some(Tick::Fail) => {
+                Tick::Quiet => shown_age = None,
+                Tick::Repaint => {
+                    let text = age_text(age);
+                    if shown_age.as_ref() != Some(&text) {
+                        shown_age = Some(text);
+                        invalidate_windows_showing(domain_id);
+                    }
+                }
+                Tick::Fail => {
                     log::warn!("ssh monitor for domain {domain_id}: nothing for {DATA_TIMEOUT:?}");
                     let channel = MONITORS.with(|m| {
                         m.borrow_mut()
