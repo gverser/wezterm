@@ -398,8 +398,14 @@ impl SessionInner {
                 .with_context(|| format!("binding to {bind_addr:?}"))?;
         }
 
-        sock.connect(&addr.into())
-            .with_context(|| format!("Connecting to {hostname}:{port} ({addr:?})"))?;
+        let timeout = connect_timeout(&self.config);
+        connect_socket(&sock, &addr, timeout).map_err(|err| match timeout {
+            Some(timeout) if err.kind() == std::io::ErrorKind::TimedOut => anyhow!(
+                "{} 秒内没有连上 {hostname}:{port}（{addr}）",
+                timeout.as_secs()
+            ),
+            _ => anyhow::Error::new(err).context(format!("连接 {hostname}:{port}（{addr}）")),
+        })?;
         Ok((sock, None))
     }
 
@@ -1220,9 +1226,73 @@ impl Drop for KillOnDropChild {
     }
 }
 
+/// OpenSSH's ConnectTimeout: how long to wait for the TCP connection, in
+/// seconds. None leaves it to the system's own limit.
+fn connect_timeout(config: &ConfigMap) -> Option<Duration> {
+    match config.get("connecttimeout")?.trim().parse::<u64>() {
+        Ok(0) | Err(_) => None,
+        Ok(secs) => Some(Duration::from_secs(secs)),
+    }
+}
+
+fn connect_socket(
+    sock: &Socket,
+    addr: &std::net::SocketAddr,
+    timeout: Option<Duration>,
+) -> std::io::Result<()> {
+    let addr = (*addr).into();
+    match timeout {
+        Some(timeout) => sock.connect_timeout(&addr, timeout),
+        None => sock.connect(&addr),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn connect_timeout_comes_from_the_config_in_seconds() {
+        let with = |value: &str| {
+            let mut config = ConfigMap::new();
+            config.insert("connecttimeout".to_string(), value.to_string());
+            connect_timeout(&config)
+        };
+        assert_eq!(with("10"), Some(Duration::from_secs(10)));
+        assert_eq!(with(" 3 "), Some(Duration::from_secs(3)));
+        // As in OpenSSH: no number, or none at all, means the system's own.
+        assert_eq!(with("0"), None);
+        assert_eq!(with("none"), None);
+        assert_eq!(with("ten"), None);
+        assert_eq!(connect_timeout(&ConfigMap::new()), None);
+    }
+
+    #[test]
+    fn connecting_to_a_host_that_never_answers_gives_up_in_time() {
+        // Where this machine gets an answer at once (no route at all),
+        // there is nothing to wait for and nothing to check.
+        let addr = match unanswered_address() {
+            Some(addr) => addr,
+            None => return,
+        };
+        let sock = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        let started = std::time::Instant::now();
+        let result = connect_socket(&sock, &addr, Some(Duration::from_secs(1)));
+        let took = started.elapsed();
+        assert!(result.is_err(), "connected to {:?}", addr);
+        assert!(took < Duration::from_secs(5), "took {:?}", took);
+    }
+
+    /// An address that a connect to will hang on, if this machine can make
+    /// one: 10.255.255.1 is not routed anywhere on most networks.
+    fn unanswered_address() -> Option<std::net::SocketAddr> {
+        let addr: std::net::SocketAddr = "10.255.255.1:22".parse().unwrap();
+        let sock = Socket::new(Domain::IPV4, Type::STREAM, None).ok()?;
+        match sock.connect_timeout(&addr.into(), Duration::from_millis(300)) {
+            Err(err) if err.kind() == std::io::ErrorKind::TimedOut => Some(addr),
+            _ => None,
+        }
+    }
 
     #[test]
     fn a_closed_channel_without_an_exit_status_has_lost_its_session() {
