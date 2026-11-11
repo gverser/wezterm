@@ -33,7 +33,9 @@ const HEADER_ROWS: usize = 3;
 const MAX_TRANSFER_LINES: usize = 3;
 
 /// How often a running transfer redraws its progress.
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+/// How often a transfer's progress redraws the page. Each one rebuilds the
+/// whole sidebar, and twice a second is plenty for a byte count and a rate.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 
 fn describe(err: impl std::fmt::Display) -> String {
     explain_sftp_error(&err.to_string())
@@ -503,15 +505,36 @@ impl crate::TermWindow {
         let Some(window) = self.window.clone() else {
             return;
         };
+        let owner = self.dialog_owner();
         promise::spawn::spawn(async move {
-            let paths = pick_open_files(true).await;
-            if !paths.is_empty() {
-                window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+            match pick_open_files(owner, true).await {
+                Ok(paths) if paths.is_empty() => {}
+                Ok(paths) => window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
                     tw.files_upload_paths(domain_id, paths)
-                })));
+                }))),
+                Err(why) => window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
+                    tw.files.transfers.note(why);
+                    tw.files_changed();
+                }))),
             }
         })
         .detach();
+    }
+
+    /// This window, as the owner of a file dialog.
+    pub fn dialog_owner(&self) -> crate::sftp::dialogs::Owner {
+        #[cfg(windows)]
+        {
+            use ::window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Some(window) = self.window.as_ref() {
+                if let Ok(handle) = window.window_handle() {
+                    if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                        return crate::sftp::dialogs::Owner(h.hwnd.get());
+                    }
+                }
+            }
+        }
+        crate::sftp::dialogs::Owner::default()
     }
 
     /// Files dropped on the window. Onto the file page they are uploaded to
@@ -641,8 +664,9 @@ impl crate::TermWindow {
         };
         let name = path.rsplit('/').next().unwrap_or("download");
         let name = crate::sftp::model::display_name(name).into_owned();
+        let owner = self.dialog_owner();
         promise::spawn::spawn(async move {
-            let Some(local) = pick_save_file(&name).await else {
+            let Some(local) = pick_save_file(owner, &name).await else {
                 return;
             };
             window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
@@ -679,7 +703,7 @@ impl crate::TermWindow {
 
     /// Ask about the next upload that would replace a remote file. One
     /// question at a time: answering it asks the next.
-    fn files_ask_overwrite(&mut self) {
+    pub(crate) fn files_ask_overwrite(&mut self) {
         if self.get_modal().is_some() {
             return;
         }

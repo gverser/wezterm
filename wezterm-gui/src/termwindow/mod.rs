@@ -2388,6 +2388,13 @@ impl TermWindow {
         self.modal.borrow_mut().take();
         if let Some(window) = self.window.as_ref() {
             window.invalidate();
+            // An upload's overwrite question can't open over another modal;
+            // it waits for that one to close, and this is when it does.
+            if !self.files.overwrite_pending.is_empty() {
+                window.notify(TermWindowNotif::Apply(Box::new(|tw| {
+                    tw.files_ask_overwrite();
+                })));
+            }
         }
     }
 
