@@ -6,6 +6,7 @@ use crate::termwindow::render::corners::*;
 use crate::termwindow::render::window_buttons::window_button_element;
 use crate::termwindow::{UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
+use ::window::RectF;
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
 use wezterm_font::LoadedFont;
@@ -493,9 +494,69 @@ impl crate::TermWindow {
 
         let gl_state = self.render_state.as_ref().unwrap();
         self.render_element(&computed, gl_state, None)?;
+        self.paint_active_tab_accent(computed)?;
 
         Ok(ui_items)
     }
+
+    /// The accent line along the top of the current tab.
+    ///
+    /// Drawn over the bar rather than as the tab's top border: box_model fills
+    /// a rounded corner with the top border's colour, which would turn both
+    /// corners into blue blobs. Left out when the user has given the active
+    /// tab colours of their own.
+    fn paint_active_tab_accent(&self, computed: &ComputedElement) -> anyhow::Result<()> {
+        let configured = self
+            .config
+            .colors
+            .as_ref()
+            .and_then(|c| c.tab_bar.as_ref())
+            .map_or(false, |t| t.active_tab.is_some());
+        if configured {
+            return Ok(());
+        }
+        let Some(tab) = find_active_tab(computed) else {
+            return Ok(());
+        };
+        let inset = tab.border_corners.as_ref().map_or(0., |c| c.top_left.width);
+        let thickness = crate::termwindow::theme::px(self.dimensions.dpi as f32, 2.).round();
+        let rect = accent_line(tab.border_rect, inset, thickness);
+        let gl_state = self.render_state.as_ref().unwrap();
+        let layer = gl_state.layer_for_zindex(computed.zindex)?;
+        let mut layers = layer.quad_allocator();
+        self.filled_rectangle(
+            &mut layers,
+            2,
+            rect,
+            crate::termwindow::theme::lin(crate::termwindow::theme::palette::ACCENT),
+        )?;
+        Ok(())
+    }
+}
+
+/// The current tab's element, wherever it sits in the bar.
+fn find_active_tab(element: &ComputedElement) -> Option<&ComputedElement> {
+    if matches!(
+        element.item_type,
+        Some(UIItemType::TabBar(TabBarItem::Tab { active: true, .. }))
+    ) {
+        return Some(element);
+    }
+    match &element.content {
+        ComputedElementContent::Children(children) => children.iter().find_map(find_active_tab),
+        _ => None,
+    }
+}
+
+/// A line `thickness` tall along the top of `tab`, stopping `inset` short of
+/// each side so that it ends where the rounded corners begin.
+fn accent_line(tab: RectF, inset: f32, thickness: f32) -> RectF {
+    euclid::rect(
+        tab.min_x() + inset,
+        tab.min_y(),
+        (tab.width() - inset * 2.).max(0.),
+        thickness,
+    )
 }
 
 fn make_x_button(
@@ -556,4 +617,16 @@ fn make_x_button(
         top: Dimension::Cells(0.),
         bottom: Dimension::Cells(0.),
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn the_accent_runs_along_the_top_between_the_rounded_corners() {
+        let tab: RectF = euclid::rect(100., 5., 80., 30.);
+        let line = accent_line(tab, 6., 2.);
+        assert_eq!(line, euclid::rect(106., 5., 68., 2.));
+    }
 }

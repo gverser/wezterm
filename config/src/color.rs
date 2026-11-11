@@ -479,37 +479,38 @@ impl TryFrom<String> for IntegratedTitleButtonColor {
     }
 }
 
+// The tab bar defaults are the bottom layer of the fork's dark layered
+// look (wezterm-gui/src/termwindow/theme.rs): base #15171c, panel #1c1f25.
 fn default_background() -> RgbaColor {
-    (0x33, 0x33, 0x33).into()
+    (0x15, 0x17, 0x1c).into()
 }
 
 fn default_inactive_tab_edge() -> RgbaColor {
-    RgbColor::new_8bpc(0x57, 0x57, 0x57).into()
+    RgbColor::new_8bpc(0x2a, 0x2f, 0x38).into()
 }
 
 fn default_inactive_tab_edge_hover() -> RgbaColor {
-    RgbColor::new_8bpc(0x36, 0x36, 0x36).into()
+    RgbColor::new_8bpc(0x3a, 0x40, 0x4b).into()
 }
 
 fn default_inactive_tab() -> TabBarColor {
     TabBarColor {
-        bg_color: (0x33, 0x33, 0x33).into(),
-        fg_color: (0x80, 0x80, 0x80).into(),
+        bg_color: (0x15, 0x17, 0x1c).into(),
+        fg_color: (0x8b, 0x94, 0x9e).into(),
         ..TabBarColor::default()
     }
 }
 fn default_inactive_tab_hover() -> TabBarColor {
     TabBarColor {
-        bg_color: (0x1f, 0x1f, 0x1f).into(),
-        fg_color: (0x90, 0x90, 0x90).into(),
-        italic: true,
+        bg_color: (0x1f, 0x23, 0x2a).into(),
+        fg_color: (0xc9, 0xd1, 0xd9).into(),
         ..TabBarColor::default()
     }
 }
 fn default_active_tab() -> TabBarColor {
     TabBarColor {
-        bg_color: (0x00, 0x00, 0x00).into(),
-        fg_color: (0xc0, 0xc0, 0xc0).into(),
+        bg_color: (0x1c, 0x1f, 0x25).into(),
+        fg_color: (0xe6, 0xed, 0xf3).into(),
         ..TabBarColor::default()
     }
 }
@@ -640,27 +641,27 @@ impl Default for WindowFrameConfig {
 }
 
 fn default_inactive_titlebar_bg() -> RgbaColor {
-    RgbColor::new_8bpc(0x33, 0x33, 0x33).into()
+    RgbColor::new_8bpc(0x15, 0x17, 0x1c).into()
 }
 
 fn default_active_titlebar_bg() -> RgbaColor {
-    RgbColor::new_8bpc(0x33, 0x33, 0x33).into()
+    RgbColor::new_8bpc(0x15, 0x17, 0x1c).into()
 }
 
 fn default_inactive_titlebar_fg() -> RgbaColor {
-    RgbColor::new_8bpc(0xcc, 0xcc, 0xcc).into()
+    RgbColor::new_8bpc(0x8b, 0x94, 0x9e).into()
 }
 
 fn default_active_titlebar_fg() -> RgbaColor {
-    RgbColor::new_8bpc(0xff, 0xff, 0xff).into()
+    RgbColor::new_8bpc(0xe6, 0xed, 0xf3).into()
 }
 
 fn default_inactive_titlebar_border_bottom() -> RgbaColor {
-    RgbColor::new_8bpc(0x2b, 0x20, 0x42).into()
+    RgbColor::new_8bpc(0x2a, 0x2f, 0x38).into()
 }
 
 fn default_active_titlebar_border_bottom() -> RgbaColor {
-    RgbColor::new_8bpc(0x2b, 0x20, 0x42).into()
+    RgbColor::new_8bpc(0x2a, 0x2f, 0x38).into()
 }
 
 fn default_button_hover_fg() -> RgbaColor {
@@ -803,4 +804,23 @@ brights = [ "#8ca6a6" ,"#e5164a" ,"#00b368" ,"#b3694d" ,"#0094f0" ,"#ff5792" ,"#
         scheme.colors.indexed.get(&52),
         Some(&RgbColor::new_8bpc(0xfb, 0xda, 0xda).into())
     );
+}
+
+#[cfg(test)]
+#[test]
+fn tab_bar_defaults_are_the_dark_layered_palette() {
+    let rgb = |r, g, b| -> RgbaColor { (r, g, b).into() };
+    let c = TabBarColors::default();
+    assert_eq!(c.background(), rgb(0x15, 0x17, 0x1c));
+    assert_eq!(c.active_tab().bg_color, rgb(0x1c, 0x1f, 0x25));
+    assert_eq!(c.active_tab().fg_color, rgb(0xe6, 0xed, 0xf3));
+    assert_eq!(c.inactive_tab().bg_color, rgb(0x15, 0x17, 0x1c));
+    assert_eq!(c.inactive_tab().fg_color, rgb(0x8b, 0x94, 0x9e));
+    assert_eq!(c.inactive_tab_hover().bg_color, rgb(0x1f, 0x23, 0x2a));
+    assert!(!c.inactive_tab_hover().italic);
+    assert_eq!(c.inactive_tab_edge(), rgb(0x2a, 0x2f, 0x38));
+    let frame = WindowFrameConfig::default();
+    assert_eq!(frame.active_titlebar_bg, rgb(0x15, 0x17, 0x1c));
+    assert_eq!(frame.inactive_titlebar_bg, rgb(0x15, 0x17, 0x1c));
+    assert_eq!(frame.active_titlebar_fg, rgb(0xe6, 0xed, 0xf3));
 }
