@@ -10,8 +10,11 @@ tags:
 When the active pane was opened from an ssh session in the
 [session sidebar](session_sidebar_enabled.md), a one row status bar under the
 terminal shows the server's host name, CPU use, memory, network throughput,
-uptime, logged in users and disk usage, refreshed every three seconds. CPU,
-memory and disk turn yellow above 80% and red above 90%. When the window is
+uptime, logged in users and disk usage, refreshed every three seconds. A dot
+at the start shows how the connection is: green while the figures are fresh,
+yellow while connecting or when they are out of date, red when the connection
+failed or dropped. CPU, memory and disk turn yellow above 80% and red above
+90%; otherwise the figures are plain, their names greyed. When the window is
 too narrow, the disks fold into one entry and then the less important entries
 are left out; CPU and memory always stay.
 

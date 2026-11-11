@@ -162,7 +162,8 @@ is running asks first, then cancels it and cleans up the same way; if wezterm
 itself exits in the middle of a transfer, the partial file stays behind.
 Failures show the server's own message.
 
-The sidebar takes its colors from the
+The sidebar, its menus and the forms it opens are drawn in a fixed dark
+palette of their own; they do not follow the color scheme or the
 [tab_bar](../../appearance.md#tab-bar-appearance-colors) color settings.
 
 See also:

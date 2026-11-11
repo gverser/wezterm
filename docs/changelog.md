@@ -22,6 +22,15 @@ usually the best available version.
 As features stabilize some brief notes about them will accumulate here.
 
 #### Changed
+* The [session sidebar](config/lua/config/session_sidebar_enabled.md), its
+  right click menus, the forms and confirmations, the
+  [ssh status bar](config/lua/config/ssh_status_bar_enabled.md) and the Feishu
+  panel have a new dark layered look with icons. The default tab bar and
+  window frame colors changed to match, the active tab gets an accent line,
+  and on Windows the title bar turns dark when the terminal background is
+  dark. Deleting a session that still has terminals running and closing a
+  window that would take hidden sessions with it now ask in the same kind of
+  form as every other confirmation; y and n answer them as before.
 * DECRQCRA is now disabled by default to prevent silent screen scraping.
   Set `enable_checksum_rectangular_area = true` to re-enable it.
   Thanks to @jquast! #7701
