@@ -565,13 +565,18 @@ impl crate::TermWindow {
     /// Queue local files for upload to the directory the page shows for
     /// `domain_id`, asking first about any that would replace a remote file.
     pub fn files_upload_paths(&mut self, domain_id: DomainId, paths: Vec<PathBuf>) {
-        let Some(conn) = self.files.conns.get(&domain_id) else {
+        let conn = self.files.conns.get(&domain_id);
+        let cwd = match crate::sftp::model::upload_dir(conn.map(|c| c.cwd.as_str())) {
+            Ok(cwd) => cwd.to_string(),
+            Err(why) => {
+                self.files.transfers.note(why.to_string());
+                self.files_changed();
+                return;
+            }
+        };
+        let Some(conn) = conn else {
             return;
         };
-        if conn.cwd.is_empty() {
-            return;
-        }
-        let cwd = conn.cwd.clone();
         let sftp = conn.sftp.clone();
         let generation = conn.generation;
 

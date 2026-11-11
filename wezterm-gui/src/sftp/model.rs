@@ -34,6 +34,18 @@ pub fn remote_parent(path: &str) -> String {
     }
 }
 
+/// Said when files are dropped on the page before it has read a directory.
+pub const NO_DIR_YET: &str = "目录还没读出来，这次没有上传，请稍后再拖一次";
+
+/// The directory dropped files go to: the one the page shows, once it has
+/// one.
+pub fn upload_dir(cwd: Option<&str>) -> Result<&str, &'static str> {
+    match cwd {
+        Some(dir) if !dir.is_empty() => Ok(dir),
+        _ => Err(NO_DIR_YET),
+    }
+}
+
 /// `dir` and `name` joined by exactly one slash.
 pub fn remote_join(dir: &str, name: &str) -> String {
     format!("{}/{}", dir.trim_end_matches('/'), name)
@@ -206,6 +218,14 @@ mod test {
             is_link: false,
             size: if is_dir { None } else { Some(1) },
         }
+    }
+
+    #[test]
+    fn files_dropped_before_the_page_has_a_directory_are_turned_away_aloud() {
+        assert_eq!(upload_dir(Some("/srv")), Ok("/srv"));
+        assert_eq!(upload_dir(Some("")), Err(NO_DIR_YET));
+        assert_eq!(upload_dir(None), Err(NO_DIR_YET));
+        assert!(NO_DIR_YET.contains("没有上传"), "{}", NO_DIR_YET);
     }
 
     #[test]
