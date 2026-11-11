@@ -39,7 +39,21 @@ use std::sync::Arc;
 /// will call AgentProxy::update_target to signal when
 /// the active client may have changed.
 
+/// Whether making the agent symlink failed because this user may not make
+/// symlinks at all: on Windows that takes Developer Mode or an elevated
+/// process (ERROR_PRIVILEGE_NOT_HELD).
+fn lacks_symlink_privilege(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| cfg!(windows) && io.raw_os_error() == Some(1314))
+}
+
 pub struct AgentProxy {
+    /// False once it turns out the symlink can't be made. Panes then keep
+    /// the SSH_AUTH_SOCK they would have had: pointing them at a path that
+    /// never comes into being cuts them off from the agent altogether, and
+    /// on Windows the OpenSSH agent's pipe is found without the variable.
+    usable: std::sync::atomic::AtomicBool,
     sock_path: PathBuf,
     current_target: RwLock<Option<Arc<ClientId>>>,
     sender: SyncSender<()>,
@@ -79,14 +93,44 @@ fn update_symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> anyho
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_user_without_the_symlink_privilege_gets_no_proxy() {
+        // ERROR_PRIVILEGE_NOT_HELD: no Developer Mode, not elevated.
+        let err = anyhow::Error::new(std::io::Error::from_raw_os_error(1314)).context("symlink");
+        assert!(lacks_symlink_privilege(&err));
+    }
+
+    #[test]
+    fn other_failures_leave_the_proxy_on() {
+        let err = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(!lacks_symlink_privilege(&err));
+        assert!(!lacks_symlink_privilege(&anyhow::anyhow!("something else")));
+    }
+}
+
 impl AgentProxy {
     pub fn new() -> Self {
         let pid = unsafe { libc::getpid() };
         let sock_path = config::RUNTIME_DIR.join(format!("agent.{pid}"));
 
-        if let Some(inherited) = Self::default_ssh_auth_sock() {
-            if let Err(err) = update_symlink(&inherited, &sock_path) {
-                log::error!("failed to set {sock_path:?} to initial inherited SSH_AUTH_SOCK value of {inherited:?}: {err:#}");
+        // Made now even with nothing inherited, so that a user who can't
+        // make symlinks is found out before the first pane is told to use one.
+        let target = Self::default_ssh_auth_sock().unwrap_or_else(|| ".".to_string());
+        let mut usable = true;
+        if let Err(err) = update_symlink(&target, &sock_path) {
+            if lacks_symlink_privilege(&err) {
+                log::info!(
+                    "not proxying the ssh agent: this user can't make symlinks \
+                     (Windows needs Developer Mode for that)"
+                );
+                usable = false;
+            } else {
+                log::error!("failed to set {sock_path:?} to initial SSH_AUTH_SOCK value of {target:?}: {err:#}");
             }
         }
 
@@ -95,6 +139,7 @@ impl AgentProxy {
         std::thread::spawn(move || Self::process_updates(receiver));
 
         Self {
+            usable: std::sync::atomic::AtomicBool::new(usable),
             sock_path,
             current_target: RwLock::new(None),
             sender,
@@ -105,6 +150,15 @@ impl AgentProxy {
         match &config::configuration().default_ssh_auth_sock {
             Some(value) => Some(value.to_string()),
             None => std::env::var("SSH_AUTH_SOCK").ok(),
+        }
+    }
+
+    /// The SSH_AUTH_SOCK to give a pane, or None to leave it as it is.
+    pub fn pane_sock_path(&self) -> Option<&Path> {
+        if self.usable.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(&self.sock_path)
+        } else {
+            None
         }
     }
 
@@ -136,6 +190,10 @@ impl AgentProxy {
     }
 
     fn update_now(&self) {
+        if !self.usable.load(std::sync::atomic::Ordering::Relaxed) {
+            // Every attempt would fail the same way, and log it.
+            return;
+        }
         // Get list of clients from mux
         // Order by most recent activity
         // Take first one with auth sock -> that's the path

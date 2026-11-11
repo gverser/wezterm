@@ -530,8 +530,12 @@ impl LocalDomain {
             cmd.env("WEZTERM_UNIX_SOCKET", sock);
         }
         cmd.env("WEZTERM_PANE", pane_id.to_string());
-        if let Some(agent) = Mux::get().agent.as_ref() {
-            cmd.env("SSH_AUTH_SOCK", agent.path());
+        if let Some(sock) = Mux::get()
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.pane_sock_path())
+        {
+            cmd.env("SSH_AUTH_SOCK", sock);
         }
         self.fixup_command(&mut cmd).await?;
         Ok(cmd)
