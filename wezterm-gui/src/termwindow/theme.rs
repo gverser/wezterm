@@ -5,9 +5,6 @@
 //! layers stay in step: base under panel under raised, one accent.
 //! See docs/superpowers/specs/2026-11-11-ui-refresh-design.md.
 
-// Until every surface has moved over; removed once they all use it.
-#![allow(dead_code)]
-
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::corners::{
     BOTTOM_LEFT_ROUNDED_CORNER, BOTTOM_RIGHT_ROUNDED_CORNER, TOP_LEFT_ROUNDED_CORNER,
@@ -82,12 +79,13 @@ pub mod icon {
     pub const HOME: &str = "\u{eb06}";
     pub const COPY: &str = "\u{ebcc}";
     pub const CLOSE: &str = "\u{ea76}";
-    pub const CHECK: &str = "\u{eab2}";
     pub const DOT: &str = "\u{ea71}";
     /// Material Design checkboxes: codicons have none.
     pub const CHECKBOX_ON: &str = "\u{f0132}";
     pub const CHECKBOX_OFF: &str = "\u{f0131}";
 
+    /// Every icon, for the test that they are all in the font.
+    #[cfg(test)]
     pub const ALL: &[&str] = &[
         TERMINAL,
         SERVER,
@@ -112,7 +110,6 @@ pub mod icon {
         HOME,
         COPY,
         CLOSE,
-        CHECK,
         DOT,
         CHECKBOX_ON,
         CHECKBOX_OFF,
@@ -153,16 +150,6 @@ pub fn rounded(radius: f32) -> Corners {
         top_right: corner(radius, TOP_RIGHT_ROUNDED_CORNER),
         bottom_left: corner(radius, BOTTOM_LEFT_ROUNDED_CORNER),
         bottom_right: corner(radius, BOTTOM_RIGHT_ROUNDED_CORNER),
-    }
-}
-
-/// The top two corners rounded, as on a tab.
-pub fn rounded_top(radius: f32) -> Corners {
-    Corners {
-        top_left: corner(radius, TOP_LEFT_ROUNDED_CORNER),
-        top_right: corner(radius, TOP_RIGHT_ROUNDED_CORNER),
-        bottom_left: SizedPoly::none(),
-        bottom_right: SizedPoly::none(),
     }
 }
 
