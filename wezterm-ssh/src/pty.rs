@@ -94,6 +94,11 @@ impl portable_pty::MasterPty for SshPty {
 /// the shell exiting. Panes show it instead of closing without a word.
 pub const SESSION_LOST: &str = "SSH 连接已断开";
 
+/// How a pane ends whose connection never came up: it could not be made,
+/// was refused, or logging in failed or was cancelled. The reason has been
+/// written into the pane by then.
+pub const CONNECT_FAILED: &str = "SSH 连接失败";
+
 #[derive(Debug)]
 pub struct SshChildProcess {
     pub(crate) channel: ChannelId,

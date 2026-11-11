@@ -860,12 +860,20 @@ struct LocalPaneDCSHandler {
 /// pane open to show it: None for any other end, including the user closing
 /// the pane. A normal `exit` brings an exit status and is not this.
 fn lost_session_notice(status: &ExitStatus, killed: bool) -> Option<String> {
-    if killed || status.signal() != Some(wezterm_ssh::SESSION_LOST) {
+    if killed {
         return None;
     }
+    // Opening the session again reconnects whether or not this tab is
+    // closed first: the domain finds its session dead and starts another.
+    let then = match status.signal() {
+        Some(wezterm_ssh::SESSION_LOST) => "再次打开这个会话会重新连接",
+        Some(wezterm_ssh::CONNECT_FAILED) => "再次打开这个会话会重试",
+        _ => return None,
+    };
     Some(format!(
-        "\r\n\r\n⚠️  {}。关闭这个标签后可以重新连接。\r\n",
-        wezterm_ssh::SESSION_LOST
+        "\r\n\r\n⚠️  {}，{}。\r\n",
+        status.signal().unwrap(),
+        then
     ))
 }
 
@@ -1212,6 +1220,29 @@ mod test {
         let lost = ExitStatus::with_signal(wezterm_ssh::SESSION_LOST);
         let notice = lost_session_notice(&lost, false).expect("a notice");
         assert!(notice.contains("SSH 连接已断开"), "{}", notice);
+    }
+
+    #[test]
+    fn a_connection_that_never_came_up_is_held_with_a_retry_hint() {
+        let failed = ExitStatus::with_signal(wezterm_ssh::CONNECT_FAILED);
+        let notice = lost_session_notice(&failed, false).expect("a notice");
+        assert!(notice.contains("SSH 连接失败"), "{}", notice);
+        assert!(notice.contains("重试"), "{}", notice);
+        assert_eq!(
+            lost_session_notice(&failed, true),
+            None,
+            "closed by the user"
+        );
+    }
+
+    #[test]
+    fn the_notices_say_that_opening_the_session_again_reconnects() {
+        // Closing the tab first is not needed: the next pane opened on the
+        // domain finds the session dead and connects afresh.
+        let lost = ExitStatus::with_signal(wezterm_ssh::SESSION_LOST);
+        let notice = lost_session_notice(&lost, false).unwrap();
+        assert!(notice.contains("再次打开这个会话会重新连接"), "{}", notice);
+        assert!(!notice.contains("关闭这个标签"), "{}", notice);
     }
 
     #[test]

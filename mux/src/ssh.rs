@@ -563,7 +563,7 @@ impl RemoteSshDomain {
                 password_helper,
                 authenticated,
             ) {
-                let _ = write!(stdout_write, "{:#}", err);
+                let _ = write!(stdout_write, "\r\n连接失败：{:#}\r\n", err);
                 log::error!("Failed to connect ssh: {:#}", err);
             }
             let _ = stdout_write.flush();
@@ -831,7 +831,7 @@ fn connect_ssh_session(
                 smol::block_on(auth.answer(answers))?;
             }
             SessionEvent::Error(err) => {
-                shim.output_line(&format!("Error: {}", err))?;
+                shim.output_line(&format!("连接失败：{}", err))?;
                 autofill.note_error();
                 report_rejection(&autofill, &mut shim)?;
             }
@@ -1075,7 +1075,8 @@ impl WrappedSshChild {
                 Err(TryRecvError::Empty) => {}
                 Err(err) => {
                     log::debug!("WrappedSshChild::check_connected err: {:#?}", err);
-                    self.exited.replace(ExitStatus::with_exit_code(1));
+                    self.exited
+                        .replace(ExitStatus::with_signal(wezterm_ssh::CONNECT_FAILED));
                 }
             }
         }
@@ -1110,6 +1111,10 @@ impl portable_pty::Child for WrappedSshChild {
         }
 
         self.check_connected();
+        if let Some(status) = self.exited.as_ref() {
+            // The connection never came up.
+            return Ok(Some(status.clone()));
+        }
 
         if let Some(rx) = self.status.as_mut() {
             match rx.try_recv() {
@@ -1142,7 +1147,7 @@ impl portable_pty::Child for WrappedSshChild {
                 }
                 Err(err) => {
                     log::debug!("WrappedSshChild err: {:#?}", err);
-                    let status = ExitStatus::with_exit_code(1);
+                    let status = ExitStatus::with_signal(wezterm_ssh::CONNECT_FAILED);
                     self.exited.replace(status.clone());
                     return Ok(status);
                 }
@@ -1508,5 +1513,39 @@ mod autofill_test {
         let mut fill = PasswordAutofill::new(None, false);
         assert_eq!(fill.auto_answer(&password()), None);
         assert!(!fill.rejected());
+    }
+}
+
+#[cfg(test)]
+mod child_test {
+    use super::*;
+    use portable_pty::Child as _;
+
+    fn child_whose_connection_ended() -> WrappedSshChild {
+        // The connecting thread drops its sender when it gives up.
+        let (tx, rx) = channel::<SshChildProcess>();
+        drop(tx);
+        WrappedSshChild {
+            status: None,
+            rx,
+            exited: None,
+            killer: WrappedSshChildKiller {
+                inner: Arc::new(Mutex::new(KillerInner {
+                    killer: None,
+                    pending_kill: false,
+                })),
+            },
+        }
+    }
+
+    #[test]
+    fn a_pane_whose_connection_never_came_up_reports_connect_failed() {
+        let mut child = child_whose_connection_ended();
+        let status = child.try_wait().unwrap().expect("ended");
+        assert_eq!(status.signal(), Some(wezterm_ssh::CONNECT_FAILED));
+
+        let mut child = child_whose_connection_ended();
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(wezterm_ssh::CONNECT_FAILED));
     }
 }

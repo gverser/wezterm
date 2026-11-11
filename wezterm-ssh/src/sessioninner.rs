@@ -126,7 +126,7 @@ impl SessionInner {
 
         self.tx_event
             .try_send(SessionEvent::Banner(Some(format!(
-                "Using libssh-rs to connect to {}@{}:{}",
+                "正在连接 {}@{}:{} …",
                 user, hostname, port
             ))))
             .context("notifying user of banner")?;
@@ -284,7 +284,7 @@ impl SessionInner {
 
         self.tx_event
             .try_send(SessionEvent::Banner(Some(format!(
-                "Using ssh2 to connect to {}@{}:{}",
+                "正在连接 {}@{}:{} …",
                 user, hostname, port
             ))))
             .context("notifying user of banner")?;
