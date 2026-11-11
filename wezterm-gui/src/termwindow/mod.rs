@@ -597,6 +597,25 @@ impl TermWindow {
     fn close_requested(&mut self, window: &Window) {
         let mux = Mux::get();
 
+        // A file transfer runs on its own; closing cancels it (see the Drop
+        // for TransferQueue), which the user should hear about first.
+        if !self.files.close_confirmed {
+            if let Some(busy) = self.files.transfers.interrupted_by_closing() {
+                let message = format!("{busy}。关闭窗口会中断传输。");
+                let form = crate::termwindow::form::FormModal::new(
+                    crate::sessions::forms::confirm_form("关闭窗口", &message, "关闭"),
+                )
+                .on_submit(|_, tw| {
+                    tw.files.close_confirmed = true;
+                    if let Some(window) = tw.window.clone() {
+                        tw.close_requested(&window);
+                    }
+                });
+                self.open_form(form);
+                return;
+            }
+        }
+
         // A pane in a mux domain outlives this window: the server owns it, a
         // remote client may be talking to it, and the user is coming back to
         // it. Closing the window detaches, the way it does in tmux; ending

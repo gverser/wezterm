@@ -81,6 +81,16 @@ pub struct Progress {
     pub started: Instant,
 }
 
+/// The queue belongs to a window, while each transfer runs as a task of its
+/// own holding its own handle on the connection: without this, closing the
+/// window would leave the transfer running out of sight, with no ✕ left to
+/// stop it. Cancelled, it cleans up its partial file as the ✕ would.
+impl Drop for TransferQueue {
+    fn drop(&mut self) {
+        self.cancel_active();
+    }
+}
+
 #[derive(Default)]
 pub struct TransferQueue {
     pending: VecDeque<TransferJob>,
@@ -144,6 +154,20 @@ impl TransferQueue {
 
     pub fn is_busy(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// What closing the window would stop, said for the question asked
+    /// first: the transfer under way and how many wait behind it.
+    pub fn interrupted_by_closing(&self) -> Option<String> {
+        let (job, progress, _) = self.active.as_ref()?;
+        let mut text = format!("正在{}「{}」", job.dir.kind().label(), job.name());
+        if let Some(total) = progress.total.filter(|&t| t > 0) {
+            text.push_str(&format!("（{}%）", progress.done.min(total) * 100 / total));
+        }
+        if !self.pending.is_empty() {
+            text.push_str(&format!("，还有 {} 个在排队", self.pending.len()));
+        }
+        Some(text)
     }
 
     pub fn status_line(&self) -> Option<String> {
@@ -432,6 +456,37 @@ mod test {
         assert!(!cancel.load(Ordering::SeqCst));
         q.cancel_active();
         assert!(cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn dropping_the_queue_cancels_the_transfer_under_way() {
+        // The queue lives in the window; the transfer is a task of its own
+        // that only stops when its flag says so.
+        let mut q = TransferQueue::default();
+        q.push(upload(1, "a.tar", Some(10)));
+        let (_, cancel) = q.start_next().unwrap();
+        drop(q);
+        assert!(cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn what_closing_the_window_would_interrupt() {
+        let mut q = TransferQueue::default();
+        assert_eq!(q.interrupted_by_closing(), None);
+        q.push(upload(1, "a.tar", Some(200)));
+        q.push(download(2, "b.log", None));
+        q.start_next().unwrap();
+        q.progress(1, 90);
+        assert_eq!(
+            q.interrupted_by_closing().as_deref(),
+            Some("正在上传「a.tar」（45%），还有 1 个在排队")
+        );
+        q.finish(1, Ok(()));
+        q.start_next().unwrap();
+        assert_eq!(
+            q.interrupted_by_closing().as_deref(),
+            Some("正在下载「b.log」")
+        );
     }
 
     #[test]

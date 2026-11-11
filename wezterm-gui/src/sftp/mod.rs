@@ -203,4 +203,7 @@ pub struct FilesUi {
     /// whether to; asked about one at a time.
     pub overwrite_pending: VecDeque<TransferJob>,
     pub next_transfer_id: u64,
+    /// The user has been told what closing the window would interrupt and
+    /// closed it anyway.
+    pub close_confirmed: bool,
 }
