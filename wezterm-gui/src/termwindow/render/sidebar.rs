@@ -9,7 +9,9 @@ use crate::termwindow::box_model::*;
 use crate::termwindow::sidebar::{
     is_wsl_domain, tree_row_on_screen, ContextMenu, MenuAction, SidebarFocus, SIDEBAR_LINE_HEIGHT,
 };
-use crate::termwindow::theme::{fill, icon, lin, palette, px, rounded};
+use crate::termwindow::theme::{
+    fill, icon, lin, menu_height, menu_rows, palette, px, rounded, MenuEntry, MenuRow,
+};
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use ::window::{Rect, RectF};
@@ -358,7 +360,7 @@ impl crate::TermWindow {
             );
             computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
             // Last, so that it takes clicks ahead of the rows under it.
-            computed.extend(self.files_menu_element(&font, &metrics, &colors)?);
+            computed.extend(self.files_menu_element(&font, &metrics)?);
             return Ok(computed);
         }
 
@@ -437,7 +439,7 @@ impl crate::TermWindow {
         computed.push(self.sidebar_resize_handle(&font, &metrics, &colors, bounds)?);
 
         if let Some(menu) = self.sidebar.menu.clone() {
-            computed.push(self.sidebar_menu_element(&menu, &font, &metrics, &colors)?);
+            computed.extend(self.sidebar_menu_element(&menu, &font, &metrics)?);
         }
 
         Ok(computed)
@@ -1003,66 +1005,113 @@ impl crate::TermWindow {
         menu: &ContextMenu,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
-    ) -> anyhow::Result<ComputedElement> {
-        let items = menu
+    ) -> anyhow::Result<Vec<ComputedElement>> {
+        let entries = menu
             .items
             .iter()
-            .map(|action| (action.label(), UIItemType::SidebarMenuItem(*action)))
+            .map(|action| MenuEntry {
+                icon: action.icon(),
+                label: action.label(),
+                group: action.group(),
+                danger: action.danger(),
+                item: UIItemType::SidebarMenuItem(*action),
+            })
             .collect();
-        self.sidebar_popup(items, menu.x, menu.y, font, metrics, colors)
+        self.sidebar_popup(entries, menu.x, menu.y, font, metrics)
     }
 
-    /// A pop-up menu at (x, y), kept on screen; one row per (label, item).
+    /// A pop-up menu at (x, y), kept on screen, with its shadow: the
+    /// shadow's elements come first, so that the menu is drawn over them.
     pub(crate) fn sidebar_popup(
         &self,
-        items: Vec<(&str, UIItemType)>,
+        entries: Vec<MenuEntry>,
         x: f32,
         y: f32,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
-    ) -> anyhow::Result<ComputedElement> {
-        let cell_width = metrics.cell_size.width as f32;
-        let pad = cell_width;
+    ) -> anyhow::Result<Vec<ComputedElement>> {
+        let dpi = self.dimensions.dpi as f32;
+        let ring = px(dpi, 1.).max(1.).floor();
+        let inner_pad = px(dpi, 4.);
+        let item_pad = px(dpi, 9.);
+        let sep_height = px(dpi, 9.).round();
         let row_height = self.sidebar_row_height();
 
-        // In columns: a CJK label is twice as wide as its character count.
-        let widest = items
+        let label_of = |entry: &MenuEntry| format!("{}  {}", entry.icon, entry.label);
+        let widest = entries
             .iter()
-            .map(|(label, _)| unicode_column_width(label, None))
-            .max()
-            .unwrap_or(0) as f32;
-        let menu_width = widest * cell_width + pad * 2.;
-        let menu_height = items.len() as f32 * row_height;
+            .map(|entry| self.files_text_width(&label_of(entry)).unwrap_or(0.))
+            .fold(0., f32::max);
+        let item_width = widest.ceil() + px(dpi, 12.);
+        let rows = menu_rows(entries);
+        let menu_width = item_width + item_pad * 2. + inner_pad * 2. + ring * 2.;
+        let menu_height = menu_height(&rows, row_height, sep_height, inner_pad) + ring * 2.;
 
-        let normal = colors.inactive_tab();
-        let hover = colors.inactive_tab_hover();
-
-        let items = items
-            .into_iter()
-            .map(|(label, item_type)| {
-                Element::new(font, ElementContent::Text(label.to_string()))
+        let raised = lin(palette::RAISED);
+        let white = lin(palette::WHITE);
+        let children = rows
+            .iter()
+            .map(|row| match row {
+                MenuRow::Item(entry) => {
+                    let fg = if entry.danger {
+                        lin(palette::DANGER)
+                    } else {
+                        lin(palette::MENU_TEXT)
+                    };
+                    // Icon and label both inherit the entry's colours, so that
+                    // both turn white under the pointer.
+                    Element::new(
+                        font,
+                        ElementContent::Children(vec![
+                            text_run(
+                                font,
+                                format!("{}  ", entry.icon),
+                                InheritableColor::Inherited,
+                            ),
+                            text_run(font, entry.label.to_string(), InheritableColor::Inherited),
+                        ]),
+                    )
                     .display(DisplayType::Block)
                     .line_height(Some(SIDEBAR_LINE_HEIGHT))
-                    .item_type(item_type)
+                    .item_type(entry.item.clone())
                     .padding(BoxDimension {
-                        left: Dimension::Pixels(pad),
-                        right: Dimension::Pixels(pad),
+                        left: Dimension::Pixels(item_pad),
+                        right: Dimension::Pixels(item_pad),
                         top: Dimension::Pixels(0.),
                         bottom: Dimension::Pixels(0.),
                     })
-                    .min_width(Some(Dimension::Pixels((menu_width - pad * 2.).max(0.))))
-                    .colors(ElementColors {
-                        border: BorderColor::default(),
-                        bg: normal.bg_color.to_linear().into(),
-                        text: normal.fg_color.to_linear().into(),
-                    })
-                    .hover_colors(Some(ElementColors {
-                        border: BorderColor::default(),
-                        bg: hover.bg_color.to_linear().into(),
-                        text: hover.fg_color.to_linear().into(),
-                    }))
+                    .border_corners(Some(rounded(px(dpi, 5.))))
+                    .min_width(Some(Dimension::Pixels(item_width)))
+                    .colors(fill(raised, fg))
+                    .hover_colors(Some(fill(lin(palette::MENU_HOVER), white)))
+                }
+                // A hairline across the middle of its own short row.
+                MenuRow::Separator => {
+                    let line = px(dpi, 1.).max(1.).floor();
+                    let above = ((sep_height - line) / 2.).floor();
+                    Element::new(font, ElementContent::Children(vec![]))
+                        .display(DisplayType::Block)
+                        .margin(BoxDimension {
+                            left: Dimension::Pixels(px(dpi, 6.)),
+                            right: Dimension::Pixels(px(dpi, 6.)),
+                            top: Dimension::Pixels(above),
+                            bottom: Dimension::Pixels(sep_height - line - above),
+                        })
+                        .border(BoxDimension {
+                            left: Dimension::Pixels(0.),
+                            right: Dimension::Pixels(0.),
+                            top: Dimension::Pixels(line),
+                            bottom: Dimension::Pixels(0.),
+                        })
+                        .min_width(Some(Dimension::Pixels(
+                            (item_width + item_pad * 2. - px(dpi, 12.)).max(0.),
+                        )))
+                        .colors(ElementColors {
+                            border: BorderColor::new(lin(palette::MENU_SEPARATOR)),
+                            bg: LinearRgba::TRANSPARENT.into(),
+                            text: raised.into(),
+                        })
+                }
             })
             .collect();
 
@@ -1073,32 +1122,30 @@ impl crate::TermWindow {
         let y = y.min((window_height - menu_height).max(0.));
         let bounds = euclid::rect(x, y, menu_width, menu_height);
 
-        let element = Element::new(font, ElementContent::Children(items))
+        let inner = Element::new(font, ElementContent::Children(children))
             .display(DisplayType::Block)
-            .min_width(Some(Dimension::Pixels(menu_width)))
-            .border(BoxDimension {
-                left: Dimension::Pixels(1.),
-                right: Dimension::Pixels(1.),
-                top: Dimension::Pixels(1.),
-                bottom: Dimension::Pixels(1.),
-            })
-            .colors(ElementColors {
-                border: BorderColor::new(colors.inactive_tab_edge_hover().to_linear()),
-                bg: normal.bg_color.to_linear().into(),
-                text: normal.fg_color.to_linear().into(),
-            });
+            .padding(BoxDimension::new(Dimension::Pixels(inner_pad)))
+            .border_corners(Some(rounded(px(dpi, 7.))))
+            .colors(fill(raised, lin(palette::MENU_TEXT)));
+        let element = Element::new(font, ElementContent::Children(vec![inner]))
+            .display(DisplayType::Block)
+            .item_type(UIItemType::PopupBackground)
+            .padding(BoxDimension::new(Dimension::Pixels(ring)))
+            .border_corners(Some(rounded(px(dpi, 8.))))
+            .colors(fill(lin(palette::CARD_EDGE), lin(palette::MENU_TEXT)));
 
-        self.compute_element(
+        let mut computed = self.theme_shadow(bounds, px(dpi, 8.), 12)?;
+        computed.push(self.compute_element(
             &LayoutContext {
                 height: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
+                    dpi,
                     pixel_max: window_height,
                     pixel_cell: metrics.cell_size.height as f32,
                 },
                 width: DimensionContext {
-                    dpi: self.dimensions.dpi as f32,
+                    dpi,
                     pixel_max: bounds.max_x(),
-                    pixel_cell: cell_width,
+                    pixel_cell: metrics.cell_size.width as f32,
                 },
                 bounds,
                 metrics,
@@ -1106,6 +1153,7 @@ impl crate::TermWindow {
                 zindex: 12,
             },
             &element,
-        )
+        )?);
+        Ok(computed)
     }
 }

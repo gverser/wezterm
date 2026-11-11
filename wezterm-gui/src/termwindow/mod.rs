@@ -186,6 +186,9 @@ pub enum UIItemType {
     /// A button on the session page's title row; does what the same entry
     /// in the menu over empty space does.
     SidebarHeaderAction(crate::termwindow::sidebar::MenuAction),
+    /// The padding and separators of a pop-up menu: takes the click so that
+    /// it doesn't land on whatever is under the menu, and does nothing.
+    PopupBackground,
     /// The chevron that collapses the sidebar to a rail and back.
     SidebarCollapseToggle,
     /// A page tab on the sidebar's rail.

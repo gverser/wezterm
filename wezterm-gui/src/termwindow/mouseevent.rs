@@ -52,6 +52,7 @@ impl super::TermWindow {
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
             | UIItemType::SidebarHeaderAction(_)
+            | UIItemType::PopupBackground
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
             | UIItemType::FilesRow(_)
@@ -81,6 +82,7 @@ impl super::TermWindow {
             | UIItemType::SidebarResizeHandle
             | UIItemType::SidebarMenuItem(_)
             | UIItemType::SidebarHeaderAction(_)
+            | UIItemType::PopupBackground
             | UIItemType::SidebarCollapseToggle
             | UIItemType::SidebarPageTab(_)
             | UIItemType::FilesRow(_)
@@ -280,7 +282,11 @@ impl super::TermWindow {
             // the press really is on it.
             let on_menu = matches!(
                 ui_item.as_ref().map(|item| &item.item_type),
-                Some(UIItemType::SidebarMenuItem(_) | UIItemType::FilesMenuItem(_))
+                Some(
+                    UIItemType::SidebarMenuItem(_)
+                        | UIItemType::FilesMenuItem(_)
+                        | UIItemType::PopupBackground
+                )
             );
             if !on_menu {
                 self.close_sidebar_menu();
@@ -577,6 +583,7 @@ impl super::TermWindow {
                     modal.ui_item_event(index, &event, self);
                 }
             }
+            UIItemType::PopupBackground => {}
         }
     }
 

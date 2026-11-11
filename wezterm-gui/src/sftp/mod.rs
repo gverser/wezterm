@@ -114,6 +114,18 @@ pub enum FilesAction {
 }
 
 impl FilesAction {
+    pub fn icon(&self) -> &'static str {
+        use crate::termwindow::theme::icon;
+        match self {
+            Self::Up => icon::UP,
+            Self::Refresh => icon::REFRESH,
+            Self::Home => icon::HOME,
+            Self::NewFolder => icon::NEW_FOLDER,
+            Self::Upload => icon::UPLOAD,
+            Self::CancelTransfer => icon::CLOSE,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Up => "↑",
@@ -138,6 +150,32 @@ pub enum FilesMenuAction {
 }
 
 impl FilesMenuAction {
+    pub fn icon(&self) -> &'static str {
+        use crate::termwindow::theme::icon;
+        match self {
+            Self::Download => icon::DOWNLOAD,
+            Self::Rename => icon::EDIT,
+            Self::Delete => icon::TRASH,
+            Self::CopyPath => icon::COPY,
+            Self::NewFolder => icon::NEW_FOLDER,
+            Self::Refresh => icon::REFRESH,
+        }
+    }
+
+    /// The menu keeps its order; these only say where the lines go.
+    pub fn group(&self) -> u8 {
+        match self {
+            Self::Download => 0,
+            Self::Rename | Self::Delete => 1,
+            Self::CopyPath => 2,
+            Self::NewFolder | Self::Refresh => 3,
+        }
+    }
+
+    pub fn danger(&self) -> bool {
+        *self == Self::Delete
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Download => "下载",
@@ -207,4 +245,27 @@ pub struct FilesUi {
     /// The user has been told what closing the window would interrupt and
     /// closed it anyway.
     pub close_confirmed: bool,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn the_file_menu_groups_keep_its_order_and_only_delete_is_dangerous() {
+        use FilesMenuAction::*;
+        let all = [Download, Rename, Delete, CopyPath, NewFolder, Refresh];
+        assert_eq!(all.map(|a| a.group()), [0, 1, 1, 2, 3, 3]);
+        assert_eq!(
+            all.map(|a| a.danger()),
+            [false, false, true, false, false, false]
+        );
+    }
+
+    #[test]
+    fn every_toolbar_button_has_an_icon() {
+        use crate::termwindow::theme::icon;
+        assert_eq!(FilesAction::Upload.icon(), icon::UPLOAD);
+        assert_eq!(FilesAction::CancelTransfer.icon(), icon::CLOSE);
+    }
 }

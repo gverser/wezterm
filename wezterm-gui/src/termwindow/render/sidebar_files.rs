@@ -303,24 +303,27 @@ impl crate::TermWindow {
         )?))
     }
 
-    /// The page's right-click menu, if it is open.
+    /// The page's right-click menu and its shadow, if it is open.
     pub(crate) fn files_menu_element(
         &self,
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
-        colors: &TabBarColors,
-    ) -> anyhow::Result<Option<ComputedElement>> {
+    ) -> anyhow::Result<Vec<ComputedElement>> {
         let Some(menu) = self.files.menu.as_ref() else {
-            return Ok(None);
+            return Ok(vec![]);
         };
-        let items = menu
+        let entries = menu
             .items
             .iter()
-            .map(|action| (action.label(), UIItemType::FilesMenuItem(*action)))
+            .map(|action| crate::termwindow::theme::MenuEntry {
+                icon: action.icon(),
+                label: action.label(),
+                group: action.group(),
+                danger: action.danger(),
+                item: UIItemType::FilesMenuItem(*action),
+            })
             .collect();
-        Ok(Some(self.sidebar_popup(
-            items, menu.x, menu.y, font, metrics, colors,
-        )?))
+        self.sidebar_popup(entries, menu.x, menu.y, font, metrics)
     }
 
     fn files_path_element(

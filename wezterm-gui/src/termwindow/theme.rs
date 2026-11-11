@@ -171,6 +171,51 @@ pub fn fill(bg: LinearRgba, text: LinearRgba) -> ElementColors {
     }
 }
 
+/// One entry of a pop-up menu.
+#[derive(Debug, Clone)]
+pub struct MenuEntry<'a> {
+    pub icon: &'static str,
+    pub label: &'a str,
+    /// Entries of one group sit together; a line separates groups.
+    pub group: u8,
+    /// Drawn in the danger colour: it deletes something.
+    pub danger: bool,
+    pub item: crate::termwindow::UIItemType,
+}
+
+#[derive(Debug, Clone)]
+pub enum MenuRow<'a> {
+    Item(MenuEntry<'a>),
+    Separator,
+}
+
+/// `entries` in order, with a separator wherever the group changes.
+pub fn menu_rows(entries: Vec<MenuEntry>) -> Vec<MenuRow> {
+    let mut rows = vec![];
+    let mut last_group = None;
+    for entry in entries {
+        if last_group.map_or(false, |group| group != entry.group) {
+            rows.push(MenuRow::Separator);
+        }
+        last_group = Some(entry.group);
+        rows.push(MenuRow::Item(entry));
+    }
+    rows
+}
+
+/// The height of a menu of `rows`: entries `item_h` tall, separators
+/// `sep_h`, inside `pad` above and below.
+pub fn menu_height(rows: &[MenuRow], item_h: f32, sep_h: f32, pad: f32) -> f32 {
+    let height: f32 = rows
+        .iter()
+        .map(|row| match row {
+            MenuRow::Item(_) => item_h,
+            MenuRow::Separator => sep_h,
+        })
+        .sum();
+    height + pad * 2.
+}
+
 impl crate::TermWindow {
     /// A soft shadow for something floating over `rect`: two translucent
     /// rounded blocks a little larger than it and dropped a few pixels.
@@ -265,6 +310,25 @@ mod test {
         assert!((white.0 - 1.).abs() < 1e-6 && (white.3 - 1.).abs() < 1e-6);
         let black = lin(0x000000);
         assert!(black.0.abs() < 1e-6 && (black.3 - 1.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn separators_go_between_groups_only() {
+        let e = |group| MenuEntry {
+            icon: icon::ADD,
+            label: "x",
+            group,
+            danger: false,
+            item: crate::termwindow::UIItemType::SidebarBackground,
+        };
+        let rows = menu_rows(vec![e(0), e(0), e(1), e(2)]);
+        let kinds: Vec<bool> = rows
+            .iter()
+            .map(|r| matches!(r, MenuRow::Separator))
+            .collect();
+        assert_eq!(kinds, vec![false, false, true, false, true, false]);
+        assert_eq!(menu_height(&rows, 28., 9., 4.), 4. * 28. + 2. * 9. + 8.);
+        assert!(menu_rows(vec![]).is_empty());
     }
 
     #[test]

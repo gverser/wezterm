@@ -82,6 +82,31 @@ pub enum MenuAction {
 }
 
 impl MenuAction {
+    pub fn icon(&self) -> &'static str {
+        use crate::termwindow::theme::icon;
+        match self {
+            Self::NewSession => icon::TERMINAL,
+            Self::NewSshSession => icon::SERVER,
+            Self::NewFolder => icon::NEW_FOLDER,
+            Self::Rename => icon::EDIT,
+            Self::Edit => icon::SETTINGS,
+            Self::Delete => icon::TRASH,
+        }
+    }
+
+    /// Creating, then changing, then removing.
+    pub fn group(&self) -> u8 {
+        match self {
+            Self::NewSession | Self::NewSshSession | Self::NewFolder => 0,
+            Self::Rename | Self::Edit => 1,
+            Self::Delete => 2,
+        }
+    }
+
+    pub fn danger(&self) -> bool {
+        *self == Self::Delete
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::NewSession => "新建会话",
@@ -1331,6 +1356,19 @@ impl super::TermWindow {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn delete_is_the_only_dangerous_session_menu_item() {
+        use MenuAction::*;
+        for action in [NewSession, NewSshSession, NewFolder, Rename, Edit] {
+            assert!(!action.danger(), "{action:?}");
+        }
+        assert!(Delete.danger());
+        assert_eq!(
+            [NewSession, NewSshSession, NewFolder, Rename, Edit, Delete].map(|a| a.group()),
+            [0, 0, 0, 1, 1, 2]
+        );
+    }
 
     #[test]
     fn the_tree_starts_below_the_header_and_the_search_box() {
