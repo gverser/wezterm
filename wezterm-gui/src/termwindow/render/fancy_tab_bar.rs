@@ -519,18 +519,10 @@ impl crate::TermWindow {
     /// corners into blue blobs. Left out when the user has given the active
     /// tab colours of their own.
     fn paint_active_tab_accent(&self, computed: &ComputedElement) -> anyhow::Result<()> {
-        let user_colors = self.config.colors.as_ref().and_then(|c| c.tab_bar.as_ref());
-        let configured = user_colors.map_or(false, |t| t.active_tab.is_some());
         let Some(tab) = find_active_tab(computed) else {
             return Ok(());
         };
-        let active_bg = user_colors
-            .cloned()
-            .unwrap_or_default()
-            .active_tab()
-            .bg_color
-            .to_linear();
-        if !wants_accent(configured, &tab.colors.bg, active_bg) {
+        if !accent_wanted(&self.config, &tab.colors.bg) {
             return Ok(());
         }
         let inset = tab.border_corners.as_ref().map_or(0., |c| c.top_left.width);
@@ -570,6 +562,28 @@ fn find_active_tab(element: &ComputedElement) -> Option<&ComputedElement> {
 /// theirs to keep.
 fn wants_accent(configured: bool, tab_bg: &InheritableColor, active_bg: LinearRgba) -> bool {
     !configured && matches!(tab_bg, InheritableColor::Color(bg) if *bg == active_bg)
+}
+
+/// `wants_accent` for the current tab, drawn with background `tab_bg`.
+/// "Configured" is what the user wrote in `colors.tab_bar`; the active tab's
+/// background to compare with is the one the tabs are drawn from
+/// (`resolved_palette`: the user's colours over the colour scheme's over the
+/// defaults), so that a scheme's own tab bar colours keep the line.
+fn accent_wanted(config: &config::Config, tab_bg: &InheritableColor) -> bool {
+    let configured = config
+        .colors
+        .as_ref()
+        .and_then(|c| c.tab_bar.as_ref())
+        .map_or(false, |t| t.active_tab.is_some());
+    let active_bg = config
+        .resolved_palette
+        .tab_bar
+        .clone()
+        .unwrap_or_default()
+        .active_tab()
+        .bg_color
+        .to_linear();
+    wants_accent(configured, tab_bg, active_bg)
 }
 
 /// The colour of a tab's close cross: faint, unless the user gave the tab
@@ -668,6 +682,31 @@ mod test {
         use crate::termwindow::theme::palette;
         assert_eq!(close_button_colour(false), Some(palette::TEXT_FAINT));
         assert_eq!(close_button_colour(true), None);
+    }
+
+    #[test]
+    fn a_colour_scheme_with_tab_bar_colours_keeps_the_accent() {
+        use config::{RgbaColor, TabBarColor};
+        let scheme_bg = RgbaColor::from((0x33u8, 0x4du8, 0x66u8));
+        let scheme = TabBarColors {
+            active_tab: Some(TabBarColor {
+                bg_color: scheme_bg,
+                ..TabBarColor::default()
+            }),
+            ..TabBarColors::default()
+        };
+        let mut config = config::Config::default_config();
+        // A colour scheme's tab bar colours reach the tabs through the
+        // resolved palette; config.colors is only what the user wrote.
+        config.resolved_palette.tab_bar = Some(scheme);
+        let drawn = InheritableColor::Color(scheme_bg.to_linear());
+        // The scheme's active tab is the active tab, not a background of the
+        // tab's own: it keeps the line, as it did before format-tab-title
+        // backgrounds were told apart.
+        assert!(accent_wanted(&config, &drawn));
+        // A background from format-tab-title still gets none.
+        let own = InheritableColor::Color(LinearRgba::with_components(0.5, 0., 0., 1.));
+        assert!(!accent_wanted(&config, &own));
     }
 
     #[test]
