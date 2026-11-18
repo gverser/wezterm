@@ -844,6 +844,8 @@ impl crate::TermWindow {
     }
 
     /// A non-interactive line of explanatory text.
+    /// A line of faint text in place of content, such as "右键添加会话";
+    /// broken into as many lines as the panel's width needs.
     pub(crate) fn sidebar_hint_element(
         &self,
         text: &str,
@@ -851,18 +853,31 @@ impl crate::TermWindow {
         width: f32,
         pad: f32,
     ) -> Element {
-        let indent = px(self.dimensions.dpi as f32, 6.);
-        Element::new(font, ElementContent::Text(text.to_string()))
-            .display(DisplayType::Block)
-            .line_height(Some(SIDEBAR_LINE_HEIGHT))
-            .padding(BoxDimension {
-                left: Dimension::Pixels(pad + indent),
-                right: Dimension::Pixels(pad),
-                top: Dimension::Pixels(0.),
-                bottom: Dimension::Pixels(0.),
-            })
-            .min_width(Some(Dimension::Pixels((width - pad * 2. - indent).max(0.))))
-            .colors(fill(lin(palette::PANEL), lin(palette::TEXT_FAINT)))
+        let dpi = self.dimensions.dpi as f32;
+        let indent = px(dpi, 6.);
+        let room = hint_text_room(dpi, width, pad);
+        let line = |text: String| {
+            Element::new(font, ElementContent::Text(text))
+                .display(DisplayType::Block)
+                .line_height(Some(SIDEBAR_LINE_HEIGHT))
+                .padding(BoxDimension {
+                    left: Dimension::Pixels(pad + indent),
+                    right: Dimension::Pixels(pad),
+                    top: Dimension::Pixels(0.),
+                    bottom: Dimension::Pixels(0.),
+                })
+                .min_width(Some(Dimension::Pixels(room)))
+                .colors(fill(lin(palette::PANEL), lin(palette::TEXT_FAINT)))
+        };
+        let mut lines = self.files_wrap(text, room);
+        if lines.len() == 1 {
+            return line(lines.remove(0));
+        }
+        Element::new(
+            font,
+            ElementContent::Children(lines.into_iter().map(line).collect()),
+        )
+        .display(DisplayType::Block)
     }
 
     fn sidebar_row_element(
@@ -1210,6 +1225,12 @@ pub(crate) fn row_margin(dpi: f32) -> f32 {
     px(dpi, 6.)
 }
 
+/// Room for the text of a hint line: the panel inside `pad` on both sides
+/// and the hint's 6px indent on the left.
+pub(crate) fn hint_text_room(dpi: f32, width: f32, pad: f32) -> f32 {
+    (width - pad * 2. - px(dpi, 6.)).max(0.)
+}
+
 pub(crate) fn row_widths(dpi: f32, width: f32, indent: f32, pad: f32) -> RowWidths {
     let margin = row_margin(dpi);
     let border_and_padding = crate::TermWindow::sidebar_row_bar(dpi) + pad * 2. + indent;
@@ -1256,5 +1277,16 @@ mod test {
         // Never negative.
         let narrow: RectF = euclid::rect(0., 0., 4., 24.);
         assert_eq!(folder_drop_rect(narrow, 96.).width(), 0.);
+    }
+
+    #[test]
+    fn a_hint_wraps_to_the_room_it_is_drawn_in() {
+        // A hint is padded by `pad` on both sides and indented 6px on the
+        // left; "当前窗格不是 SSH 会话" in a sidebar dragged narrow was cut
+        // off at its right edge rather than wrapped.
+        for dpi in [96., 120.] {
+            assert_eq!(hint_text_room(dpi, 200., 8.), 200. - 8. * 2. - px(dpi, 6.));
+        }
+        assert_eq!(hint_text_room(96., 10., 8.), 0.);
     }
 }
