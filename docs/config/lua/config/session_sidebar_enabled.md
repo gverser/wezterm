@@ -31,10 +31,10 @@ whatever was running under the previous one alive in the background.
 | Double click a session | Open it: start it if it isn't running, otherwise add a tab |
 | Click a folder | Expand or collapse it |
 | Right click | 新建会话, 新建 SSH 会话, 新建文件夹, 重命名, 编辑…, 删除 |
-| Drag an entry | Move it, and a folder with everything in it: a line marks the gap it will go into, a box the folder it will go inside. Below the last entry is the end of the top level. Not while searching |
+| Drag an entry | Move it, and a folder with everything in it: a line marks the gap it will go into, a highlight the folder it will go inside. Below the last entry is the end of the top level. Not while searching |
 | Drag the right edge | Change the sidebar's width |
 | Click `+` or the new-folder button in the title row | Add a session or a folder, as from the right click menu |
-| Click `«` in the title row | Collapse the sidebar to its tab column; a page tab opens it again |
+| Click the `‹` chevron in the title row | Collapse the sidebar to its tab column; a page tab opens it again |
 | Click a page tab | Switch to that page; on the page already showing, collapse; while collapsed, open on that page |
 
 A single click never starts anything. With a tree of any size, selecting an

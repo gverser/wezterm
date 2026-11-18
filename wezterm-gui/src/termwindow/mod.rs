@@ -114,10 +114,6 @@ pub fn get_window_class() -> String {
     WINDOW_CLASS.lock().unwrap().clone()
 }
 
-/// `pane_id` if it is a member of `tab`, visible or hidden. Taking it from
-/// the tab rather than the mux matters to `Tab::set_active_pane`: called
-/// with a pane outside the zoomed leaf it may unzoom (unzoom_on_switch_pane)
-/// before finding that the pane is not in the tab at all.
 /// What closing a pane does.
 #[derive(Debug, PartialEq, Eq)]
 enum CloseStep {
@@ -139,6 +135,10 @@ fn close_step(needs_prompt: bool, confirming: bool) -> CloseStep {
     }
 }
 
+/// `pane_id` if it is a member of `tab`, visible or hidden. Taking it from
+/// the tab rather than the mux matters to `Tab::set_active_pane`: called
+/// with a pane outside the zoomed leaf it may unzoom (unzoom_on_switch_pane)
+/// before finding that the pane is not in the tab at all.
 fn tab_member(tab: &Tab, pane_id: PaneId) -> Option<Arc<dyn Pane>> {
     tab.iter_all_panes()
         .into_iter()

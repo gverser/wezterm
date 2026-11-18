@@ -843,9 +843,8 @@ impl crate::TermWindow {
         self.compute_element(&context, &rail)
     }
 
-    /// A non-interactive line of explanatory text.
-    /// A line of faint text in place of content, such as "右键添加会话";
-    /// broken into as many lines as the panel's width needs.
+    /// A non-interactive line of faint text in place of content, such as
+    /// "右键添加会话"; broken into as many lines as the panel's width needs.
     pub(crate) fn sidebar_hint_element(
         &self,
         text: &str,

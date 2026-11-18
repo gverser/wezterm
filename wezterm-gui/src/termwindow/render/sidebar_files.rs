@@ -244,13 +244,9 @@ impl crate::TermWindow {
 
     /// Width of the ✕ beside the transfer line, padding included.
     pub(crate) fn files_cancel_width(&self) -> f32 {
-        let pad = match self.sidebar_font() {
-            Ok((_, metrics)) => metrics.cell_size.width as f32 * 0.5,
-            Err(_) => 0.,
-        };
         self.files_text_width(FilesAction::CancelTransfer.icon())
             .unwrap_or(0.)
-            + pad * 2.
+            + self.files_pad() * 2.
     }
 
     /// The transfer line along the bottom of the page, with its ✕, and

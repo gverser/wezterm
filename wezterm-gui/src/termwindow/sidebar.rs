@@ -37,8 +37,6 @@ pub fn tree_row_on_screen(index_in_view: usize) -> usize {
     index_in_view + SESSIONS_HEADER_ROWS
 }
 
-/// Whether a session's domain is a WSL distribution (`WSL:Ubuntu`), which
-/// gets its own icon.
 /// Whether an id is still claimed outside the tree by a node that was
 /// deleted: a saved ssh host, or a workspace with windows open (deleting a
 /// node leaves its terminals running). A new node given that id would
@@ -50,6 +48,8 @@ fn id_in_use_elsewhere(id: NodeId) -> bool {
             .is_empty()
 }
 
+/// Whether a session's domain is a WSL distribution (`WSL:Ubuntu`), which
+/// gets its own icon.
 pub fn is_wsl_domain(name: &str) -> bool {
     name.get(..4)
         .map_or(false, |prefix| prefix.eq_ignore_ascii_case("wsl:"))
