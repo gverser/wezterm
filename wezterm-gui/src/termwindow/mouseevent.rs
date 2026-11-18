@@ -654,6 +654,9 @@ impl super::TermWindow {
                 at: now,
             });
             if action != StripClickAction::Nothing {
+                if release_is_swallowed(action) {
+                    self.swallowed_press = Some(press);
+                }
                 self.perform_strip_click_action(&item, action, context);
                 // Only a press that did something can start a drag. A
                 // swallowed one is the tail of a close or spawn whose
@@ -1441,6 +1444,17 @@ fn swallow_after_strip_action(prev: Option<(StripClickAction, Duration)>, on_str
             if action.swallows_followers() && ago <= Duration::from_millis(CLICK_INTERVAL))
 }
 
+/// Whether the release of a strip press that did `action` is kept from
+/// everything else. A close or a spawn acts on the press, and can take the
+/// strip away (closing the last tab of a leaf) before the button comes up:
+/// the release would then land in the terminal that took its place, where
+/// it completes a selection, copying it over the clipboard, or opens the
+/// link under the pointer. A press on a tab keeps its release, which
+/// finishes a drag.
+fn release_is_swallowed(action: StripClickAction) -> bool {
+    action.swallows_followers()
+}
+
 /// The previous press on a pane stack strip.
 pub(super) struct StripPress {
     item: UIItemType,
@@ -1711,6 +1725,24 @@ mod test {
             assert!(!swallow_after_strip_action(Some((prev, soon)), false));
         }
         assert!(!swallow_after_strip_action(None, false));
+    }
+
+    #[test]
+    fn the_release_of_a_close_or_spawn_never_reaches_the_terminal() {
+        use StripClickAction::*;
+        // A close acts on the press. Closing the last tab of a leaf takes
+        // the strip away, the window repaints before the button comes up,
+        // and the release lands in the terminal that took its place, where
+        // it completes a selection (copying it over the clipboard) or opens
+        // the link under the pointer.
+        for action in [Close(7), SpawnInLeaf(3)] {
+            assert!(release_is_swallowed(action), "{:?}", action);
+        }
+        // A click on a tab may be the start of a drag, which its release
+        // finishes; the others leave the strip where it was.
+        for action in [Activate(7), ActivateLeaf(3), Nothing] {
+            assert!(!release_is_swallowed(action), "{:?}", action);
+        }
     }
 
     #[test]

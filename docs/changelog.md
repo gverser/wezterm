@@ -219,11 +219,14 @@ As features stabilize some brief notes about them will accumulate here.
   under the same name with either backend.
 * Pane tab strips: a triple click on a tab could open a new pane; clicking ×
   again while its close confirmation was up dismissed the confirmation without
-  closing anything; the second click of a double click on the × of a leaf's
-  last tab landed in the terminal below and selected (and copied) a word.
-  Moving a stacked pane to another split no longer leaves it a different size
-  from the rest of its new stack when it refuses to be resized, and closing
-  another split while one is zoomed keeps the zoomed one at full size. With
+  closing anything; closing a split's last tab with its × let the rest of the
+  click reach the terminal that took its place, where the release copied a
+  leftover selection over the clipboard or opened a link under the pointer,
+  and the second click of a double click selected (and copied) a word.
+  Moving a stacked pane out of a split that keeps other panes no longer leaves
+  it a different size from the rest of its new stack: if it refuses to be
+  resized, it stays where it was. Closing another split while one is zoomed
+  keeps the zoomed one at full size. With
   `text_background_opacity` below 1, the strip of a split away from the
   window's left edge showed lighter blocks across its tabs.
 * Connected to a mux server, switching back with the keyboard right after a
