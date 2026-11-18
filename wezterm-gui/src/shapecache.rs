@@ -125,6 +125,22 @@ mod test {
     use wezterm_font::shaper::PresentationWidth;
     use wezterm_font::{FontConfiguration, LoadedFont};
 
+    /// harfbuzz is built with HB_NO_MT (deps/harfbuzz/build.rs): wezterm
+    /// only shapes on the GUI thread, and every FontConfiguration sits in an
+    /// Rc. Its shared FreeType font-funcs object is then reference counted
+    /// without atomics, and tests on parallel threads that create fonts at
+    /// the same time corrupt it: an occasional hb-object.hh assertion, or an
+    /// access violation, takes down the whole test run. Every test here that
+    /// creates fonts holds this first.
+    static HARFBUZZ: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn harfbuzz_alone() -> std::sync::MutexGuard<'static, ()> {
+        // A test that failed while holding it leaves nothing to clean up.
+        HARFBUZZ
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn cluster_and_shape(
         render_metrics: &RenderMetrics,
         glyph_cache: &mut GlyphCache,
@@ -188,6 +204,7 @@ mod test {
 
     #[test]
     fn ligatures_fira() {
+        let _harfbuzz = harfbuzz_alone();
         config::use_test_configuration();
         let _ = env_logger::Builder::new()
             .is_test(true)
@@ -257,6 +274,7 @@ mod test {
 
     #[test]
     fn bench_shaping() {
+        let _harfbuzz = harfbuzz_alone();
         config::use_test_configuration();
 
         // let mut glyph_cache = GlyphCache::new_in_memory(&fonts, 128, &render_metrics).unwrap();
@@ -307,6 +325,7 @@ mod test {
 
     #[test]
     fn ligatures_jetbrains() {
+        let _harfbuzz = harfbuzz_alone();
         config::use_test_configuration();
         let _ = env_logger::Builder::new()
             .is_test(true)
