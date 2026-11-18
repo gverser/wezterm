@@ -223,15 +223,18 @@ As features stabilize some brief notes about them will accumulate here.
   last tab landed in the terminal below and selected (and copied) a word.
   Moving a stacked pane to another split no longer leaves it a different size
   from the rest of its new stack when it refuses to be resized, and closing
-  another split while one is zoomed keeps the zoomed one at full size.
+  another split while one is zoomed keeps the zoomed one at full size. With
+  `text_background_opacity` below 1, the strip of a split away from the
+  window's left edge showed lighter blocks across its tabs.
 * Connected to a mux server, switching back with the keyboard right after a
   split could be undone by the next sync, which put the focus on the new pane
   again.
 * Sidebar: a new entry could get the id of a deleted ssh entry and turn into
   an ssh connection to its host; a saved password that once failed (also when
   the network dropped mid-login) was never filled in again in that process,
-  even after typing it by hand. Notices on the file page are wrapped to the
-  width they are drawn at, so the end of a long one is no longer cut off.
+  even after typing it by hand. Notices on the file page, and hints such as
+  **当前窗格不是 SSH 会话**, are wrapped to the width they are drawn at, so in
+  a narrow sidebar their end is no longer cut off.
 * Forms: with a Chinese input method in Chinese mode, y and n now answer a
   confirmation as they do in English mode.
 * Hover colours of buttons and the menu's delete entry, and the size and arrow

@@ -235,18 +235,19 @@ impl crate::TermWindow {
                         phys(cluster.first_cell_idx, num_cols, direction) as f32 * cell_width
                     };
 
-                let mut width = if params.use_pixel_positioning {
+                let width = if params.use_pixel_positioning {
                     item.pixel_width
                 } else {
                     cluster_width as f32 * cell_width
                 };
-
-                // If the tab bar is falling just short of the full width of the
-                // window, extend it to fit.
-                // <https://github.com/wezterm/wezterm/issues/2210>
-                if is_tab_bar && (x + width + cell_width) > params.pixel_width {
-                    width += cell_width;
-                }
+                let width = tab_bar_bg_width(
+                    is_tab_bar,
+                    x,
+                    width,
+                    cell_width,
+                    params.left_pixel_x,
+                    params.pixel_width,
+                );
 
                 let rect = euclid::rect(x, params.top_pixel_y, width, cell_height);
                 if let Some(rect) = rect.intersection(&bounding_rect) {
@@ -903,5 +904,59 @@ impl crate::TermWindow {
         }
 
         Ok((shaped, invalidate_on_hover_change))
+    }
+}
+
+/// The width of the background of a run of `width` pixels starting at `x`.
+///
+/// If the tab bar is falling just short of the full width of the window,
+/// extend it to fit. <https://github.com/wezterm/wezterm/issues/2210>
+///
+/// `x` is from the window's edge, so the line's right end is too: a line
+/// that doesn't start at the edge (a pane's tab strip) would otherwise have
+/// every run stretched over the next one.
+fn tab_bar_bg_width(
+    is_tab_bar: bool,
+    x: f32,
+    width: f32,
+    cell_width: f32,
+    left_pixel_x: f32,
+    pixel_width: f32,
+) -> f32 {
+    if is_tab_bar && (x + width + cell_width) > left_pixel_x + pixel_width {
+        width + cell_width
+    } else {
+        width
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn only_the_last_run_of_a_tab_bar_line_is_stretched() {
+        let cell = 10.;
+        // The window's retro tab bar starts at the left edge: a run that ends
+        // within a cell of the right edge is stretched to it, others aren't.
+        assert_eq!(tab_bar_bg_width(true, 0., 30., cell, 0., 105.), 30.);
+        assert_eq!(tab_bar_bg_width(true, 70., 30., cell, 0., 105.), 40.);
+        // A pane's tab strip is a line of the same kind, starting wherever
+        // its split does. Measured from the window's edge, every run of a
+        // strip on the right half looked like the last one, and each
+        // background overlapped the next run by a cell: with
+        // text_background_opacity < 1 the overlaps showed as lighter blocks.
+        let left = 500.;
+        assert_eq!(tab_bar_bg_width(true, left, 30., cell, left, 105.), 30.);
+        assert_eq!(
+            tab_bar_bg_width(true, left + 30., 40., cell, left, 105.),
+            40.
+        );
+        assert_eq!(
+            tab_bar_bg_width(true, left + 70., 30., cell, left, 105.),
+            40.
+        );
+        // Terminal lines are never stretched.
+        assert_eq!(tab_bar_bg_width(false, 70., 30., cell, 0., 105.), 30.);
     }
 }
