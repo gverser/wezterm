@@ -262,8 +262,6 @@ impl crate::TermWindow {
         radius: f32,
         zindex: i8,
     ) -> anyhow::Result<Vec<ComputedElement>> {
-        let font = self.fonts.title_font()?;
-        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let dpi = self.dimensions.dpi as f32;
         let mut shadows = vec![];
         for (grow, drop, alpha) in [(3., 4., 0.14), (1., 2., 0.2)] {
@@ -275,33 +273,47 @@ impl crate::TermWindow {
                 rect.width() + grow * 2.,
                 rect.height() + grow * 2.,
             );
-            let element = Element::new(&font, ElementContent::Text(String::new()))
-                .display(DisplayType::Block)
-                .min_width(Some(Dimension::Pixels(bounds.width())))
-                .min_height(Some(Dimension::Pixels(bounds.height())))
-                .border_corners(Some(rounded(radius + grow)))
-                .colors(fill(shade(alpha), shade(0.)));
-            shadows.push(self.compute_element(
-                &LayoutContext {
-                    height: DimensionContext {
-                        dpi,
-                        pixel_max: bounds.max_y(),
-                        pixel_cell: metrics.cell_size.height as f32,
-                    },
-                    width: DimensionContext {
-                        dpi,
-                        pixel_max: bounds.max_x(),
-                        pixel_cell: metrics.cell_size.width as f32,
-                    },
-                    bounds,
-                    metrics: &metrics,
-                    gl_state: self.render_state.as_ref().unwrap(),
-                    zindex,
-                },
-                &element,
-            )?);
+            shadows.push(self.theme_block(bounds, radius + grow, shade(alpha), zindex)?);
         }
         Ok(shadows)
+    }
+
+    /// A rounded block of `color` (which may be translucent) over `rect`.
+    pub(crate) fn theme_block(
+        &self,
+        rect: RectF,
+        radius: f32,
+        color: LinearRgba,
+        zindex: i8,
+    ) -> anyhow::Result<ComputedElement> {
+        let font = self.fonts.title_font()?;
+        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
+        let dpi = self.dimensions.dpi as f32;
+        let element = Element::new(&font, ElementContent::Text(String::new()))
+            .display(DisplayType::Block)
+            .min_width(Some(Dimension::Pixels(rect.width())))
+            .min_height(Some(Dimension::Pixels(rect.height())))
+            .border_corners(Some(rounded(radius)))
+            .colors(fill(color, shade(0.)));
+        self.compute_element(
+            &LayoutContext {
+                height: DimensionContext {
+                    dpi,
+                    pixel_max: rect.max_y(),
+                    pixel_cell: metrics.cell_size.height as f32,
+                },
+                width: DimensionContext {
+                    dpi,
+                    pixel_max: rect.max_x(),
+                    pixel_cell: metrics.cell_size.width as f32,
+                },
+                bounds: rect,
+                metrics: &metrics,
+                gl_state: self.render_state.as_ref().unwrap(),
+                zindex,
+            },
+            &element,
+        )
     }
 }
 

@@ -125,17 +125,6 @@ impl FilesAction {
             Self::CancelTransfer => icon::CLOSE,
         }
     }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Up => "↑",
-            Self::Refresh => "⟳",
-            Self::Home => "⌂",
-            Self::NewFolder => "+",
-            Self::Upload => "⇪上传",
-            Self::CancelTransfer => "✕",
-        }
-    }
 }
 
 /// The page's right-click menu.

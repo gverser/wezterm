@@ -87,7 +87,7 @@ impl crate::TermWindow {
     /// The notice above the list, broken to fit the panel.
     pub fn files_notice_lines(&self, conn: &FilesConn) -> Vec<String> {
         match &conn.notice {
-            Some(notice) => self.files_wrap(notice, self.files_inner_width()),
+            Some(notice) => self.files_wrap(notice, self.files_text_room()),
             None => vec![],
         }
     }

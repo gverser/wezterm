@@ -267,49 +267,40 @@ impl crate::TermWindow {
             )
         };
 
-        let rects = match target {
-            Placement::Before(id) => row_rect(id)
-                .map(|rect| vec![line(rect.min_y(), depth_of(id))])
-                .unwrap_or_default(),
-            Placement::After(id) => row_rect(id)
-                .map(|rect| vec![line(rect.max_y(), depth_of(id))])
-                .unwrap_or_default(),
+        // Above the rows, alongside the resize handle; the context menu sits
+        // above both, though a press always closes it before a drag can begin.
+        const DROP_LAYER: i8 = 11;
+        let color = lin(palette::ACCENT);
+        let gl_state = self.render_state.as_ref().unwrap();
+
+        let line_at = match target {
+            Placement::Before(id) => row_rect(id).map(|rect| line(rect.min_y(), depth_of(id))),
+            Placement::After(id) => row_rect(id).map(|rect| line(rect.max_y(), depth_of(id))),
             Placement::LastIn(None) => self
                 .ui_items
                 .iter()
                 .filter(|item| matches!(item.item_type, UIItemType::SidebarNode(_)))
                 .last()
-                .map(|item| vec![line((item.y + item.height) as f32, 0)])
-                .unwrap_or_default(),
-            Placement::LastIn(Some(folder)) => row_rect(folder)
-                .map(|rect| {
-                    vec![
-                        euclid::rect(rect.min_x(), rect.min_y(), rect.width(), thickness),
-                        euclid::rect(
-                            rect.min_x(),
-                            rect.max_y() - thickness,
-                            rect.width(),
-                            thickness,
-                        ),
-                        euclid::rect(rect.min_x(), rect.min_y(), thickness, rect.height()),
-                        euclid::rect(
-                            rect.max_x() - thickness,
-                            rect.min_y(),
-                            thickness,
-                            rect.height(),
-                        ),
-                    ]
-                })
-                .unwrap_or_default(),
+                .map(|item| line((item.y + item.height) as f32, 0)),
+            // Into a folder: its rounded row lit up in a wash of the accent.
+            Placement::LastIn(Some(folder)) => {
+                if let Some(rect) = row_rect(folder) {
+                    let dpi = self.dimensions.dpi as f32;
+                    let block = self.theme_block(
+                        folder_drop_rect(rect, dpi),
+                        px(dpi, 6.),
+                        color.mul_alpha(0.25),
+                        DROP_LAYER,
+                    )?;
+                    self.render_element(&block, gl_state, None)?;
+                }
+                None
+            }
         };
 
-        let color = lin(palette::ACCENT);
-        let gl_state = self.render_state.as_ref().unwrap();
-        // Above the rows, alongside the resize handle; the context menu sits
-        // above both, though a press always closes it before a drag can begin.
-        let layer = gl_state.layer_for_zindex(11)?;
-        let mut layers = layer.quad_allocator();
-        for rect in rects {
+        if let Some(rect) = line_at {
+            let layer = gl_state.layer_for_zindex(DROP_LAYER)?;
+            let mut layers = layer.quad_allocator();
             self.filled_rectangle(&mut layers, 2, rect, color)?;
         }
         Ok(())
@@ -350,7 +341,7 @@ impl crate::TermWindow {
 
         let mut children = vec![
             self.sidebar_header_element(&font, bounds.width(), pad),
-            self.sidebar_search_element(&font, &metrics, bounds.width(), pad),
+            self.sidebar_search_element(&font, &metrics, bounds.width()),
         ];
 
         let search = self.sidebar.search.clone();
@@ -373,6 +364,10 @@ impl crate::TermWindow {
             }
 
             let range = visible_range(rows.len(), scroll_offset, capacity);
+            // Measured once: a session row leaves a gap as wide as this.
+            let arrow_width = self
+                .files_text_width(&format!("{} ", icon::CHEVRON_RIGHT))
+                .unwrap_or(0.);
             for row in &rows[range] {
                 let row_icon = match row.kind {
                     RowKind::Folder { .. } => RowIcon::Folder,
@@ -404,6 +399,7 @@ impl crate::TermWindow {
                     &metrics,
                     bounds.width(),
                     pad,
+                    arrow_width,
                 ));
             }
         });
@@ -486,7 +482,6 @@ impl crate::TermWindow {
         font: &Rc<LoadedFont>,
         metrics: &RenderMetrics,
         width: f32,
-        pad: f32,
     ) -> Element {
         let focused = self.sidebar.focus == Some(SidebarFocus::Search);
 
@@ -515,7 +510,6 @@ impl crate::TermWindow {
                 .colors(fill(raised, lin(palette::TEXT_FAINT))),
             Element::new(font, ElementContent::Text(text)).colors(fill(raised, lin(text_color))),
         ];
-        let _ = pad;
         self.sidebar_field(font, metrics, parts, focused, width)
             .item_type(UIItemType::SidebarSearch)
     }
@@ -874,6 +868,7 @@ impl crate::TermWindow {
         metrics: &RenderMetrics,
         width: f32,
         pad: f32,
+        arrow_width: f32,
     ) -> Element {
         let dpi = self.dimensions.dpi as f32;
         let renaming = self.sidebar.focus == Some(SidebarFocus::Rename(row.id));
@@ -904,13 +899,8 @@ impl crate::TermWindow {
             Some(chevron) => text_run(font, format!("{chevron} "), lin(arrow_color).into()),
             // A gap as wide as the arrow, so that names line up under
             // folders. (Transparent text would still be drawn.)
-            None => {
-                let width = self
-                    .files_text_width(&format!("{} ", icon::CHEVRON_RIGHT))
-                    .unwrap_or(0.);
-                text_run(font, String::new(), InheritableColor::Inherited)
-                    .min_width(Some(Dimension::Pixels(width)))
-            }
+            None => text_run(font, String::new(), InheritableColor::Inherited)
+                .min_width(Some(Dimension::Pixels(arrow_width))),
         };
         let (glyph, glyph_color) = row_icon.glyph();
 
@@ -1186,26 +1176,41 @@ impl crate::TermWindow {
     }
 }
 
+/// Where to light up a folder a dragged node would go into: its row as hit
+/// tested, which takes in the row's margins, less those margins, so that the
+/// wash lies on the rounded row itself.
+pub(crate) fn folder_drop_rect(item: RectF, dpi: f32) -> RectF {
+    let margin = row_margin(dpi);
+    euclid::rect(
+        item.min_x() + margin,
+        item.min_y(),
+        (item.width() - margin * 2.).max(0.),
+        item.height(),
+    )
+}
+
 /// How a sidebar row sits across a panel `width` wide.
 #[derive(Debug)]
 pub(crate) struct RowWidths {
     /// Inset on each side.
     pub margin: f32,
-    /// Accent bar, padding and indent: the box less its content.
-    pub border_and_padding: f32,
     /// The room the row's content gets.
     pub content: f32,
     /// The most the row's box may take; with the margins, the panel.
     pub box_max: f32,
 }
 
+/// The inset of a sidebar row on each side of the panel.
+pub(crate) fn row_margin(dpi: f32) -> f32 {
+    px(dpi, 6.)
+}
+
 pub(crate) fn row_widths(dpi: f32, width: f32, indent: f32, pad: f32) -> RowWidths {
-    let margin = px(dpi, 6.);
+    let margin = row_margin(dpi);
     let border_and_padding = crate::TermWindow::sidebar_row_bar(dpi) + pad * 2. + indent;
     let content = (width - margin * 2. - border_and_padding).max(0.);
     RowWidths {
         margin,
-        border_and_padding,
         content,
         box_max: content + border_and_padding,
     }
@@ -1225,8 +1230,26 @@ mod test {
                 assert!(near(w.margin * 2. + w.box_max, 260.), "{:?}", w);
                 // ...and the most its content may take is the least it gets,
                 // so a part floated right can't push it wider.
-                assert!(near(w.box_max - w.border_and_padding, w.content), "{:?}", w);
+                let border_and_padding =
+                    crate::TermWindow::sidebar_row_bar(dpi) + pad * 2. + indent;
+                assert!(near(w.box_max - border_and_padding, w.content), "{:?}", w);
             }
         }
+    }
+
+    #[test]
+    fn the_drop_box_hugs_the_rounded_row() {
+        // The row's ui item spans its margins; the rounded fill sits inside.
+        let item: RectF = euclid::rect(10., 20., 200., 24.);
+        for dpi in [96., 120.] {
+            let inset = px(dpi, 6.);
+            assert_eq!(
+                folder_drop_rect(item, dpi),
+                euclid::rect(10. + inset, 20., 200. - inset * 2., 24.)
+            );
+        }
+        // Never negative.
+        let narrow: RectF = euclid::rect(0., 0., 4., 24.);
+        assert_eq!(folder_drop_rect(narrow, 96.).width(), 0.);
     }
 }

@@ -104,13 +104,27 @@ impl crate::TermWindow {
         .map(|e| e.bounds.width())
     }
 
-    /// Room for text across the panel, inside its padding.
-    pub(crate) fn files_inner_width(&self) -> f32 {
-        let pad = match self.sidebar_font() {
+    /// The panel's padding: half a cell of the sidebar's font.
+    fn files_pad(&self) -> f32 {
+        match self.sidebar_font() {
             Ok((_, metrics)) => metrics.cell_size.width as f32 * 0.5,
             Err(_) => 0.,
-        };
-        (self.sidebar_panel_bounds().width() - pad * 2.).max(0.)
+        }
+    }
+
+    /// Room for text across the panel, inside its padding.
+    pub(crate) fn files_inner_width(&self) -> f32 {
+        (self.sidebar_panel_bounds().width() - self.files_pad() * 2.).max(0.)
+    }
+
+    /// Room for a line of notice or error text: what `files_text_line` draws
+    /// it in.
+    pub(crate) fn files_text_room(&self) -> f32 {
+        text_line_room(
+            self.dimensions.dpi as f32,
+            self.sidebar_panel_bounds().width(),
+            self.files_pad(),
+        )
     }
 
     /// `text` shortened by `shorten` (which keeps a number of columns) until
@@ -184,7 +198,7 @@ impl crate::TermWindow {
                 }
 
                 if let Some(err) = &conn.error {
-                    for line in self.files_wrap(err, self.files_inner_width()) {
+                    for line in self.files_wrap(err, self.files_text_room()) {
                         children.push(self.files_text_line(&line, red, font, width, pad));
                     }
                 } else if conn.entries.is_empty() {
@@ -197,14 +211,22 @@ impl crate::TermWindow {
                 } else {
                     let capacity = self.files_list_capacity();
                     let end = (conn.scroll + capacity).min(conn.entries.len());
+                    let mut icon_widths = std::collections::HashMap::new();
                     for index in conn.scroll..end {
+                        let entry = &conn.entries[index];
+                        // Each kind of icon is measured once, not once a row.
+                        let (glyph, _) = entry_icon(entry);
+                        let icon_width = *icon_widths.entry(glyph).or_insert_with(|| {
+                            self.files_text_width(&format!("{glyph} ")).unwrap_or(0.)
+                        });
                         children.push(self.files_row_element(
                             index,
-                            &conn.entries[index],
+                            entry,
                             conn.selected == Some(index),
                             font,
                             width,
                             pad,
+                            icon_width,
                         ));
                     }
                 }
@@ -517,16 +539,14 @@ impl crate::TermWindow {
         width: f32,
         pad: f32,
     ) -> Element {
-        let margin = px(self.dimensions.dpi as f32, 6.);
+        let dpi = self.dimensions.dpi as f32;
         padded(
             Element::new(font, ElementContent::Text(text.to_string())),
-            pad + margin,
+            pad + super::sidebar::row_margin(dpi),
         )
         .display(DisplayType::Block)
         .line_height(Some(SIDEBAR_LINE_HEIGHT))
-        .min_width(Some(Dimension::Pixels(
-            (width - (pad + margin) * 2.).max(0.),
-        )))
+        .min_width(Some(Dimension::Pixels(text_line_room(dpi, width, pad))))
         .colors(plain_colors(lin(palette::PANEL), fg))
     }
 
@@ -538,6 +558,7 @@ impl crate::TermWindow {
         font: &Rc<LoadedFont>,
         width: f32,
         pad: f32,
+        icon_width: f32,
     ) -> Element {
         // A link is listed as itself; what it points at is only looked up when
         // it is opened.
@@ -553,7 +574,6 @@ impl crate::TermWindow {
             format!("  {size}")
         };
         let size_width = self.files_text_width(&size_text).unwrap_or(0.);
-        let icon_width = self.files_text_width(&icon_text).unwrap_or(0.);
         let name = self.files_fit(
             &crate::sftp::model::display_name(&entry.name),
             self.sidebar_row_room(width, 0., pad) - icon_width - size_width,
@@ -580,10 +600,29 @@ impl crate::TermWindow {
     }
 }
 
+/// The width a line of text gets in a panel `width` wide: padded by `pad`
+/// and inset by the rows' margin on each side.
+pub(crate) fn text_line_room(dpi: f32, width: f32, pad: f32) -> f32 {
+    (width - (pad + super::sidebar::row_margin(dpi)) * 2.).max(0.)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::termwindow::theme::{icon, palette};
+
+    #[test]
+    fn a_notice_wraps_to_the_room_it_is_drawn_in() {
+        // A text line is padded by `pad` and inset by the rows' 6px margin on
+        // each side; it is wrapped to what is left.
+        for dpi in [96., 120.] {
+            assert_eq!(
+                text_line_room(dpi, 300., 6.),
+                300. - 2. * (6. + px(dpi, 6.))
+            );
+        }
+        assert_eq!(text_line_room(96., 10., 6.), 0.);
+    }
 
     #[test]
     fn each_kind_of_entry_has_its_icon() {
