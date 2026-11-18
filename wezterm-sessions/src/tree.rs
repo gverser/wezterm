@@ -224,6 +224,18 @@ impl SessionTree {
         id
     }
 
+    /// `alloc_id`, passing over ids that `taken` says are still in use outside
+    /// the tree: a saved ssh host, or an open workspace, left behind by a node
+    /// that was deleted. A new node with such an id would inherit them.
+    pub fn alloc_id_skipping(&mut self, taken: impl Fn(NodeId) -> bool) -> NodeId {
+        loop {
+            let id = self.alloc_id();
+            if !taken(id) {
+                return id;
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.roots.is_empty()
     }
@@ -604,6 +616,23 @@ mod test {
         let b = tree.alloc_id();
         assert_ne!(a, b);
         assert!(b.0 > a.0);
+    }
+
+    #[test]
+    fn alloc_id_skips_ids_claimed_elsewhere() {
+        let mut tree = SessionTree::new();
+        tree.roots.push(SessionNode::session(
+            NodeId(5),
+            "x",
+            SessionSpawn::default(),
+        ));
+        tree.reseed_ids();
+        // 6 and 7 still have a saved host or an open workspace from nodes
+        // that were deleted; a new node must not inherit either.
+        let taken = |id: NodeId| id == NodeId(6) || id == NodeId(7);
+        assert_eq!(tree.alloc_id_skipping(taken), NodeId(8));
+        // The next one moves on rather than landing on 8 again.
+        assert_eq!(tree.alloc_id_skipping(taken), NodeId(9));
     }
 
     #[test]

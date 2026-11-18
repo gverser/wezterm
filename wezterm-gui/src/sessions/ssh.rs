@@ -10,6 +10,7 @@ pub use wezterm_sessions::ssh::*;
 use crate::sessions::store::with_store;
 use crate::sessions::NodeId;
 use ::window::WindowOps;
+use config::keyassignment::SpawnTabDomain;
 use config::{Shell, SshDomain, SshMultiplexing};
 use mux::domain::{Domain, DomainId};
 use mux::pane::Pane;
@@ -110,12 +111,21 @@ impl SshPasswordHelper for NodePasswordHelper {
         }
     }
 
-    fn has_saved_password(&self) -> bool {
-        !self.saved.lock().unwrap().is_empty()
+    fn password_on_file(&self) -> Option<String> {
+        let saved = self.saved.lock().unwrap();
+        if saved.is_empty() {
+            None
+        } else {
+            Some(saved.clone())
+        }
     }
 
     fn saved_password_rejected(&self) {
         self.rejected.store(true, Ordering::SeqCst);
+    }
+
+    fn saved_password_works(&self) {
+        self.rejected.store(false, Ordering::SeqCst);
     }
 
     fn save_password(&self, password: String) {
@@ -238,12 +248,37 @@ pub fn register_all_ssh_domains() {
             .collect()
     });
     for id in alive {
-        if with_ssh_hosts(|store| store.get(id).is_some()) {
+        if is_ssh_node(id) {
             if let Err(err) = ensure_ssh_domain(id) {
                 log::error!("registering ssh domain for session {id}: {err:#}");
             }
         }
     }
+}
+
+/// Whether sidebar node `id` is an ssh session: it has a saved host, and its
+/// spawn names its own runtime domain, as the sidebar records for every ssh
+/// node it makes. A host left behind by a node deleted elsewhere (by an
+/// older build, which knows nothing of ssh_hosts.json) must not turn a local
+/// node that got the same id into an ssh one, connecting to that host with
+/// its saved password.
+pub fn ssh_node(id: NodeId, spawn_domain: Option<&SpawnTabDomain>, has_host: bool) -> bool {
+    has_host
+        && matches!(spawn_domain,
+            Some(SpawnTabDomain::DomainName(name)) if *name == ssh_domain_name(id))
+}
+
+/// `ssh_node` for a node in the store. Not for use inside `with_store`.
+pub fn is_ssh_node(id: NodeId) -> bool {
+    let domain = with_store(|store| match store.tree().find(id).map(|node| &node.kind) {
+        Some(wezterm_sessions::tree::NodeKind::Session { spawn }) => Some(spawn.domain.clone()),
+        _ => None,
+    });
+    ssh_node(
+        id,
+        domain.as_ref(),
+        with_ssh_hosts(|store| store.get(id).is_some()),
+    )
 }
 
 /// Drop the saved hosts of nodes that have just been deleted; deleting a
@@ -290,6 +325,39 @@ mod test {
             password: "pw".to_string(),
             key_path: r"C:\keys\id_ed25519".to_string(),
         }
+    }
+
+    #[test]
+    fn a_node_is_ssh_only_if_its_domain_says_so() {
+        let own = SpawnTabDomain::DomainName(ssh_domain_name(NodeId(4)));
+        assert!(ssh_node(NodeId(4), Some(&own), true));
+        // No saved host: whatever the spawn says, there is nothing to connect to.
+        assert!(!ssh_node(NodeId(4), Some(&own), false));
+        // A host left behind by a node deleted elsewhere (an older build, say)
+        // must not turn a local node that got the same id into an ssh one.
+        assert!(!ssh_node(
+            NodeId(4),
+            Some(&SpawnTabDomain::DefaultDomain),
+            true
+        ));
+        assert!(!ssh_node(NodeId(4), None, true));
+        let other = SpawnTabDomain::DomainName(ssh_domain_name(NodeId(5)));
+        assert!(!ssh_node(NodeId(4), Some(&other), true));
+    }
+
+    #[test]
+    fn the_saved_password_getting_in_lifts_the_rejection() {
+        let helper = NodePasswordHelper {
+            id: NodeId(1),
+            saved: Mutex::new("pw".to_string()),
+            rejected: AtomicBool::new(true),
+        };
+        // Rejected earlier: not filled in, but still on file.
+        assert_eq!(helper.saved_password(), None);
+        assert_eq!(helper.password_on_file(), Some("pw".to_string()));
+        // Typed by hand, it got the user in.
+        helper.saved_password_works();
+        assert_eq!(helper.saved_password(), Some("pw".to_string()));
     }
 
     #[test]

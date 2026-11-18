@@ -4,7 +4,7 @@
 //! Each dialog runs modally on a thread of its own, so the window keeps
 //! painting while it is open.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The paths in a GetOpenFileNameW buffer: one full path, or with
 /// OFN_ALLOWMULTISELECT and several files chosen, the directory followed by
@@ -123,9 +123,33 @@ pub async fn pick_save_file(owner: Owner, suggested: &str) -> Option<PathBuf> {
     }
 }
 
+/// Without a save dialog the download goes into the downloads folder; under
+/// a free name there rather than over a file of the same name.
 #[cfg(not(windows))]
 pub async fn pick_save_file(_owner: Owner, suggested: &str) -> Option<PathBuf> {
-    dirs_next::download_dir().map(|dir| dir.join(suggested))
+    dirs_next::download_dir().map(|dir| free_download_path(&dir, suggested, |p| p.exists()))
+}
+
+/// `name` in `dir`, or the first of "stem (1).ext", "stem (2).ext", ... that
+/// `exists` says is free. The extension is everything from the first dot
+/// that isn't the leading one, so "a.tar.gz" becomes "a (1).tar.gz".
+#[cfg_attr(windows, allow(dead_code))]
+fn free_download_path(dir: &Path, name: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let first = dir.join(name);
+    if !exists(&first) {
+        return first;
+    }
+    let split = name
+        .char_indices()
+        .skip(1)
+        .find(|&(_, c)| c == '.')
+        .map(|(i, _)| i)
+        .unwrap_or(name.len());
+    let (stem, ext) = name.split_at(split);
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|candidate| !exists(candidate))
+        .expect("some number is free")
 }
 
 #[cfg(windows)]
@@ -261,6 +285,35 @@ mod test {
         assert_eq!(
             dialog_outcome(0, 0x0002),
             Outcome::Failed("文件对话框出错（代码 0x2）".to_string())
+        );
+    }
+
+    #[test]
+    fn a_second_download_of_the_same_name_gets_a_number() {
+        use std::path::{Path, PathBuf};
+        let dir = Path::new("dl");
+        let have =
+            |names: &'static [&'static str]| move |p: &Path| names.iter().any(|n| p == dir.join(n));
+        assert_eq!(
+            free_download_path(dir, "a.tar.gz", have(&[])),
+            dir.join("a.tar.gz")
+        );
+        assert_eq!(
+            free_download_path(dir, "a.tar.gz", have(&["a.tar.gz"])),
+            dir.join("a (1).tar.gz")
+        );
+        assert_eq!(
+            free_download_path(dir, "a.tar.gz", have(&["a.tar.gz", "a (1).tar.gz"])),
+            dir.join("a (2).tar.gz")
+        );
+        // No extension, and a leading dot that is not one.
+        assert_eq!(
+            free_download_path(dir, "notes", have(&["notes"])),
+            dir.join("notes (1)")
+        );
+        assert_eq!(
+            free_download_path(dir, ".bashrc", have(&[".bashrc"])),
+            PathBuf::from("dl").join(".bashrc (1)")
         );
     }
 

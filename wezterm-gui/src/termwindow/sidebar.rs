@@ -39,6 +39,17 @@ pub fn tree_row_on_screen(index_in_view: usize) -> usize {
 
 /// Whether a session's domain is a WSL distribution (`WSL:Ubuntu`), which
 /// gets its own icon.
+/// Whether an id is still claimed outside the tree by a node that was
+/// deleted: a saved ssh host, or a workspace with windows open (deleting a
+/// node leaves its terminals running). A new node given that id would
+/// inherit them.
+fn id_in_use_elsewhere(id: NodeId) -> bool {
+    with_ssh_hosts(|store| store.get(id).is_some())
+        || !Mux::get()
+            .iter_windows_in_workspace(&id.workspace_name())
+            .is_empty()
+}
+
 pub fn is_wsl_domain(name: &str) -> bool {
     name.get(..4)
         .map_or(false, |prefix| prefix.eq_ignore_ascii_case("wsl:"))
@@ -540,7 +551,7 @@ impl super::TermWindow {
         // An ssh node connects through its own runtime domain, whatever its
         // stored spawn says; the domain is (re)registered here so that an
         // edit made since the last connection takes effect.
-        if with_ssh_hosts(|store| store.get(id).is_some()) {
+        if crate::sessions::ssh::is_ssh_node(id) {
             match crate::sessions::ssh::ensure_ssh_domain(id) {
                 Ok(_) => {
                     command.domain = SpawnTabDomain::DomainName(ssh_domain_name(id));
@@ -741,7 +752,7 @@ impl super::TermWindow {
                 let is_folder = action == MenuAction::NewFolder;
                 let id = with_store(|store| {
                     store.mutate(|tree| {
-                        let id = tree.alloc_id();
+                        let id = tree.alloc_id_skipping(id_in_use_elsewhere);
                         let node = if is_folder {
                             SessionNode::folder(id, "新建文件夹")
                         } else {
@@ -811,7 +822,7 @@ impl super::TermWindow {
             return;
         }
 
-        if with_ssh_hosts(|store| store.get(id).is_some()) {
+        if crate::sessions::ssh::is_ssh_node(id) {
             self.show_ssh_editor(SshEditTarget::Existing(id));
         } else {
             self.show_local_editor(id, name, spawn);
@@ -874,7 +885,7 @@ impl super::TermWindow {
                     }
                     SshEditTarget::New { parent } => with_store(|store| {
                         store.mutate(|tree| {
-                            let id = tree.alloc_id();
+                            let id = tree.alloc_id_skipping(id_in_use_elsewhere);
                             let spawn = SessionSpawn {
                                 // Recorded so that an older build, which knows
                                 // nothing of ssh_hosts.json, fails to open this

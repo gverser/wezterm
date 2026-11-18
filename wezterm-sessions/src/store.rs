@@ -13,8 +13,11 @@ pub fn sessions_file_name() -> PathBuf {
     config::DATA_DIR.join("sessions.json")
 }
 
+/// Where a save is written before it is renamed over `path`. Named for this
+/// process, so that two GUI processes saving at the same moment don't write
+/// into one file and rename a mix of both into place.
 pub(crate) fn temp_file_name(path: &Path) -> PathBuf {
-    path.with_extension("json.tmp")
+    path.with_extension(format!("json.{}.tmp", std::process::id()))
 }
 
 pub(crate) fn quarantine_file_name(path: &Path) -> PathBuf {
@@ -237,6 +240,19 @@ mod test {
         let path = dir.path().join("sessions.json");
         save_to(&path, &tree_with(&["alpha"])).expect("to save");
         assert!(!temp_file_name(&path).exists());
+    }
+
+    #[test]
+    fn temp_file_name_is_unique_per_process() {
+        // Two GUI processes saving at the same moment must not write into one
+        // temporary file and rename a mix of both into place.
+        let path = Path::new("data").join("sessions.json");
+        let tmp = temp_file_name(&path);
+        let name = tmp.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("sessions.json."), "{}", name);
+        assert!(name.ends_with(".tmp"), "{}", name);
+        assert!(name.contains(&std::process::id().to_string()), "{}", name);
+        assert_eq!(tmp.parent(), path.parent());
     }
 
     #[test]

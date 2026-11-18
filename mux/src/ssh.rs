@@ -66,11 +66,16 @@ pub trait SshPasswordHelper: Send + Sync {
     /// The password to offer automatically, or None if there is none or it
     /// has already been rejected in this process.
     fn saved_password(&self) -> Option<String>;
-    /// Whether any password is on file at all. Decides whether a password the
-    /// user typed by hand is offered for saving or for updating.
-    fn has_saved_password(&self) -> bool;
+    /// The password on file, even one that has been rejected; None if there
+    /// is none. Decides whether a password the user typed by hand is offered
+    /// for saving or for updating, or is the one on file after all.
+    fn password_on_file(&self) -> Option<String>;
     /// The password from `saved_password` did not get the user in.
     fn saved_password_rejected(&self);
+    /// The password on file got the user in when typed by hand: whatever
+    /// made it look rejected (a link that dropped mid-login, say) is over,
+    /// and it may be filled in again.
+    fn saved_password_works(&self);
     /// The user typed this password, logged in with it, and agreed to keep it.
     fn save_password(&self, password: String);
 }
@@ -89,6 +94,9 @@ pub fn is_password_prompt(prompt: &wezterm_ssh::AuthenticationPrompt) -> bool {
 pub enum SaveOffer {
     Save(String),
     Update(String),
+    /// The user typed the password that is on file: nothing to ask, but it
+    /// works after all.
+    StillGood,
 }
 
 /// The decisions around filling in a saved password, kept apart from the
@@ -100,17 +108,19 @@ pub enum SaveOffer {
 /// accounts get locked.
 pub(crate) struct PasswordAutofill {
     saved: Option<String>,
-    has_saved: bool,
+    on_file: Option<String>,
     auto_used: bool,
     typed: Option<String>,
     rejected: bool,
 }
 
 impl PasswordAutofill {
-    pub fn new(saved: Option<String>, has_saved: bool) -> Self {
+    /// `saved`: the password to fill in, if any; `on_file`: the password on
+    /// file, even one held back because it was rejected before.
+    pub fn new(saved: Option<String>, on_file: Option<String>) -> Self {
         Self {
             saved,
-            has_saved,
+            on_file,
             auto_used: false,
             typed: None,
             rejected: false,
@@ -148,10 +158,10 @@ impl PasswordAutofill {
 
     pub fn offer_after_success(&self) -> Option<SaveOffer> {
         let typed = self.typed.clone()?;
-        Some(if self.has_saved {
-            SaveOffer::Update(typed)
-        } else {
-            SaveOffer::Save(typed)
+        Some(match &self.on_file {
+            Some(on_file) if *on_file == typed => SaveOffer::StillGood,
+            Some(_) => SaveOffer::Update(typed),
+            None => SaveOffer::Save(typed),
         })
     }
 }
@@ -754,10 +764,7 @@ fn connect_ssh_session(
 
     let mut autofill = PasswordAutofill::new(
         password_helper.as_ref().and_then(|h| h.saved_password()),
-        password_helper
-            .as_ref()
-            .map(|h| h.has_saved_password())
-            .unwrap_or(false),
+        password_helper.as_ref().and_then(|h| h.password_on_file()),
     );
     let mut reported_rejection = false;
     let mut report_rejection =
@@ -875,17 +882,23 @@ fn connect_ssh_session(
                         if let (Some(helper), Some(offer)) =
                             (&password_helper, autofill.offer_after_success())
                         {
-                            let (question, password) = match offer {
-                                SaveOffer::Save(pw) => ("保存密码，下次自动登录？(y/N) ", pw),
-                                SaveOffer::Update(pw) => ("更新已存的密码？(y/N) ", pw),
+                            let question = match offer {
+                                SaveOffer::Save(pw) => Some(("保存密码，下次自动登录？(y/N) ", pw)),
+                                SaveOffer::Update(pw) => Some(("更新已存的密码？(y/N) ", pw)),
+                                SaveOffer::StillGood => {
+                                    helper.saved_password_works();
+                                    None
+                                }
                             };
-                            let mut editor = LineEditor::new(&mut shim);
-                            let mut host = PasswordPromptHost::default();
-                            host.echo = true;
-                            editor.set_prompt(question);
-                            if let Some(line) = editor.read_line(&mut host)? {
-                                if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
-                                    helper.save_password(password);
+                            if let Some((question, password)) = question {
+                                let mut editor = LineEditor::new(&mut shim);
+                                let mut host = PasswordPromptHost::default();
+                                host.echo = true;
+                                editor.set_prompt(question);
+                                if let Some(line) = editor.read_line(&mut host)? {
+                                    if matches!(line.trim(), "y" | "Y" | "yes" | "YES") {
+                                        helper.save_password(password);
+                                    }
                                 }
                             }
                         }
@@ -1415,7 +1428,8 @@ mod autofill_test {
 
     #[test]
     fn saved_password_is_offered_once() {
-        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        let mut fill =
+            PasswordAutofill::new(Some("secret".to_string()), Some("secret".to_string()));
         assert_eq!(fill.auto_answer(&password()), Some("secret".to_string()));
         assert!(!fill.rejected());
         assert_eq!(fill.auto_answer(&password()), None);
@@ -1424,7 +1438,8 @@ mod autofill_test {
 
     #[test]
     fn non_password_prompt_is_never_autofilled() {
-        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        let mut fill =
+            PasswordAutofill::new(Some("secret".to_string()), Some("secret".to_string()));
         let code = AuthenticationPrompt {
             prompt: "Verification code: ".to_string(),
             echo: false,
@@ -1458,7 +1473,8 @@ mod autofill_test {
 
     #[test]
     fn error_after_autofill_marks_rejected() {
-        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        let mut fill =
+            PasswordAutofill::new(Some("secret".to_string()), Some("secret".to_string()));
         fill.auto_answer(&password());
         fill.note_error();
         assert!(fill.rejected());
@@ -1466,14 +1482,14 @@ mod autofill_test {
 
     #[test]
     fn error_without_autofill_is_not_a_rejection() {
-        let mut fill = PasswordAutofill::new(None, false);
+        let mut fill = PasswordAutofill::new(None, None);
         fill.note_error();
         assert!(!fill.rejected());
     }
 
     #[test]
     fn typed_password_offers_save_when_none_saved() {
-        let mut fill = PasswordAutofill::new(None, false);
+        let mut fill = PasswordAutofill::new(None, None);
         assert_eq!(fill.auto_answer(&password()), None);
         fill.record_typed(&password(), "pw");
         assert_eq!(
@@ -1484,7 +1500,7 @@ mod autofill_test {
 
     #[test]
     fn typed_password_offers_update_after_rejection() {
-        let mut fill = PasswordAutofill::new(Some("old".to_string()), true);
+        let mut fill = PasswordAutofill::new(Some("old".to_string()), Some("old".to_string()));
         fill.auto_answer(&password());
         assert_eq!(fill.auto_answer(&password()), None);
         fill.record_typed(&password(), "new");
@@ -1498,7 +1514,7 @@ mod autofill_test {
     fn rejected_earlier_still_offers_update() {
         // The helper withholds a password it already knows is wrong, but one
         // is still on file, so the question is "update", not "save".
-        let mut fill = PasswordAutofill::new(None, true);
+        let mut fill = PasswordAutofill::new(None, Some("old".to_string()));
         fill.record_typed(&password(), "new");
         assert_eq!(
             fill.offer_after_success(),
@@ -1507,15 +1523,28 @@ mod autofill_test {
     }
 
     #[test]
+    fn typing_the_saved_password_again_clears_the_rejection() {
+        // Rejected on an earlier connection (a link that dropped mid-login
+        // counts too), so not filled in this time. The user types the very
+        // same password and gets in: it is good after all, and there is
+        // nothing to save or update.
+        let mut fill = PasswordAutofill::new(None, Some("pw".to_string()));
+        assert_eq!(fill.auto_answer(&password()), None);
+        fill.record_typed(&password(), "pw");
+        assert_eq!(fill.offer_after_success(), Some(SaveOffer::StillGood));
+    }
+
+    #[test]
     fn autofill_success_offers_nothing() {
-        let mut fill = PasswordAutofill::new(Some("secret".to_string()), true);
+        let mut fill =
+            PasswordAutofill::new(Some("secret".to_string()), Some("secret".to_string()));
         fill.auto_answer(&password());
         assert_eq!(fill.offer_after_success(), None);
     }
 
     #[test]
     fn typed_non_password_is_not_offered() {
-        let mut fill = PasswordAutofill::new(None, false);
+        let mut fill = PasswordAutofill::new(None, None);
         let code = AuthenticationPrompt {
             prompt: "Verification code: ".to_string(),
             echo: false,
@@ -1526,7 +1555,7 @@ mod autofill_test {
 
     #[test]
     fn no_saved_password_means_no_autofill() {
-        let mut fill = PasswordAutofill::new(None, false);
+        let mut fill = PasswordAutofill::new(None, None);
         assert_eq!(fill.auto_answer(&password()), None);
         assert!(!fill.rejected());
     }

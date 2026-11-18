@@ -371,26 +371,28 @@ impl crate::TermWindow {
             for row in &rows[range] {
                 let row_icon = match row.kind {
                     RowKind::Folder { .. } => RowIcon::Folder,
-                    RowKind::Session
-                        if crate::sessions::ssh::with_ssh_hosts(|hosts| {
-                            hosts.get(row.id).is_some()
-                        }) =>
-                    {
-                        RowIcon::Ssh
-                    }
-                    RowKind::Session => match tree.find(row.id).map(|node| &node.kind) {
-                        Some(wezterm_sessions::tree::NodeKind::Session { spawn }) => {
-                            match &spawn.domain {
-                                config::keyassignment::SpawnTabDomain::DomainName(name)
-                                    if is_wsl_domain(name) =>
-                                {
-                                    RowIcon::Wsl
-                                }
-                                _ => RowIcon::Local,
+                    RowKind::Session => {
+                        let spawn_domain = match tree.find(row.id).map(|node| &node.kind) {
+                            Some(wezterm_sessions::tree::NodeKind::Session { spawn }) => {
+                                Some(&spawn.domain)
                             }
+                            _ => None,
+                        };
+                        let has_host = crate::sessions::ssh::with_ssh_hosts(|hosts| {
+                            hosts.get(row.id).is_some()
+                        });
+                        match spawn_domain {
+                            _ if crate::sessions::ssh::ssh_node(row.id, spawn_domain, has_host) => {
+                                RowIcon::Ssh
+                            }
+                            Some(config::keyassignment::SpawnTabDomain::DomainName(name))
+                                if is_wsl_domain(name) =>
+                            {
+                                RowIcon::Wsl
+                            }
+                            _ => RowIcon::Local,
                         }
-                        _ => RowIcon::Local,
-                    },
+                    }
                 };
                 children.push(self.sidebar_row_element(
                     row,
