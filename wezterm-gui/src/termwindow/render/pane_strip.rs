@@ -1,6 +1,8 @@
 use crate::pane_strip::{layout_strip, StripHitKind, StripStyle, StripTab};
 use crate::quad::TripleLayerQuadAllocator;
+use crate::termwindow::render::fancy_tab_bar::close_button_colour;
 use crate::termwindow::render::RenderScreenLineParams;
+use crate::termwindow::theme::{palette, srgba};
 use crate::termwindow::{UIItem, UIItemType};
 use config::TabBarColors;
 use mux::pane::PaneId;
@@ -232,11 +234,18 @@ impl crate::TermWindow {
         visible
             .set_intensity(Intensity::Bold)
             .set_underline(Underline::Single);
+        // The same choices as the window's tab bar: a yellow dot for unseen
+        // output, a faint cross unless the tab colours are the user's own.
+        let user_set = self.config.resolved_palette.tab_bar.is_some();
+        let marker = ColorSpec::TrueColor(srgba(palette::WARN)).into();
+        let close = close_button_colour(user_set).map(|c| ColorSpec::TrueColor(srgba(c)).into());
         StripStyle {
             background,
             active: colors.active_tab().as_cell_attributes(),
             visible,
             hidden,
+            marker,
+            close,
         }
     }
 

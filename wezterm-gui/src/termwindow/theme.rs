@@ -159,6 +159,12 @@ pub fn contrast(a: u32, b: u32) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// A palette colour, opaque, as terminal cells take it.
+pub fn srgba(hex: u32) -> termwiz::color::SrgbaTuple {
+    let channel = |shift: u32| ((hex >> shift) & 0xff) as f32 / 255.;
+    termwiz::color::SrgbaTuple(channel(16), channel(8), channel(0), 1.)
+}
+
 /// A palette colour, opaque, as the renderer takes it.
 pub fn lin(hex: u32) -> LinearRgba {
     LinearRgba::with_srgba((hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xff)

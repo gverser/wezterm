@@ -11,6 +11,7 @@ use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
 use wezterm_font::LoadedFont;
 use wezterm_term::color::{ColorAttribute, ColorPalette};
+use window::color::LinearRgba;
 use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
 
 const X_BUTTON: &[Poly] = &[
@@ -374,7 +375,19 @@ impl crate::TermWindow {
                         ElementContent::Poly { .. } => unreachable!(),
                         ElementContent::Children(mut kids) => {
                             if self.config.show_close_tab_button_in_tabs {
-                                kids.push(make_x_button(&font, &metrics, &colors, tab_idx, active));
+                                let user_set = self
+                                    .config
+                                    .colors
+                                    .as_ref()
+                                    .map_or(false, |c| c.tab_bar.is_some());
+                                kids.push(make_x_button(
+                                    &font,
+                                    &metrics,
+                                    &colors,
+                                    tab_idx,
+                                    active,
+                                    close_button_colour(user_set),
+                                ));
                             }
                             ElementContent::Children(kids)
                         }
@@ -506,18 +519,20 @@ impl crate::TermWindow {
     /// corners into blue blobs. Left out when the user has given the active
     /// tab colours of their own.
     fn paint_active_tab_accent(&self, computed: &ComputedElement) -> anyhow::Result<()> {
-        let configured = self
-            .config
-            .colors
-            .as_ref()
-            .and_then(|c| c.tab_bar.as_ref())
-            .map_or(false, |t| t.active_tab.is_some());
-        if configured {
-            return Ok(());
-        }
+        let user_colors = self.config.colors.as_ref().and_then(|c| c.tab_bar.as_ref());
+        let configured = user_colors.map_or(false, |t| t.active_tab.is_some());
         let Some(tab) = find_active_tab(computed) else {
             return Ok(());
         };
+        let active_bg = user_colors
+            .cloned()
+            .unwrap_or_default()
+            .active_tab()
+            .bg_color
+            .to_linear();
+        if !wants_accent(configured, &tab.colors.bg, active_bg) {
+            return Ok(());
+        }
         let inset = tab.border_corners.as_ref().map_or(0., |c| c.top_left.width);
         let thickness = crate::termwindow::theme::px(self.dimensions.dpi as f32, 2.).round();
         let rect = accent_line(tab.border_rect, inset, thickness);
@@ -549,6 +564,20 @@ fn find_active_tab(element: &ComputedElement) -> Option<&ComputedElement> {
     }
 }
 
+/// Whether the current tab gets the accent line: only in the default
+/// colours. The user's colours for the active tab, or a background that
+/// format-tab-title gave it (`tab_bg` differs from the active tab's), are
+/// theirs to keep.
+fn wants_accent(configured: bool, tab_bg: &InheritableColor, active_bg: LinearRgba) -> bool {
+    !configured && matches!(tab_bg, InheritableColor::Color(bg) if *bg == active_bg)
+}
+
+/// The colour of a tab's close cross: faint, unless the user gave the tab
+/// bar colours of their own (None: it follows the tab's text).
+pub(crate) fn close_button_colour(user_set_tab_colours: bool) -> Option<u32> {
+    (!user_set_tab_colours).then_some(crate::termwindow::theme::palette::TEXT_FAINT)
+}
+
 /// A line `thickness` tall along the top of `tab`, stopping `inset` short of
 /// each side so that it ends where the rounded corners begin.
 fn accent_line(tab: RectF, inset: f32, thickness: f32) -> RectF {
@@ -566,8 +595,9 @@ fn make_x_button(
     colors: &TabBarColors,
     tab_idx: usize,
     active: bool,
+    colour: Option<u32>,
 ) -> Element {
-    Element::new(
+    let button = Element::new(
         &font,
         ElementContent::Poly {
             line_width: metrics.underline_height.max(2),
@@ -577,52 +607,88 @@ fn make_x_button(
                 height: Dimension::Pixels(metrics.cell_size.height as f32 / 2.),
             },
         },
-    )
-    // Ensure that we draw our background over the
-    // top of the rest of the tab contents
-    .zindex(1)
-    .vertical_align(VerticalAlign::Middle)
-    .float(Float::Right)
-    .item_type(UIItemType::CloseTab(tab_idx))
-    .hover_colors({
-        let inactive_tab_hover = colors.inactive_tab_hover();
-        let active_tab = colors.active_tab();
-
-        Some(ElementColors {
+    );
+    let button = match colour {
+        Some(colour) => button.colors(ElementColors {
             border: BorderColor::default(),
-            bg: (if active {
-                inactive_tab_hover.bg_color
-            } else {
-                active_tab.bg_color
+            bg: InheritableColor::Inherited,
+            text: crate::termwindow::theme::lin(colour).into(),
+        }),
+        None => button,
+    };
+    button
+        // Ensure that we draw our background over the
+        // top of the rest of the tab contents
+        .zindex(1)
+        .vertical_align(VerticalAlign::Middle)
+        .float(Float::Right)
+        .item_type(UIItemType::CloseTab(tab_idx))
+        .hover_colors({
+            let inactive_tab_hover = colors.inactive_tab_hover();
+            let active_tab = colors.active_tab();
+
+            Some(ElementColors {
+                border: BorderColor::default(),
+                bg: (if active {
+                    inactive_tab_hover.bg_color
+                } else {
+                    active_tab.bg_color
+                })
+                .to_linear()
+                .into(),
+                text: (if active {
+                    inactive_tab_hover.fg_color
+                } else {
+                    active_tab.fg_color
+                })
+                .to_linear()
+                .into(),
             })
-            .to_linear()
-            .into(),
-            text: (if active {
-                inactive_tab_hover.fg_color
-            } else {
-                active_tab.fg_color
-            })
-            .to_linear()
-            .into(),
         })
-    })
-    .padding(BoxDimension {
-        left: Dimension::Cells(0.25),
-        right: Dimension::Cells(0.25),
-        top: Dimension::Cells(0.25),
-        bottom: Dimension::Cells(0.25),
-    })
-    .margin(BoxDimension {
-        left: Dimension::Cells(0.5),
-        right: Dimension::Cells(0.),
-        top: Dimension::Cells(0.),
-        bottom: Dimension::Cells(0.),
-    })
+        .padding(BoxDimension {
+            left: Dimension::Cells(0.25),
+            right: Dimension::Cells(0.25),
+            top: Dimension::Cells(0.25),
+            bottom: Dimension::Cells(0.25),
+        })
+        .margin(BoxDimension {
+            left: Dimension::Cells(0.5),
+            right: Dimension::Cells(0.),
+            top: Dimension::Cells(0.),
+            bottom: Dimension::Cells(0.),
+        })
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_close_button_is_faint_unless_the_user_set_tab_colours() {
+        use crate::termwindow::theme::palette;
+        assert_eq!(close_button_colour(false), Some(palette::TEXT_FAINT));
+        assert_eq!(close_button_colour(true), None);
+    }
+
+    #[test]
+    fn a_tab_with_its_own_background_gets_no_accent() {
+        let active = LinearRgba::with_components(0.1, 0.1, 0.1, 1.);
+        let own = LinearRgba::with_components(0.5, 0., 0., 1.);
+        // The default colours: the line marks the current tab.
+        assert!(wants_accent(
+            false,
+            &InheritableColor::Color(active),
+            active
+        ));
+        // format-tab-title gave it a background of its own: leave it be.
+        assert!(!wants_accent(false, &InheritableColor::Color(own), active));
+        // So did the user's colours for the active tab.
+        assert!(!wants_accent(
+            true,
+            &InheritableColor::Color(active),
+            active
+        ));
+    }
 
     #[test]
     fn the_accent_runs_along_the_top_between_the_rounded_corners() {

@@ -5,6 +5,7 @@
 use finl_unicode::grapheme_clusters::Graphemes;
 use mux::pane::PaneId;
 use termwiz::cell::{Cell, CellAttributes};
+use termwiz::color::ColorAttribute;
 use termwiz::surface::SEQ_ZERO;
 use wezterm_term::Line;
 
@@ -20,6 +21,11 @@ pub struct StripStyle {
     pub active: CellAttributes,
     pub visible: CellAttributes,
     pub hidden: CellAttributes,
+    /// The unseen-output dot, on its tab's background.
+    pub marker: ColorAttribute,
+    /// The close cross, on its tab's background; None draws it like the
+    /// rest of its tab.
+    pub close: Option<ColorAttribute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +83,7 @@ pub fn layout_strip(
             } else {
                 &style.visible
             };
-            cells.extend(tab_cells(tab, w, attrs));
+            cells.extend(tab_cells(tab, w, attrs, style));
             hits.push(StripHit {
                 kind: StripHitKind::Tab(tab.pane_id),
                 x,
@@ -212,12 +218,19 @@ fn push_text(cells: &mut Vec<Cell>, s: &str, attrs: &CellAttributes) {
 }
 
 /// Render one tab into exactly `w` cells.
-fn tab_cells(tab: &StripTab, w: usize, attrs: &CellAttributes) -> Vec<Cell> {
-    let marker = if marker_width(tab) > 0 { "• " } else { "" };
+fn tab_cells(tab: &StripTab, w: usize, attrs: &CellAttributes, style: &StripStyle) -> Vec<Cell> {
+    let in_colour = |colour: ColorAttribute| {
+        let mut attrs = attrs.clone();
+        attrs.set_foreground(colour);
+        attrs
+    };
     let fixed = 4 + marker_width(tab);
     let mut cells = Vec::with_capacity(w);
     push_text(&mut cells, " ", attrs);
-    push_text(&mut cells, marker, attrs);
+    if marker_width(tab) > 0 {
+        push_text(&mut cells, "•", &in_colour(style.marker));
+        push_text(&mut cells, " ", attrs);
+    }
 
     // Titles are cut on grapheme boundaries by cell width, so a wide char
     // that does not fit is dropped whole and replaced by padding.
@@ -234,7 +247,12 @@ fn tab_cells(tab: &StripTab, w: usize, attrs: &CellAttributes) -> Vec<Cell> {
     for _ in used..budget {
         push_text(&mut cells, " ", attrs);
     }
-    push_text(&mut cells, " × ", attrs);
+    push_text(&mut cells, " ", attrs);
+    match style.close {
+        Some(colour) => push_text(&mut cells, "×", &in_colour(colour)),
+        None => push_text(&mut cells, "×", attrs),
+    }
+    push_text(&mut cells, " ", attrs);
 
     // Only reachable when w < fixed; the fixed parts are all single-cell.
     cells.truncate(w);
@@ -259,6 +277,58 @@ mod test {
             active: attrs(AnsiColor::Red),
             visible: attrs(AnsiColor::Green),
             hidden: attrs(AnsiColor::Blue),
+            marker: AnsiColor::Yellow.into(),
+            close: None,
+        }
+    }
+
+    #[test]
+    fn the_unseen_marker_has_its_own_colour() {
+        let st = style();
+        let s = layout_strip(
+            &[tab(1, "ab", false, true), tab(2, "cd", true, false)],
+            true,
+            40,
+            &st,
+        );
+        // " • ab ×  cd ×"
+        let marker = s.line.get_cell(1).unwrap();
+        assert_eq!(marker.str(), "•");
+        assert_eq!(marker.attrs().foreground(), st.marker);
+        // Its background, and the title after it, stay the hidden tab's.
+        assert_eq!(marker.attrs().background(), st.hidden.background());
+        let title = s.line.get_cell(3).unwrap();
+        assert_eq!(title.str(), "a");
+        assert_eq!(title.attrs().foreground(), st.hidden.foreground());
+    }
+
+    #[test]
+    fn the_close_cross_takes_its_own_colour_when_given_one() {
+        let tabs = [tab(1, "ab", false, false), tab(2, "cd", true, false)];
+        let cross = |st: &StripStyle| {
+            let s = layout_strip(&tabs, true, 40, st);
+            cells(&s.line)
+                .iter()
+                .filter(|(_, text, _)| text == "×")
+                .map(|(col, _, _)| s.line.get_cell(*col).unwrap().attrs().clone())
+                .collect::<Vec<_>>()
+        };
+        // Left alone, it is drawn like the tab it closes.
+        let st = style();
+        let plain = cross(&st);
+        assert_eq!(plain.len(), 2);
+        assert_eq!(plain[0].foreground(), st.hidden.foreground());
+        assert_eq!(plain[1].foreground(), st.active.foreground());
+        // Given a colour, every cross takes it, on its own tab's background.
+        let st = StripStyle {
+            close: Some(AnsiColor::Grey.into()),
+            ..style()
+        };
+        let faint = cross(&st);
+        assert_eq!(faint.len(), 2);
+        for (attrs, tab_attrs) in faint.iter().zip([&st.hidden, &st.active]) {
+            assert_eq!(attrs.foreground(), AnsiColor::Grey.into());
+            assert_eq!(attrs.background(), tab_attrs.background());
         }
     }
 
