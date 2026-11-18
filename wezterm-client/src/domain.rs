@@ -598,6 +598,9 @@ impl ClientDomain {
             .copied()
             .collect();
 
+        // The remote panes the server has active, one per tab.
+        let mut server_active = vec![];
+
         for (tabroot, tab_title) in panes.tabs.into_iter().zip(panes.tab_titles.iter()) {
             let root_size = match tabroot.root_size() {
                 Some(size) => size,
@@ -640,6 +643,9 @@ impl ClientDomain {
                 let mut workspace = None;
                 tab.sync_with_pane_tree(root_size, tabroot, |entry| {
                     workspace.replace(entry.workspace.clone());
+                    if entry.is_active_pane {
+                        server_active.push(entry.pane_id);
+                    }
                     remote_panes_to_forget.remove(&entry.pane_id);
                     if let Some(pane_id) = inner.remote_to_local_pane_id(entry.pane_id) {
                         match mux.get_pane(pane_id) {
@@ -752,6 +758,13 @@ impl ClientDomain {
             }
         }
 
+        {
+            // The server may have moved on from the pane this GUI last asked
+            // it to focus; see focus_cache_after_resync.
+            let mut focused = inner.focused_remote_pane_id.lock().unwrap();
+            *focused = focus_cache_after_resync(*focused, &server_active);
+        }
+
         // "Sweep" away our mapping for ids that are no longer present in the
         // latest sync
         log::debug!(
@@ -811,16 +824,36 @@ impl ClientDomain {
     }
 }
 
-/// The server only knows its own pane ids, so a local pane can be named in a
-/// request only if it mirrors a remote one.
-fn remote_pane_id_of(local_pane_id: PaneId) -> anyhow::Result<PaneId> {
-    let pane = Mux::get()
-        .get_pane(local_pane_id)
-        .ok_or_else(|| anyhow!("pane_id {} is invalid", local_pane_id))?;
-    let pane = pane
-        .downcast_ref::<ClientPane>()
-        .ok_or_else(|| anyhow!("pane_id {} is not a ClientPane", local_pane_id))?;
-    Ok(pane.remote_pane_id)
+/// The pane this GUI last asked the server to focus (`cached`), checked
+/// against the panes the server has active after a resync. `advise_focus`
+/// skips asking for the cached pane again; if the server has since made
+/// another pane active -- by splitting, by adding to a stack, for a cli
+/// command -- skipping would leave the server on that other pane while this
+/// GUI shows the cached one, until the next resync pulls the GUI over too.
+fn focus_cache_after_resync(cached: Option<PaneId>, server_active: &[PaneId]) -> Option<PaneId> {
+    cached.filter(|pane_id| server_active.contains(pane_id))
+}
+
+impl ClientDomain {
+    /// The server only knows its own pane ids, so a local pane can be named
+    /// in a request only if it mirrors one of this domain's remote panes.
+    fn remote_pane_id_of(&self, local_pane_id: PaneId) -> anyhow::Result<PaneId> {
+        let pane = Mux::get()
+            .get_pane(local_pane_id)
+            .ok_or_else(|| anyhow!("pane_id {} is invalid", local_pane_id))?;
+        if pane.domain_id() != self.local_domain_id {
+            anyhow::bail!(
+                "pane_id {} belongs to domain {}, not {}",
+                local_pane_id,
+                pane.domain_id(),
+                self.local_domain_id
+            );
+        }
+        let pane = pane
+            .downcast_ref::<ClientPane>()
+            .ok_or_else(|| anyhow!("pane_id {} is not a ClientPane", local_pane_id))?;
+        Ok(pane.remote_pane_id)
+    }
 }
 
 #[async_trait(?Send)]
@@ -1002,6 +1035,11 @@ impl Domain for ClientDomain {
             })
             .await?;
 
+        // The server made the new pane active without telling this GUI, so the
+        // pane it last asked for is no longer the server's choice; asking for
+        // it again, say on switching straight back, must not be skipped.
+        inner.focused_remote_pane_id.lock().unwrap().take();
+
         let pane: Arc<dyn Pane> = Arc::new(ClientPane::new(
             &inner,
             result.tab_id,
@@ -1041,7 +1079,7 @@ impl Domain for ClientDomain {
         let result = inner
             .client
             .spawn_pane_in_stack(codec::SpawnPaneInStack {
-                pane_id: remote_pane_id_of(target_pane_id)?,
+                pane_id: self.remote_pane_id_of(target_pane_id)?,
                 command,
                 command_dir,
             })
@@ -1073,8 +1111,8 @@ impl Domain for ClientDomain {
         inner
             .client
             .move_pane_to_stack(codec::MovePaneToStack {
-                pane_id: remote_pane_id_of(pane_id)?,
-                target_pane_id: remote_pane_id_of(target_pane_id)?,
+                pane_id: self.remote_pane_id_of(pane_id)?,
+                target_pane_id: self.remote_pane_id_of(target_pane_id)?,
                 index,
             })
             .await?;
@@ -1158,5 +1196,24 @@ impl Domain for ClientDomain {
         } else {
             DomainState::Detached
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn focus_cache_is_dropped_when_the_server_moved_on() {
+        // The server made another pane active (a split, a pane added to a
+        // stack, a cli command): the pane this GUI last asked for is not the
+        // server's choice any more, so asking for it again must not be
+        // skipped as a repeat.
+        assert_eq!(focus_cache_after_resync(Some(1), &[2]), None);
+        assert_eq!(focus_cache_after_resync(Some(1), &[2, 3]), None);
+        // Still active there: keep it, or every frame would ask again.
+        assert_eq!(focus_cache_after_resync(Some(1), &[1]), Some(1));
+        assert_eq!(focus_cache_after_resync(Some(1), &[4, 1]), Some(1));
+        assert_eq!(focus_cache_after_resync(None, &[1]), None);
     }
 }
