@@ -22,8 +22,8 @@ the strips on them. There are two exceptions:
  * A window tab made by taking a pane out of another one, such as with
    [wezterm cli move-pane-to-new-tab](../../../cli/cli/move-pane-to-new-tab.md)
    or the `MoveToNewTab` and `MoveToNewWindow` modes of
-   [PaneSelect](../keyassignment/PaneSelect.md), takes the setting of the window tab it came from, whatever the option says
-   now.
+   [PaneSelect](../keyassignment/PaneSelect.md), takes the setting of the
+   window tab it came from, whatever the option says now.
  * A tmux window tab never has a tab strip.
 
 When you connect to a mux server, the server's configuration decides. The side

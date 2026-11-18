@@ -212,6 +212,30 @@ As features stabilize some brief notes about them will accumulate here.
   `CTRL-u` to kill back to the start of the line. Thanks to @bew! #8013
 
 #### Fixed
+* ssh2 backend: listing a directory with a name that isn't UTF-8 (a server
+  whose files are named in GBK, say) crashed the connection's session thread
+  on Windows and dropped every tab on it. It now carries such names the way
+  the default libssh backend does, so they are listed, opened and downloaded
+  under the same name with either backend.
+* Pane tab strips: a triple click on a tab could open a new pane; clicking ×
+  again while its close confirmation was up dismissed the confirmation without
+  closing anything; the second click of a double click on the × of a leaf's
+  last tab landed in the terminal below and selected (and copied) a word.
+  Moving a stacked pane to another split no longer leaves it a different size
+  from the rest of its new stack when it refuses to be resized, and closing
+  another split while one is zoomed keeps the zoomed one at full size.
+* Connected to a mux server, switching back with the keyboard right after a
+  split could be undone by the next sync, which put the focus on the new pane
+  again.
+* Sidebar: a new entry could get the id of a deleted ssh entry and turn into
+  an ssh connection to its host; a saved password that once failed (also when
+  the network dropped mid-login) was never filled in again in that process,
+  even after typing it by hand. Notices on the file page are wrapped to the
+  width they are drawn at, so the end of a long one is no longer cut off.
+* Forms: with a Chinese input method in Chinese mode, y and n now answer a
+  confirmation as they do in English mode.
+* Hover colours of buttons and the menu's delete entry, and the size and arrow
+  on a selected sidebar row, were too faint to read comfortably.
 * ssh: connecting showed nothing until it worked or the system gave up on the
   host. The pane now says **正在连接** at once, `ConnectTimeout` from the ssh
   config is honoured (sidebar entries default to 10 seconds), and a failed

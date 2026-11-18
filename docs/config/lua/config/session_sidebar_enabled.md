@@ -33,7 +33,8 @@ whatever was running under the previous one alive in the background.
 | Right click | 新建会话, 新建 SSH 会话, 新建文件夹, 重命名, 编辑…, 删除 |
 | Drag an entry | Move it, and a folder with everything in it: a line marks the gap it will go into, a box the folder it will go inside. Below the last entry is the end of the top level. Not while searching |
 | Drag the right edge | Change the sidebar's width |
-| Click the chevron | Collapse the sidebar to its tab column, and back |
+| Click `+` or the new-folder button in the title row | Add a session or a folder, as from the right click menu |
+| Click `«` in the title row | Collapse the sidebar to its tab column; a page tab opens it again |
 | Click a page tab | Switch to that page; on the page already showing, collapse; while collapsed, open on that page |
 
 A single click never starts anything. With a tree of any size, selecting an
@@ -71,8 +72,9 @@ name and either a password or a private key file; *编辑…* on an ssh entry
 opens the same form, and *编辑…* on any other entry a form for its domain,
 directory and command. Fields can be filled in any order; <kbd>Tab</kbd> moves
 between them, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. A blank port
-means the one `~/.ssh/config` gives the host, or 22. ssh entries show `⇄` in
-front of their name.
+means the one `~/.ssh/config` gives the host, or 22. Each entry has an icon in
+front of its name: a server for an ssh entry, a penguin for one that opens in
+WSL, a terminal for any other session, and a folder for a folder.
 
 Double clicking an ssh entry connects to it. All the tabs opened from one entry
 share a single connection. It stays open after the last of them closes, so

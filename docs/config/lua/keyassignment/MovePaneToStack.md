@@ -17,7 +17,8 @@ the log. It also does nothing while the pane is
 when the direction is `'Next'` or `'Prev'`, which are not spatial.
 
 There is no default key assignment. The commands for the four directions are
-available from the command palette once that option is on, or you can bind them yourself:
+available from the command palette once that option is on, or you can bind
+them yourself:
 
 ```lua
 local wezterm = require 'wezterm'
