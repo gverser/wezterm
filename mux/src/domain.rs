@@ -168,6 +168,9 @@ pub trait Domain: Downcast + Send + Sync {
         if tab.header_rows() == 0 {
             anyhow::bail!("tab {} has no pane tab bar", tab_id);
         }
+        if !tab.contains_pane(target_pane_id) {
+            anyhow::bail!("pane {} is not in tab {}", target_pane_id, tab_id);
+        }
         let target = mux
             .get_pane(target_pane_id)
             .ok_or_else(|| anyhow::anyhow!("invalid pane id {}", target_pane_id))?;

@@ -1008,12 +1008,9 @@ impl Tab {
         if matches!(direction, PaneDirection::Next | PaneDirection::Prev) {
             return None;
         }
-        if self.get_zoomed_pane().is_some() {
-            return None;
-        }
-        let leaf = self.get_pane_direction(direction, false)?;
-        let (visible, position) = self.visible_member_of_leaf(leaf)?;
-        Some((visible.pane_id(), position + 1))
+        // Under one lock, so that the zoom, the neighbour and its stack are
+        // all read from the same state.
+        self.inner.lock().neighbor_stack_target(direction)
     }
 
     /// The visible member of the leaf with topological index `leaf`. The
@@ -1274,17 +1271,18 @@ impl TabInner {
     /// told the opposite first.
     fn show_member(&mut self, leaf: usize, pane_id: PaneId) {
         let active = self.active;
-        let zoomed_id = self.zoomed.as_ref().map(|p| p.pane_id());
+        // pane_id is a member of `leaf` (else nothing happens below), so this
+        // is whether `leaf` is the zoomed leaf.
+        let holds_zoom = self.zoomed_leaf_contains(pane_id);
         let shown = self
             .with_leaf_at(leaf, |stack| {
                 let index = stack.position_of(pane_id)?;
                 let before = Arc::clone(stack.visible_pane());
                 stack.set_visible(index);
-                let holds_zoom = zoomed_id.map_or(false, |id| stack.position_of(id).is_some());
-                Some((before, Arc::clone(stack.visible_pane()), holds_zoom))
+                Some((before, Arc::clone(stack.visible_pane())))
             })
             .flatten();
-        let (before, now, holds_zoom) = match shown {
+        let (before, now) = match shown {
             Some(shown) => shown,
             None => return,
         };
@@ -2311,6 +2309,15 @@ impl TabInner {
                     self.show_member(leaf, pane_id);
                 }
             }
+
+            // Re-laying the splits out above gave the zoomed leaf its slot's
+            // size, while the zoom stays: give it the whole tab back. Left as
+            // upstream has it without header rows.
+            if layout_changed && header_rows > 0 {
+                if let Some(zoomed) = self.zoomed.clone() {
+                    self.resize_zoomed_leaf(&zoomed, self.size);
+                }
+            }
         }
 
         if !dead_panes.is_empty() && kill {
@@ -2404,22 +2411,46 @@ impl TabInner {
         }
     }
 
+    /// See `Tab::neighbor_stack_target`.
+    fn neighbor_stack_target(&mut self, direction: PaneDirection) -> Option<(PaneId, usize)> {
+        if self.zoomed.is_some() {
+            return None;
+        }
+        let leaf = self.get_pane_direction(direction, false)?;
+        let stack = self
+            .iter_stacks()
+            .into_iter()
+            .find(|stack| stack.index == leaf)?;
+        let visible = stack.panes.get(stack.visible)?;
+        Some((visible.pane_id(), stack.visible + 1))
+    }
+
+    /// The header rows, which a stacking operation needs: without them a
+    /// tab has no strip to show its members in.
+    fn require_header_rows(&self) -> anyhow::Result<usize> {
+        match self.header_rows {
+            0 => anyhow::bail!(
+                "tab {} has no header rows, so it cannot stack panes",
+                self.id
+            ),
+            header_rows => Ok(header_rows),
+        }
+    }
+
+    /// The leaf holding `pane_id`, or an error naming the pane and the tab.
+    fn leaf_of(&self, pane_id: PaneId) -> anyhow::Result<usize> {
+        self.leaf_index_of(pane_id)
+            .ok_or_else(|| anyhow::anyhow!("pane {} is not in tab {}", pane_id, self.id))
+    }
+
     fn add_pane_to_stack(
         &mut self,
         target_pane_id: PaneId,
         index: Option<usize>,
         pane: Arc<dyn Pane>,
     ) -> anyhow::Result<()> {
-        let header_rows = self.header_rows;
-        if header_rows == 0 {
-            anyhow::bail!(
-                "tab {} has no header rows, so it cannot stack panes",
-                self.id
-            );
-        }
-        let leaf = self
-            .leaf_index_of(target_pane_id)
-            .ok_or_else(|| anyhow::anyhow!("pane {} is not in tab {}", target_pane_id, self.id))?;
+        let header_rows = self.require_header_rows()?;
+        let leaf = self.leaf_of(target_pane_id)?;
         let pane_id = pane.pane_id();
         if self.contains_pane(pane_id) {
             // A pane in two stacks would confuse leaf_index_of and closing.
@@ -2452,19 +2483,9 @@ impl TabInner {
         target_pane_id: PaneId,
         index: usize,
     ) -> anyhow::Result<()> {
-        let header_rows = self.header_rows;
-        if header_rows == 0 {
-            anyhow::bail!(
-                "tab {} has no header rows, so it cannot stack panes",
-                self.id
-            );
-        }
-        let from_leaf = self
-            .leaf_index_of(pane_id)
-            .ok_or_else(|| anyhow::anyhow!("pane {} is not in tab {}", pane_id, self.id))?;
-        let to_leaf = self
-            .leaf_index_of(target_pane_id)
-            .ok_or_else(|| anyhow::anyhow!("pane {} is not in tab {}", target_pane_id, self.id))?;
+        let header_rows = self.require_header_rows()?;
+        let from_leaf = self.leaf_of(pane_id)?;
+        let to_leaf = self.leaf_of(target_pane_id)?;
 
         if from_leaf == to_leaf {
             // A reorder: sizes and the active leaf stay as they are, and the
@@ -2477,6 +2498,29 @@ impl TabInner {
             self.show_member(to_leaf, pane_id);
         } else {
             self.set_zoomed(false);
+            // When other members stay behind, taking the pane out leaves the
+            // splits as they are, so its new size is known now: size it
+            // before anything moves, and a refusal leaves the tab as it was,
+            // as in add_pane_to_stack. Otherwise its leaf goes away and the
+            // target's slot is only known afterwards (see below).
+            let sized_up_front =
+                self.with_leaf_at(from_leaf, |stack| stack.len() > 1) == Some(true);
+            if sized_up_front {
+                let slot = self
+                    .slot_of_leaf(to_leaf)
+                    .ok_or_else(|| anyhow::anyhow!("tab {} has no leaf {}", self.id, to_leaf))?;
+                let pane = self
+                    .with_leaf_at(from_leaf, |stack| {
+                        stack
+                            .position_of(pane_id)
+                            .map(|i| Arc::clone(&stack.panes()[i]))
+                    })
+                    .flatten()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("pane {} vanished from tab {}", pane_id, self.id)
+                    })?;
+                pane.resize(member_size(&slot, header_rows))?;
+            }
             // The pane being moved may be the active one; take this before
             // it leaves, so that moving the active pane notifies nobody.
             let prior = self.get_active_pane();
@@ -2501,11 +2545,14 @@ impl TabInner {
                     self.id
                 )
             })?;
-            if let Some(slot) = self.slot_of_leaf(to_leaf) {
-                // The pane has already left its old leaf, so a refusal can't
-                // undo the move any more; it keeps its old size instead.
-                if let Err(err) = pane.resize(member_size(&slot, header_rows)) {
-                    log::error!("move_pane_to_stack: resizing pane {}: {:#}", pane_id, err);
+            if !sized_up_front {
+                if let Some(slot) = self.slot_of_leaf(to_leaf) {
+                    // The pane has already left its old leaf, so a refusal
+                    // can't undo the move any more; it keeps its old size
+                    // instead.
+                    if let Err(err) = pane.resize(member_size(&slot, header_rows)) {
+                        log::error!("move_pane_to_stack: resizing pane {}: {:#}", pane_id, err);
+                    }
                 }
             }
             // Activate before showing: otherwise show_member would tell the
@@ -4060,6 +4107,80 @@ mod test {
         tab.add_pane_to_stack(2, None, Arc::clone(&p5)).unwrap(); // add a new member
         assert_eq!(counts(&all), base);
         assert_eq!(set_zoomed_count(&p5), 0);
+
+        tab.move_pane_to_stack(5, 2, 0).unwrap(); // reorder inside the zoomed stack
+        assert_eq!(counts(&all), base);
+        assert_eq!(set_zoomed_count(&p5), 0);
+    }
+
+    fn layout_of(tab: &Tab) -> Vec<(Vec<PaneId>, usize)> {
+        tab.iter_stacks()
+            .iter()
+            .map(|s| (ids(&s.panes), s.visible))
+            .collect()
+    }
+
+    #[test]
+    fn move_refused_resize_leaves_tab_unchanged() {
+        // Leaf 0 holds [1, 2], so taking 1 out leaves the splits alone and the
+        // move can be checked before anything changes.
+        let tab = three_leaf_tab();
+        let before = layout_of(&tab);
+        let p1 = tab
+            .iter_all_panes()
+            .into_iter()
+            .find(|p| p.pane_id() == 1)
+            .unwrap();
+        set_fail_resize(&p1, true);
+        assert!(tab.move_pane_to_stack(1, 3, 0).is_err());
+        assert_eq!(layout_of(&tab), before);
+    }
+
+    #[test]
+    fn removing_other_leaf_keeps_zoom_size() {
+        let tab = three_leaf_tab();
+        let p3 = tab
+            .iter_all_panes()
+            .into_iter()
+            .find(|p| p.pane_id() == 3)
+            .unwrap();
+        tab.set_pane_zoomed(&p3, true);
+        assert_eq!(current_size(&p3), size(23, 80));
+
+        // Closing another leaf re-lays the splits out under the zoom.
+        tab.remove_pane(4);
+        assert_eq!(
+            tab.get_zoomed_pane().map(|p| p.pane_id()),
+            Some(3),
+            "still zoomed"
+        );
+        assert_eq!(current_size(&p3), size(23, 80));
+    }
+
+    #[test]
+    fn removing_other_leaf_h0_keeps_upstream_sizes() {
+        // Without header rows this stays as upstream has it: the zoomed pane
+        // takes its slot's size while the zoom stays.
+        let tab = Tab::new(&size(24, 80));
+        let p1 = FakePane::new(1, size(24, 80));
+        tab.assign_pane(&p1);
+        let horz = SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        };
+        let mut panes = vec![];
+        for (leaf, id) in [(0, 3), (1, 4)] {
+            let split = tab.compute_split_size(leaf, horz).unwrap();
+            let pane = FakePane::new(id, split.second);
+            tab.split_and_insert(leaf, horz, Arc::clone(&pane)).unwrap();
+            panes.push(pane);
+        }
+        let p3 = Arc::clone(&panes[0]);
+        tab.set_pane_zoomed(&p3, true);
+        assert_eq!(current_size(&p3), size(24, 80));
+        tab.remove_pane(4);
+        assert_eq!(tab.get_zoomed_pane().map(|p| p.pane_id()), Some(3));
+        assert!(current_size(&p3).cols < 80, "{:?}", current_size(&p3));
     }
 
     /// An 80x24 tab with one header row and leaves [1, 2] (pane 2 visible),

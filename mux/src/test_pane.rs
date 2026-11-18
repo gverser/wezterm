@@ -17,7 +17,7 @@ pub(crate) struct FakePane {
     id: PaneId,
     size: Mutex<TerminalSize>,
     focus: Mutex<Option<bool>>,
-    fail_resize: bool,
+    fail_resize: Mutex<bool>,
     resizes: Mutex<usize>,
     zooms: Mutex<usize>,
 }
@@ -28,7 +28,7 @@ impl FakePane {
             id,
             size: Mutex::new(size),
             focus: Mutex::new(None),
-            fail_resize: false,
+            fail_resize: Mutex::new(false),
             resizes: Mutex::new(0),
             zooms: Mutex::new(0),
         })
@@ -40,7 +40,7 @@ impl FakePane {
             id,
             size: Mutex::new(size),
             focus: Mutex::new(None),
-            fail_resize: true,
+            fail_resize: Mutex::new(true),
             resizes: Mutex::new(0),
             zooms: Mutex::new(0),
         })
@@ -86,6 +86,14 @@ pub(crate) fn resize_count(pane: &Arc<dyn Pane>) -> usize {
         .expect("resize_count: not a FakePane");
     let count = *fake.resizes.lock();
     count
+}
+
+/// Makes the pane's `resize` fail from now on, or work again.
+pub(crate) fn set_fail_resize(pane: &Arc<dyn Pane>, fail: bool) {
+    let fake = pane
+        .downcast_ref::<FakePane>()
+        .expect("set_fail_resize: not a FakePane");
+    *fake.fail_resize.lock() = fail;
 }
 
 /// How many times `set_zoomed` has been called on the pane.
@@ -171,7 +179,7 @@ impl Pane for FakePane {
     }
     fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
         *self.resizes.lock() += 1;
-        if self.fail_resize {
+        if *self.fail_resize.lock() {
             anyhow::bail!("FakePane {} refuses to resize", self.id);
         }
         *self.size.lock() = size;
