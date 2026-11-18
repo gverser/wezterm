@@ -35,8 +35,8 @@ pub struct PaneTabDrag {
     /// frame can resolve the drop again when the strips re-lay out under a
     /// pointer that is not moving.
     pub pointer: Option<(isize, isize)>,
-    /// Where the tab would land, as of the last move or the last frame,
-    /// whichever came later.
+    /// Where the tab would land: resolved on every move past the threshold,
+    /// and again by every frame against the strips it has just laid out.
     pub target: Option<PaneTabDrop>,
 }
 
@@ -171,9 +171,10 @@ impl crate::TermWindow {
     /// Where the tab of `drag` would land if dropped at pixel (x, y), or None
     /// if that is not on a strip of the tab it was picked up in.
     ///
-    /// Measured against the hit regions of the last frame: that is what the
-    /// user is aiming at, and the drag itself changes nothing in the mux
-    /// before the release.
+    /// Measured against the hit regions registered by the latest paint:
+    /// on a move, the frame the user is looking at and aiming into; when a
+    /// frame resolves the drop again, the strips that frame just laid out.
+    /// The drag itself changes nothing in the mux before the release.
     fn pane_tab_drop_at(&self, drag: &PaneTabDrag, x: isize, y: isize) -> Option<PaneTabDrop> {
         let tab = self.tab_with_pane_strips()?;
         // Another tab: the strips the user aimed at are not on screen any
@@ -222,7 +223,7 @@ impl crate::TermWindow {
             .collect();
         let target_pane_id = *stack.first()?;
 
-        let (gap, line_x) = drop_gap(&drawn_tabs(&items, &stack), bar.x as f32, x as f32);
+        let (gap, line_x) = drop_gap(&drawn_tabs(&items, &stack)?, bar.x as f32, x as f32);
         Some(PaneTabDrop {
             target_pane_id,
             gap,

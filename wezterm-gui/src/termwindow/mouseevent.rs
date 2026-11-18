@@ -167,6 +167,10 @@ impl super::TermWindow {
             WMEK::Release(ref press) => {
                 self.current_mouse_capture = None;
                 self.current_mouse_buttons.retain(|p| p != press);
+                if self.swallowed_press.as_ref() == Some(press) {
+                    self.swallowed_press = None;
+                    return;
+                }
                 if press == &MousePress::Left && self.window_drag_position.take().is_some() {
                     // Completed a window drag
                     return;
@@ -191,6 +195,9 @@ impl super::TermWindow {
 
             WMEK::Press(ref press) => {
                 capture_mouse = true;
+                // A release that never came (the window lost the pointer)
+                // must not swallow the release of this new press.
+                self.swallowed_press = None;
 
                 // A strip tab drag still pending here lost its release (see
                 // cancel_pane_tab_drag); this press starts something new.
@@ -304,7 +311,25 @@ impl super::TermWindow {
                 )
             );
             if !on_strip {
-                self.last_strip_press = None;
+                let prev = self.last_strip_press.take();
+                let swallow = swallow_after_strip_action(
+                    prev.as_ref().map(|prev| (prev.action, prev.at.elapsed())),
+                    on_strip,
+                );
+                if let (true, WMEK::Press(press), Some(prev)) = (swallow, &event.kind, prev) {
+                    // Nothing sees this press or its release. The press after
+                    // it counts its clicks afresh, and is judged against the
+                    // close or spawn again, as a strip press would be.
+                    log::trace!("swallowed {press:?} after strip {:?}", prev.action);
+                    self.last_mouse_click = None;
+                    self.current_mouse_buttons.retain(|p| p != press);
+                    self.swallowed_press = Some(*press);
+                    self.last_strip_press = Some(StripPress {
+                        at: Instant::now(),
+                        ..prev
+                    });
+                    return;
+                }
             }
         }
 
@@ -595,6 +620,17 @@ impl super::TermWindow {
     ) {
         let item = ui_item.item_type.clone();
         if let WMEK::Press(press) = event.kind {
+            // Hit regions are registered while painting, so they describe the
+            // previous frame; if another tab has become active since, they are
+            // stale and their ids may not belong to this tab. Such a press does
+            // nothing, and is not remembered either: remembered as a close it
+            // would swallow the next press for nothing.
+            let active_tab = Mux::get().get_active_tab_for_window(self.mux_window_id);
+            if active_tab.map(|tab| tab.tab_id()) != strip_item_tab_id(&item) {
+                self.last_strip_press = None;
+                context.set_cursor(Some(MouseCursor::Arrow));
+                return;
+            }
             // Not the streak in last_mouse_click: that also wants both
             // presses in the same cell, and the cell a pixel maps to changes
             // when the active pane starts or stops grabbing the mouse, as
@@ -637,29 +673,18 @@ impl super::TermWindow {
         action: StripClickAction,
         context: &dyn WindowOps,
     ) {
-        let item_tab_id = match item {
-            UIItemType::PaneTab { tab_id, .. }
-            | UIItemType::PaneTabClose { tab_id, .. }
-            | UIItemType::PaneTabBar { tab_id, .. } => *tab_id,
+        // mouse_event_pane_strip has checked that `item` is of this tab.
+        let tab = match Mux::get().get_active_tab_for_window(self.mux_window_id) {
+            Some(tab) if Some(tab.tab_id()) == strip_item_tab_id(item) => tab,
             _ => return,
         };
-        let tab = match Mux::get().get_active_tab_for_window(self.mux_window_id) {
-            Some(tab) => tab,
-            None => return,
-        };
-        // Hit regions are registered while painting, so they describe the
-        // previous frame; if another tab has become active since, they are
-        // stale and their ids may not belong to this tab.
-        if tab.tab_id() != item_tab_id {
-            return;
-        }
         match action {
             StripClickAction::Activate(pane_id) => {
                 if let Some(pane) = tab_member(&tab, pane_id) {
                     tab.set_active_pane(&pane);
                 }
             }
-            StripClickAction::Close(pane_id) => self.close_pane_by_id(pane_id, true),
+            StripClickAction::Close(pane_id) => self.close_pane_by_id(pane_id, true, true),
             // The strip names its leaf by the real leaf index, which is what
             // visible_pane_of_leaf takes, also while zoomed.
             StripClickAction::ActivateLeaf(leaf) => {
@@ -1394,6 +1419,28 @@ impl StripClickAction {
     }
 }
 
+/// The tab a pane strip item was drawn for; None for anything else.
+fn strip_item_tab_id(item: &UIItemType) -> Option<mux::tab::TabId> {
+    match item {
+        UIItemType::PaneTab { tab_id, .. }
+        | UIItemType::PaneTabClose { tab_id, .. }
+        | UIItemType::PaneTabBar { tab_id, .. } => Some(*tab_id),
+        _ => None,
+    }
+}
+
+/// Whether a press off the strips is to be swallowed: it comes within
+/// CLICK_INTERVAL of a strip press that closed or spawned (`prev`: that
+/// press's action and how long ago it was). Closing the last tab of a leaf
+/// takes its strip away, and the second press of the double click then lands
+/// on whatever is there now -- in a terminal it would select a word, and copy
+/// it over the clipboard on release.
+fn swallow_after_strip_action(prev: Option<(StripClickAction, Duration)>, on_strip: bool) -> bool {
+    !on_strip
+        && matches!(prev, Some((action, ago))
+            if action.swallows_followers() && ago <= Duration::from_millis(CLICK_INTERVAL))
+}
+
 /// The previous press on a pane stack strip.
 pub(super) struct StripPress {
     item: UIItemType,
@@ -1472,6 +1519,14 @@ fn strip_press(
         (Some((_, prev_action @ StripClickAction::Activate(_))), StripClickAction::Close(_)) => {
             (StripClickAction::Nothing, prev_action)
         }
+        // Activating can just as well slide empty strip under the pointer.
+        // Focusing the leaf there is harmless, but it is still the tail of
+        // the click on the tab: remembered as that, so that a third press
+        // does not make a double click on the empty strip and spawn.
+        (
+            Some((_, prev_action @ StripClickAction::Activate(_))),
+            StripClickAction::ActivateLeaf(_),
+        ) => (action, prev_action),
         _ => (action, strip_press_memory(prev.map(|(_, a)| a), action)),
     }
 }
@@ -1619,6 +1674,43 @@ mod test {
             strip_press(&bar, Left, Some((&tab7, Activate(7)))).0,
             ActivateLeaf(3)
         );
+    }
+
+    #[test]
+    fn triple_click_on_a_tab_never_spawns() {
+        use MousePress::Left;
+        use StripClickAction::*;
+        // Activating the tab re-lays the strip out, and empty strip slides
+        // under the pointer for the second and third presses.
+        let (tab7, bar) = (tab_item(7), bar_item(1, 3));
+        assert_eq!(
+            quick_run(&[(&tab7, Left), (&bar, Left), (&bar, Left)]),
+            vec![Activate(7), ActivateLeaf(3), ActivateLeaf(3)]
+        );
+        // A double click on the empty strip itself still spawns.
+        assert_eq!(
+            quick_run(&[(&bar, Left), (&bar, Left)]),
+            vec![ActivateLeaf(3), SpawnInLeaf(3)]
+        );
+    }
+
+    #[test]
+    fn a_click_after_closing_the_last_tab_does_not_reach_the_terminal() {
+        use StripClickAction::*;
+        let soon = Duration::from_millis(CLICK_INTERVAL / 2);
+        let late = Duration::from_millis(CLICK_INTERVAL + 1);
+        // Closing the last tab of a leaf takes the strip away with it; the
+        // second press of the double click lands on whatever is there now.
+        for prev in [Close(7), SpawnInLeaf(3)] {
+            assert!(swallow_after_strip_action(Some((prev, soon)), false));
+            assert!(!swallow_after_strip_action(Some((prev, late)), false));
+            // On a strip, strip_press has its own rules for it.
+            assert!(!swallow_after_strip_action(Some((prev, soon)), true));
+        }
+        for prev in [Activate(7), ActivateLeaf(3), Nothing] {
+            assert!(!swallow_after_strip_action(Some((prev, soon)), false));
+        }
+        assert!(!swallow_after_strip_action(None, false));
     }
 
     #[test]

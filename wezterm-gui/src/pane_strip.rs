@@ -122,7 +122,12 @@ pub fn layout_strip(
 /// regions. A narrow strip draws only a window of its stack, so a tab's
 /// place on screen is not its place in the stack; ids not in `stack` are
 /// dropped, as a stale frame may still show a pane that has since moved.
-pub fn drawn_tabs(items: &[(PaneId, f32, f32)], stack: &[PaneId]) -> Vec<(usize, f32, f32)> {
+/// None when none of them is in `stack`: the frame drew some other stack
+/// there, and gives no place to drop into (rather than the start of it).
+pub fn drawn_tabs(
+    items: &[(PaneId, f32, f32)],
+    stack: &[PaneId],
+) -> Option<Vec<(usize, f32, f32)>> {
     let mut drawn: Vec<(usize, f32, f32)> = items
         .iter()
         .filter_map(|&(pane_id, x, width)| {
@@ -132,8 +137,11 @@ pub fn drawn_tabs(items: &[(PaneId, f32, f32)], stack: &[PaneId]) -> Vec<(usize,
                 .map(|index| (index, x, width))
         })
         .collect();
+    if drawn.is_empty() {
+        return None;
+    }
     drawn.sort_by(|a, b| a.1.total_cmp(&b.1));
-    drawn
+    Some(drawn)
 }
 
 /// The gap a tab dropped at `pointer_x` goes into, as (position in the
@@ -579,6 +587,17 @@ mod test {
     }
 
     #[test]
+    fn drawn_tabs_rejects_tabs_of_another_stack() {
+        // A frame that drew some other stack here: nothing on screen says
+        // where in this stack a drop would go.
+        assert_eq!(
+            drawn_tabs(&[(98, 8.0, 80.0), (99, 88.0, 80.0)], &[1, 2]),
+            None
+        );
+        assert_eq!(drawn_tabs(&[], &[1, 2]), None);
+    }
+
+    #[test]
     fn drawn_tabs_maps_pane_ids_to_stack_positions() {
         let stack = [10, 11, 12, 13, 14, 15, 16, 17];
         // Out of x order, and with a tab (99) that is not in this stack.
@@ -590,7 +609,7 @@ mod test {
         ];
         assert_eq!(
             drawn_tabs(&items, &stack),
-            vec![(5, 8.0, 80.0), (6, 88.0, 80.0), (7, 168.0, 80.0)]
+            Some(vec![(5, 8.0, 80.0), (6, 88.0, 80.0), (7, 168.0, 80.0)])
         );
     }
 

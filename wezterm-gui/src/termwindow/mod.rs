@@ -55,7 +55,7 @@ use mux_lua::MuxPane;
 use smol::channel::Sender;
 use smol::Timer;
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, LinkedList};
+use std::collections::{HashMap, HashSet, LinkedList};
 use std::ops::Add;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,6 +118,27 @@ pub fn get_window_class() -> String {
 /// the tab rather than the mux matters to `Tab::set_active_pane`: called
 /// with a pane outside the zoomed leaf it may unzoom (unzoom_on_switch_pane)
 /// before finding that the pane is not in the tab at all.
+/// What closing a pane does.
+#[derive(Debug, PartialEq, Eq)]
+enum CloseStep {
+    /// Close it now.
+    Remove,
+    /// Ask first.
+    Prompt,
+    /// It is being asked about already: just bring it forward.
+    BringForward,
+}
+
+/// `needs_prompt`: the close is to be confirmed and the pane wants that.
+/// `confirming`: a prompt for it is up and is to be kept.
+fn close_step(needs_prompt: bool, confirming: bool) -> CloseStep {
+    match (needs_prompt, confirming) {
+        (false, _) => CloseStep::Remove,
+        (true, false) => CloseStep::Prompt,
+        (true, true) => CloseStep::BringForward,
+    }
+}
+
 fn tab_member(tab: &Tab, pane_id: PaneId) -> Option<Arc<dyn Pane>> {
     tab.iter_all_panes()
         .into_iter()
@@ -493,6 +514,11 @@ pub struct TermWindow {
     /// else. Strip multi-clicks are judged from this rather than from
     /// `last_mouse_click`, see `mouse_event_pane_strip`.
     last_strip_press: Option<mouseevent::StripPress>,
+    /// A press swallowed as the tail of a strip close or spawn (see
+    /// `swallow_after_strip_action`); its release is swallowed too.
+    swallowed_press: Option<MousePress>,
+    /// Panes whose close prompt is up.
+    closing_panes: HashSet<PaneId>,
 
     /// The URL over which we are currently hovering
     current_highlight: Option<Arc<Hyperlink>>,
@@ -1023,6 +1049,8 @@ impl TermWindow {
             current_mouse_capture: None,
             last_mouse_click: None,
             last_strip_press: None,
+            swallowed_press: None,
+            closing_panes: HashSet::new(),
             current_highlight: None,
             quad_generation: 0,
             shape_generation: 0,
@@ -3866,12 +3894,15 @@ impl TermWindow {
             Some(p) => p,
             None => return,
         };
-        self.close_pane_by_id(pane.pane_id(), confirm);
+        self.close_pane_by_id(pane.pane_id(), confirm, false);
     }
 
     /// Closes a pane of the active tab, visible or hidden, first asking if
-    /// `confirm` is set and the pane wants to be asked about.
-    fn close_pane_by_id(&mut self, pane_id: PaneId, confirm: bool) {
+    /// `confirm` is set and the pane wants to be asked about. With
+    /// `keep_prompt`, a pane already being asked about is only brought
+    /// forward: a second prompt would cancel the first, and the first one's
+    /// cancellation would take the second down with it, leaving neither.
+    fn close_pane_by_id(&mut self, pane_id: PaneId, confirm: bool, keep_prompt: bool) {
         let mux_window_id = self.mux_window_id;
         let mux = Mux::get();
         let tab = match mux.get_active_tab_for_window(mux_window_id) {
@@ -3885,22 +3916,31 @@ impl TermWindow {
             None => return,
         };
 
-        if confirm && !pane.can_close_without_prompting(CloseReason::Pane) {
-            // The prompt is drawn in place of the pane, and gets keys only
-            // while that pane is the active one. A hidden stack member is not
-            // drawn at all, and one in another split would leave the keys
-            // going to the current pane, so either is brought forward first;
-            // set_active_pane does both in a single focus change, and does
-            // nothing at all for the pane that is already active.
-            tab.set_active_pane(&pane);
-            let window = self.window.clone().unwrap();
-            let (overlay, future) = start_overlay_pane(self, &pane, move |pane_id, term| {
-                confirm_close_pane(pane_id, term, mux_window_id, window)
-            });
-            self.assign_overlay_for_pane(pane_id, overlay);
-            promise::spawn::spawn(future).detach();
-        } else {
-            mux.remove_pane(pane_id);
+        let needs_prompt = confirm && !pane.can_close_without_prompting(CloseReason::Pane);
+        let confirming = keep_prompt && self.closing_panes.contains(&pane_id);
+        match close_step(needs_prompt, confirming) {
+            CloseStep::Remove => {
+                mux.remove_pane(pane_id);
+            }
+            CloseStep::BringForward => tab.set_active_pane(&pane),
+            CloseStep::Prompt => {
+                // The prompt is drawn in place of the pane, and gets keys only
+                // while that pane is the active one. A hidden stack member is
+                // not drawn at all, and one in another split would leave the
+                // keys going to the current pane, so either is brought forward
+                // first; set_active_pane does both in a single focus change,
+                // and does nothing at all for the pane that is already active.
+                tab.set_active_pane(&pane);
+                let window = self.window.clone().unwrap();
+                let (overlay, future) = start_overlay_pane(self, &pane, move |pane_id, term| {
+                    confirm_close_pane(pane_id, term, mux_window_id, window)
+                });
+                // After assigning: that cancels any overlay the pane had, and
+                // cancelling forgets the pane here.
+                self.assign_overlay_for_pane(pane_id, overlay);
+                self.closing_panes.insert(pane_id);
+                promise::spawn::spawn(future).detach();
+            }
         }
     }
 
@@ -4316,6 +4356,9 @@ impl TermWindow {
     }
 
     fn cancel_overlay_for_pane(&mut self, pane_id: PaneId) {
+        // However the prompt ended -- answered, or pushed out by another
+        // overlay -- the pane is no longer being asked about.
+        self.closing_panes.remove(&pane_id);
         if let Some(overlay) = self.pane_state(pane_id).overlay.take() {
             // Ungh, when I built the CopyOverlay, its pane doesn't get
             // added to the mux and instead it reports the overlaid
@@ -4382,5 +4425,22 @@ impl Drop for TermWindow {
                 fe.forget_known_window(&window);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_second_close_on_a_pane_being_confirmed_only_activates_it() {
+        // No prompt needed: closed straight away, whatever else is going on.
+        assert_eq!(close_step(false, false), CloseStep::Remove);
+        assert_eq!(close_step(false, true), CloseStep::Remove);
+        // The first × asks.
+        assert_eq!(close_step(true, false), CloseStep::Prompt);
+        // Another × while it asks would replace its prompt with a new one,
+        // and the old one's cancellation would take the new one with it.
+        assert_eq!(close_step(true, true), CloseStep::BringForward);
     }
 }
