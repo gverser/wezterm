@@ -10,7 +10,8 @@ use crate::termwindow::sidebar::{
     is_wsl_domain, tree_row_on_screen, ContextMenu, MenuAction, SidebarFocus, SIDEBAR_LINE_HEIGHT,
 };
 use crate::termwindow::theme::{
-    fill, icon, lin, menu_height, menu_rows, palette, px, rounded, MenuEntry, MenuRow,
+    fill, icon, lin, menu_height, menu_item_hover, menu_rows, palette, px, rounded,
+    row_side_colors, MenuEntry, MenuRow,
 };
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
@@ -898,8 +899,9 @@ impl crate::TermWindow {
             RowKind::Folder { expanded: false } => Some(icon::CHEVRON_RIGHT),
             RowKind::Session => None,
         };
+        let (_, arrow_color) = row_side_colors(selected);
         let chevron = match chevron {
-            Some(chevron) => text_run(font, format!("{chevron} "), lin(palette::TEXT_FAINT).into()),
+            Some(chevron) => text_run(font, format!("{chevron} "), lin(arrow_color).into()),
             // A gap as wide as the arrow, so that names line up under
             // folders. (Transparent text would still be drawn.)
             None => {
@@ -1109,7 +1111,7 @@ impl crate::TermWindow {
                     .border_corners(Some(rounded(px(dpi, 5.))))
                     .min_width(Some(Dimension::Pixels(item_width)))
                     .colors(fill(raised, fg))
-                    .hover_colors(Some(fill(lin(palette::MENU_HOVER), white)))
+                    .hover_colors(Some(fill(lin(menu_item_hover(entry.danger)), white)))
                 }
                 // A hairline across the middle of its own short row.
                 MenuRow::Separator => {

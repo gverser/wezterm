@@ -42,6 +42,10 @@ pub mod palette {
     pub const WARN: u32 = 0xe3b341;
     pub const PILL: u32 = 0x2d333d;
     pub const DANGER_BUTTON: u32 = 0xda3633;
+    /// Buttons under the pointer go a shade darker: white text keeps its
+    /// contrast that way, where lightening them washed it out.
+    pub const ACCENT_HOVER: u32 = 0x1f58c7;
+    pub const DANGER_HOVER: u32 = 0xb62324;
     pub const RAIL_ACTIVE: u32 = 0x22262e;
     pub const RAIL_TEXT: u32 = 0x7d8590;
     pub const ICON_FOLDER: u32 = 0xe3b341;
@@ -114,6 +118,45 @@ pub mod icon {
         CHECKBOX_ON,
         CHECKBOX_OFF,
     ];
+}
+
+/// The fill a menu entry lights up with under the pointer. One that destroys
+/// something goes red, like the button that does the same in a confirmation.
+pub fn menu_item_hover(danger: bool) -> u32 {
+    if danger {
+        palette::DANGER_BUTTON
+    } else {
+        palette::MENU_HOVER
+    }
+}
+
+/// The colours of the secondary bits of a sidebar row, its size and its
+/// folder arrow. On the selected row's blue they step up a shade, or they'd
+/// sink into it.
+pub fn row_side_colors(selected: bool) -> (u32, u32) {
+    if selected {
+        (palette::TEXT, palette::TEXT_MUTED)
+    } else {
+        (palette::TEXT_MUTED, palette::TEXT_FAINT)
+    }
+}
+
+/// WCAG contrast ratio between two opaque colours, 1 to 21.
+#[cfg(test)]
+pub fn contrast(a: u32, b: u32) -> f32 {
+    fn luminance(hex: u32) -> f32 {
+        let channel = |shift: u32| {
+            let c = ((hex >> shift) & 0xff) as f32 / 255.;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// A palette colour, opaque, as the renderer takes it.
@@ -321,6 +364,57 @@ mod test {
         assert_eq!(kinds, vec![false, false, true, false, true, false]);
         assert_eq!(menu_height(&rows, 28., 9., 4.), 4. * 28. + 2. * 9. + 8.);
         assert!(menu_rows(vec![]).is_empty());
+    }
+
+    #[test]
+    fn contrast_follows_wcag() {
+        assert!((contrast(palette::WHITE, 0x000000) - 21.).abs() < 0.01);
+        assert!((contrast(0x777777, 0x777777) - 1.).abs() < 1e-6);
+        // Either way round.
+        assert_eq!(
+            contrast(palette::TEXT, palette::PANEL),
+            contrast(palette::PANEL, palette::TEXT)
+        );
+    }
+
+    #[test]
+    fn text_on_its_background_is_readable() {
+        let (size, arrow) = row_side_colors(true);
+        let (idle_size, idle_arrow) = row_side_colors(false);
+        // Text: WCAG AA for body text.
+        for (what, fg, bg) in [
+            (
+                "primary button hover",
+                palette::WHITE,
+                palette::ACCENT_HOVER,
+            ),
+            ("danger button hover", palette::WHITE, palette::DANGER_HOVER),
+            ("menu entry hover", palette::WHITE, menu_item_hover(false)),
+            (
+                "dangerous menu entry hover",
+                palette::WHITE,
+                menu_item_hover(true),
+            ),
+            ("size on a selected row", size, palette::ROW_SELECTED),
+            ("size on a row", idle_size, palette::PANEL),
+        ] {
+            let ratio = contrast(fg, bg);
+            assert!(ratio >= 4.5, "{}: {:.2}", what, ratio);
+        }
+        // Glyphs: 3:1 for graphical objects.
+        for (what, fg, bg) in [
+            ("arrow on a selected row", arrow, palette::ROW_SELECTED),
+            ("arrow on a row", idle_arrow, palette::PANEL),
+        ] {
+            let ratio = contrast(fg, bg);
+            assert!(ratio >= 3., "{}: {:.2}", what, ratio);
+        }
+    }
+
+    #[test]
+    fn a_dangerous_entry_lights_up_like_the_danger_button() {
+        assert_eq!(menu_item_hover(true), palette::DANGER_BUTTON);
+        assert_eq!(menu_item_hover(false), palette::MENU_HOVER);
     }
 
     #[test]

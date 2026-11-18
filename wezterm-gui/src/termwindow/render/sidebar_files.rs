@@ -7,7 +7,7 @@ use crate::sftp::{FilesAction, FilesConn};
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::sidebar::text_run;
 use crate::termwindow::sidebar::{SidebarFocus, SIDEBAR_LINE_HEIGHT};
-use crate::termwindow::theme::{fill, icon, lin, palette, px, rounded};
+use crate::termwindow::theme::{fill, icon, lin, palette, px, rounded, row_side_colors};
 use crate::termwindow::UIItemType;
 use crate::utilsprites::RenderMetrics;
 use ::window::RectF;
@@ -565,9 +565,8 @@ impl crate::TermWindow {
             text_run(font, name, InheritableColor::Inherited),
         ];
         if !size.is_empty() {
-            parts.push(
-                text_run(font, size_text, lin(palette::TEXT_MUTED).into()).float(Float::Right),
-            );
+            let (size_color, _) = row_side_colors(selected);
+            parts.push(text_run(font, size_text, lin(size_color).into()).float(Float::Right));
         }
         self.sidebar_row_shell(
             font,

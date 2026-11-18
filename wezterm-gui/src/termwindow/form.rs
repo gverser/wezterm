@@ -338,6 +338,7 @@ impl FormState {
 
 use crate::termwindow::box_model::*;
 use crate::termwindow::modal::Modal;
+use crate::termwindow::theme::palette;
 use crate::termwindow::{DimensionContext, TermWindowNotif, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use crate::TermWindow;
@@ -360,6 +361,17 @@ enum Target {
 
 /// How long a form that pops up by itself ignores Enter, y and n.
 pub const EARLY_ENTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The main button's fill and its fill under the pointer: red for a
+/// confirmation that destroys something, blue otherwise. Both carry white
+/// text.
+fn button_fills(danger: bool) -> (u32, u32) {
+    if danger {
+        (palette::DANGER_BUTTON, palette::DANGER_HOVER)
+    } else {
+        (palette::MENU_HOVER, palette::ACCENT_HOVER)
+    }
+}
 
 /// What a character typed into a form does.
 #[derive(Debug, PartialEq, Eq)]
@@ -562,7 +574,7 @@ impl FormModal {
         let font = term_window.fonts.default_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let cell_w = metrics.cell_size.width as f32;
-        use crate::termwindow::theme::{fill, lin, palette, px, rounded};
+        use crate::termwindow::theme::{fill, lin, px, rounded};
         let dpi = term_window.dimensions.dpi as f32;
         let error_color = lin(palette::DANGER);
         let accent = lin(palette::ACCENT);
@@ -793,16 +805,10 @@ impl FormModal {
         let mut buttons = vec![];
         for (b, button) in state.buttons.iter().enumerate() {
             let (label, c, hover) = match button {
-                FormButton::Primary(l) if state.danger => (
-                    l,
-                    button_colors(lin(palette::DANGER_BUTTON)),
-                    button_colors(lin(palette::DANGER)),
-                ),
-                FormButton::Primary(l) => (
-                    l,
-                    button_colors(lin(palette::MENU_HOVER)),
-                    button_colors(accent),
-                ),
+                FormButton::Primary(l) => {
+                    let (normal, hover) = button_fills(state.danger);
+                    (l, button_colors(lin(normal)), button_colors(lin(hover)))
+                }
                 FormButton::Cancel(l) => (
                     l,
                     fill(lin(palette::PILL), text_linear),
@@ -1069,6 +1075,26 @@ impl Modal for FormModal {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn white_button_text_stays_readable_in_every_state() {
+        use crate::termwindow::theme::contrast;
+        for danger in [false, true] {
+            let (normal, hover) = button_fills(danger);
+            for (state, bg) in [("normal", normal), ("hover", hover)] {
+                let ratio = contrast(palette::WHITE, bg);
+                assert!(ratio >= 4.5, "danger={} {}: {:.2}", danger, state, ratio);
+            }
+            // Hovering has to show.
+            let change = contrast(normal, hover);
+            assert!(
+                change >= 1.3,
+                "danger={} hover change: {:.2}",
+                danger,
+                change
+            );
+        }
+    }
 
     #[test]
     fn a_confirmation_that_just_popped_up_ignores_y_and_n() {
