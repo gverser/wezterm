@@ -178,7 +178,7 @@ impl crate::TermWindow {
         ))
     }
 
-    pub fn paint_sidebar(&mut self, palette: &ColorPalette) -> anyhow::Result<()> {
+    pub fn paint_sidebar(&mut self) -> anyhow::Result<()> {
         if !self.sidebar_is_enabled() {
             return Ok(());
         }
@@ -197,7 +197,10 @@ impl crate::TermWindow {
             None => true,
         };
         if stale {
-            let computed = self.build_sidebar(palette)?;
+            // Cloned only for a rebuild: `palette()` needs &mut self to fill
+            // its cache, and build_sidebar borrows self.
+            let palette = self.palette().clone();
+            let computed = self.build_sidebar(&palette)?;
             self.sidebar_computed = Some((generation, computed));
         }
 

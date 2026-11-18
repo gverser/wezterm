@@ -32,7 +32,6 @@ const HEADER_ROWS: usize = 3;
 /// The most the transfer line may wrap to.
 const MAX_TRANSFER_LINES: usize = 3;
 
-/// How often a running transfer redraws its progress.
 /// How often a transfer's progress redraws the page. Each one rebuilds the
 /// whole sidebar, and twice a second is plenty for a byte count and a rate.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
@@ -728,7 +727,13 @@ impl crate::TermWindow {
                         last = Instant::now();
                         progress_window.notify(TermWindowNotif::Apply(Box::new(move |tw| {
                             tw.files.transfers.progress(id, done);
-                            tw.files_changed();
+                            // Only the file page shows it. Elsewhere the count
+                            // is just kept: rebuilding the sidebar for it would
+                            // re-lay out the session tree twice a second, and
+                            // turning to the page rebuilds it anyway.
+                            if tw.files_page_visible() {
+                                tw.files_changed();
+                            }
                         })));
                     }
                 };

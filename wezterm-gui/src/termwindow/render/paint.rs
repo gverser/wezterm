@@ -293,10 +293,7 @@ impl crate::TermWindow {
         drop(layers);
 
         if self.sidebar_is_enabled() {
-            // Cloning the palette costs nothing when the sidebar is off, and
-            // `palette()` needs &mut self to populate its cache.
-            let palette = self.palette().clone();
-            self.paint_sidebar(&palette).context("paint_sidebar")?;
+            self.paint_sidebar().context("paint_sidebar")?;
         }
 
         if self.status_bar_shown {
