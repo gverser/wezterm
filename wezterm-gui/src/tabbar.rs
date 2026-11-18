@@ -53,7 +53,11 @@ impl FeishuIndicator {
     /// be running happily while the pane in front of you is not mirrored.
     fn status_text(&self) -> String {
         use mux::FeishuState::*;
-        let glyph = if self.current_pane_on { "\u{25c6}" } else { "\u{25c7}" };
+        let glyph = if self.current_pane_on {
+            "\u{25c6}"
+        } else {
+            "\u{25c7}"
+        };
         let colour = match self.service {
             Stopped => "8",   // grey: nothing running
             Starting => "3",  // yellow: on its way up
