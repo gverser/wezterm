@@ -287,3 +287,7 @@ cairo-sys-rs = {path="deps/cairo", version="0.18.0"}
 # 0.3.8 with sftp names that aren't UTF-8 carried losslessly in its `&str`
 # API (src/raw_names.rs); otherwise as published.
 libssh-rs = {path="deps/libssh-rs", version="0.3.8"}
+# 0.9.6 with the same lossless mapping of names that aren't UTF-8
+# (deps/ssh-raw-names) in mkpath/path2bytes; published, it panics on such a
+# name on Windows. Otherwise as published.
+ssh2 = {path="deps/ssh2", version="0.9.6"}

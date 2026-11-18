@@ -1,5 +1,6 @@
 //! Tests against a real sshd, for what only a server can show: what a rename
-//! onto an existing name does, what a cancelled upload leaves behind.
+//! onto an existing name does, what a cancelled upload leaves behind, how a
+//! name that isn't UTF-8 comes and goes, what the monitor script finds.
 //!
 //! They are ignored by default. To run them, give them a server that takes a
 //! key and has a directory they may write in:
@@ -25,7 +26,7 @@ struct Live {
     sftp: Sftp,
     /// A directory of this test's own, empty at the start.
     dir: String,
-    _session: Session,
+    session: Session,
 }
 
 fn env(name: &str) -> String {
@@ -76,11 +77,7 @@ async fn connect(backend: &str, test: &str) -> Live {
     sftp.create_dir(dir.as_str(), 0o755)
         .await
         .expect("test dir");
-    Live {
-        sftp,
-        dir,
-        _session: session,
-    }
+    Live { sftp, dir, session }
 }
 
 impl Live {
@@ -275,6 +272,151 @@ fn live_rename_onto_an_existing_name_is_refused() {
                 .await
                 .unwrap();
             assert_eq!(live.names().await, vec!["b.txt", "c.txt"]);
+        })
+    });
+}
+
+/// A name that isn't UTF-8 (GBK here), made through one backend, is listed
+/// through the other as the same name, and can be opened through it. Each
+/// backend going there and back on its own would also pass if it sent the
+/// name in some private form; only the other one shows what is on the server.
+#[test]
+#[ignore = "needs a live sshd; see sftp/live_test.rs"]
+fn live_a_name_that_is_not_utf8_is_the_same_name_with_either_backend() {
+    smol::block_on(async {
+        let libssh = connect("libssh", "gbk").await;
+        let ssh2 = connect("ssh2", "gbk").await;
+        // "测试" in GBK.
+        let gbk = wezterm_ssh::raw_names::from_bytes(b"\xb2\xe2\xca\xd4").into_owned();
+        let dir = libssh.dir.clone();
+        let made = [
+            (&libssh, format!("a-{gbk}"), b"by libssh".to_vec()),
+            (&ssh2, format!("b-{gbk}"), b"by ssh2".to_vec()),
+            (&libssh, "plain".to_string(), b"plain".to_vec()),
+        ];
+        for (maker, name, bytes) in &made {
+            let path = format!("{dir}/{name}");
+            let mut file = maker.sftp.create(path.as_str()).await.unwrap();
+            file.write_all(bytes).await.unwrap();
+            file.close().await.unwrap();
+        }
+
+        let mut expected: Vec<String> = made.iter().map(|(_, name, _)| name.clone()).collect();
+        expected.sort();
+        for (backend, live) in [("libssh", &libssh), ("ssh2", &ssh2)] {
+            let mut names: Vec<String> = crate::sftp::list_dir(&live.sftp, &dir)
+                .await
+                .unwrap_or_else(|err| panic!("{}: listing: {:#}", backend, err))
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            names.sort();
+            assert_eq!(names, expected, "listed through {backend}");
+            for (_, name, bytes) in &made {
+                let path = format!("{dir}/{name}");
+                let mut file = live
+                    .sftp
+                    .open(path.as_str())
+                    .await
+                    .unwrap_or_else(|err| panic!("{}: opening {:?}: {:#}", backend, name, err));
+                let mut read = vec![];
+                file.read_to_end(&mut read).await.unwrap();
+                assert_eq!(&read, bytes, "{name:?} read through {backend}");
+            }
+        }
+    });
+}
+
+/// The directory the monitor script reports for a pane: a shell with
+/// `WEZTERM_REMOTE_PANE` set, as `RemoteSshDomain` starts them, sitting in
+/// /tmp on a terminal of its own. `script_command` runs the script, which
+/// it is fed on stdin, as the monitor does with `sh -s`.
+async fn monitor_reports(live: &Live, script_command: &str) -> Option<String> {
+    use crate::sessions::monitor_proto::{FrameParser, ParseEvent, MONITOR_SCRIPT};
+    use std::io::{BufRead, BufReader, Write};
+
+    let pane = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64
+        % 1_000_000_007;
+    let shell = format!("env WEZTERM_REMOTE_PANE={pane} sh -c 'cd /tmp; exec sleep 600'");
+    let _pty = live
+        .session
+        .request_pty(
+            "xterm",
+            portable_pty::PtySize::default(),
+            Some(&shell),
+            None,
+        )
+        .await
+        .expect("pty");
+
+    let wezterm_ssh::ExecResult {
+        mut stdin,
+        stdout,
+        stderr: _stderr,
+        child: _child,
+    } = live.session.exec(script_command, None).await.expect("exec");
+    stdin.write_all(MONITOR_SCRIPT.as_bytes()).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut parser = FrameParser::default();
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if let Some(event) = parser.feed_line(&line) {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(ParseEvent::Frame(frame)) => {
+                if let Some((_, dir)) = frame.cwds.iter().find(|(p, _)| *p == pane) {
+                    return dir.clone();
+                }
+            }
+            Ok(ParseEvent::Unsupported) => panic!("the server has no /proc"),
+            Err(_) => return None,
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a live sshd; see sftp/live_test.rs"]
+fn live_monitor_reports_a_pty_cwd() {
+    each_backend("monitor", |live| {
+        Box::pin(async move {
+            assert_eq!(
+                monitor_reports(&live, "sh -s").await.as_deref(),
+                Some("/tmp")
+            );
+        })
+    });
+}
+
+/// Run where no sshd is among its ancestors -- orphaned here, the way a
+/// server-side multiplexer or `setsid` can leave it -- the script can't tell
+/// this connection's panes from another's, and looks at every pane instead
+/// of finding none.
+#[test]
+#[ignore = "needs a live sshd; see sftp/live_test.rs"]
+fn live_monitor_works_without_an_sshd_ancestor() {
+    each_backend("monitor-orphan", |live| {
+        Box::pin(async move {
+            // The script starts a second later, once the subshell that put it
+            // in the background has gone and it has been handed to init.
+            let orphan = "sh -c '( (sleep 1; exec sh -s) <&3 & ) 3<&0; exec sleep 600'";
+            assert_eq!(
+                monitor_reports(&live, orphan).await.as_deref(),
+                Some("/tmp")
+            );
         })
     });
 }

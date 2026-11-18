@@ -1,11 +1,14 @@
 //! Paths and file names whose bytes are not UTF-8, carried in a `str`.
 //!
-//! libssh takes and returns names as C strings: bytes, in whatever encoding
-//! the files on the server were named in. This crate's API is `&str`, so a
-//! name in GBK, say, could be neither listed nor opened. Here each byte that
-//! is not part of valid UTF-8 travels as one character of a private use
-//! range, U+F780..=U+F7FF (U+F700 plus the byte), and becomes that byte
-//! again on the way back to libssh. Valid UTF-8 passes through unchanged.
+//! libssh and libssh2 take and return names as C strings: bytes, in
+//! whatever encoding the files on the server were named in. The Rust APIs
+//! over them (libssh-rs, ssh2) hand out `&str` and `Path`, so a name in GBK,
+//! say, could be neither listed nor opened. Here each byte that is not part
+//! of valid UTF-8 travels as one character of a private use range,
+//! U+F780..=U+F7FF (U+F700 plus the byte), and becomes that byte again on
+//! the way back to the library. Valid UTF-8 passes through unchanged. Both
+//! vendored crates (deps/libssh-rs, deps/ssh2) use this one mapping, so a
+//! name means the same whichever backend listed it.
 //!
 //! The price: a name that really contains characters of that range is sent
 //! as the bytes they stand for, so such a file can't be reached. Private use

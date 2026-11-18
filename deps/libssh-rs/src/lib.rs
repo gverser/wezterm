@@ -23,7 +23,7 @@ use std::time::Duration;
 
 mod channel;
 mod error;
-pub mod raw_names;
+pub use ssh_raw_names as raw_names;
 mod sftp;
 
 pub use crate::channel::*;

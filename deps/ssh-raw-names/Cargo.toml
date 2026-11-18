@@ -1,0 +1,7 @@
+[package]
+name = "ssh-raw-names"
+version = "0.1.0"
+edition = "2018"
+description = "SFTP names that aren't UTF-8, carried losslessly in a str"
+license = "MIT"
+publish = false

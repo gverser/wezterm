@@ -37,6 +37,9 @@ path = "src/lib.rs"
 name = "whoami"
 path = "examples/whoami.rs"
 
+[dependencies.ssh-raw-names]
+path = "../ssh-raw-names"
+
 [dependencies.bitflags]
 version = "1.3"
 
