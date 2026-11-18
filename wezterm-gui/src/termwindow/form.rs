@@ -373,6 +373,52 @@ fn button_fills(danger: bool) -> (u32, u32) {
     }
 }
 
+/// An option's ring, and the ring it gets under the pointer (None: it
+/// doesn't react). Hovering brightens the ring; the chosen option of the
+/// focused field keeps its accent ring either way.
+fn choice_ring(selected: bool, focused: bool, enabled: bool) -> (u32, Option<u32>) {
+    if selected && focused {
+        (palette::ACCENT, None)
+    } else if enabled {
+        (palette::CARD_EDGE, Some(palette::TEXT_FAINT))
+    } else {
+        (palette::CARD_EDGE, None)
+    }
+}
+
+/// An option's dot, the dot's colour and the label's colour. Only the dot of
+/// the chosen option is in the accent; its label is the strongest text.
+fn choice_parts(selected: bool, enabled: bool) -> (&'static str, u32, u32) {
+    let dot = if selected { "●" } else { "○" };
+    if !enabled {
+        (dot, palette::TEXT_FAINT, palette::TEXT_FAINT)
+    } else if selected {
+        (dot, palette::ACCENT, palette::TEXT_STRONG)
+    } else {
+        (dot, palette::TEXT_MUTED, palette::TEXT_MUTED)
+    }
+}
+
+/// Text an input method committed into `state`. A Chinese input method in
+/// Chinese mode takes the y or n key itself and commits it as text, maybe
+/// full width; a single y or n answers a confirmation all the same.
+fn committed(state: &FormState, text: &str, too_early: bool) -> Typed {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => {
+            let c = match c {
+                'ｙ' => 'y',
+                'Ｙ' => 'Y',
+                'ｎ' => 'n',
+                'Ｎ' => 'N',
+                c => c,
+            };
+            typed(state, c, too_early)
+        }
+        _ => Typed::Text,
+    }
+}
+
 /// What a character typed into a form does.
 #[derive(Debug, PartialEq, Eq)]
 enum Typed {
@@ -673,34 +719,38 @@ impl FormModal {
                 FieldKind::Choice(options) => {
                     for option in options {
                         let selected = *option == field.value;
-                        let text = format!(" {} {} ", if selected { "●" } else { "○" }, option);
-                        let fg = if !field.enabled {
-                            dim_text
-                        } else if selected {
-                            accent
-                        } else {
-                            label_text
-                        };
-                        let edge = if selected && focused {
-                            accent
-                        } else {
-                            lin(palette::CARD_EDGE)
-                        };
-                        let mut inner = Element::new(&font, ElementContent::Text(text))
-                            .border_corners(Some(rounded(radius - one)))
-                            .colors(well_colors(fg));
+                        let (dot, dot_color, label_color) = choice_parts(selected, field.enabled);
+                        let (edge, hover_edge) = choice_ring(selected, focused, field.enabled);
+                        let mut inner = Element::new(
+                            &font,
+                            ElementContent::Children(vec![
+                                Element::new(&font, ElementContent::Text(format!(" {dot} ")))
+                                    .colors(ElementColors {
+                                        border: BorderColor::default(),
+                                        bg: InheritableColor::Inherited,
+                                        text: lin(dot_color).into(),
+                                    }),
+                                Element::new(&font, ElementContent::Text(format!("{option} ")))
+                                    .colors(ElementColors {
+                                        border: BorderColor::default(),
+                                        bg: InheritableColor::Inherited,
+                                        text: lin(label_color).into(),
+                                    }),
+                            ]),
+                        )
+                        .border_corners(Some(rounded(radius - one)))
+                        .colors(well_colors(lin(label_color)));
                         if field.enabled {
                             inner = inner.item_type(tag(Target::Choice(i, option.clone())));
                         }
-                        row.push(
-                            ringed(inner, edge, field.enabled.then(|| lin(palette::INPUT_EDGE)))
-                                .margin(BoxDimension {
-                                    left: Dimension::Cells(0.),
-                                    right: Dimension::Cells(1.),
-                                    top: Dimension::Cells(0.),
-                                    bottom: Dimension::Cells(0.),
-                                }),
-                        );
+                        row.push(ringed(inner, lin(edge), hover_edge.map(lin)).margin(
+                            BoxDimension {
+                                left: Dimension::Cells(0.),
+                                right: Dimension::Cells(1.),
+                                top: Dimension::Cells(0.),
+                                bottom: Dimension::Cells(0.),
+                            },
+                        ));
                     }
                 }
                 FieldKind::Text | FieldKind::Password => {
@@ -1032,6 +1082,26 @@ impl Modal for FormModal {
     }
 
     fn insert_text(&self, text: &str, term_window: &mut TermWindow) -> bool {
+        let too_early = enter_too_early(self.enter_guard, std::time::Instant::now());
+        let what = committed(&self.state.borrow(), text, too_early);
+        match what {
+            Typed::Answer(true) => {
+                self.state.borrow_mut().composing = None;
+                self.submit(term_window);
+                return true;
+            }
+            Typed::Answer(false) => {
+                self.state.borrow_mut().composing = None;
+                self.cancel(term_window);
+                return true;
+            }
+            Typed::Ignore => {
+                self.state.borrow_mut().composing = None;
+                self.changed(term_window);
+                return true;
+            }
+            Typed::Text => {}
+        }
         {
             let mut state = self.state.borrow_mut();
             state.composing = None;
@@ -1113,6 +1183,74 @@ mod test {
             vec![FormButton::Primary("确定".to_string())],
         );
         assert_eq!(typed(&form, 'y', true), Typed::Text);
+    }
+
+    #[test]
+    fn a_y_committed_by_an_ime_answers_a_confirmation() {
+        let confirm = crate::sessions::forms::confirm_form("关闭窗口", "m", "关闭");
+        // A Chinese input method in Chinese mode hands y over as committed
+        // text, possibly in its full-width form.
+        for yes in ["y", "Y", "ｙ", "Ｙ"] {
+            assert_eq!(
+                committed(&confirm, yes, false),
+                Typed::Answer(true),
+                "{}",
+                yes
+            );
+        }
+        for no in ["n", "N", "ｎ", "Ｎ"] {
+            assert_eq!(
+                committed(&confirm, no, false),
+                Typed::Answer(false),
+                "{}",
+                no
+            );
+        }
+        // The same guard as a typed key.
+        assert_eq!(committed(&confirm, "y", true), Typed::Ignore);
+        // Anything longer, or another character, is not an answer.
+        assert_eq!(committed(&confirm, "yes", false), Typed::Text);
+        assert_eq!(committed(&confirm, "一", false), Typed::Text);
+        // A form with fields takes it as text.
+        let form = FormState::new(
+            "f",
+            vec![Field::text("名称", "")],
+            vec![FormButton::Primary("确定".to_string())],
+        );
+        assert_eq!(committed(&form, "y", false), Typed::Text);
+    }
+
+    #[test]
+    fn hovering_an_option_never_dims_its_ring() {
+        // An option the pointer is over gets a brighter ring than it had.
+        let (edge, hover) = choice_ring(false, false, true);
+        assert_eq!(edge, palette::CARD_EDGE);
+        assert_eq!(hover, Some(palette::TEXT_FAINT));
+        let (edge, hover) = choice_ring(true, false, true);
+        assert_eq!(
+            (edge, hover),
+            (palette::CARD_EDGE, Some(palette::TEXT_FAINT))
+        );
+        // The chosen option of the focused field keeps its accent ring.
+        assert_eq!(choice_ring(true, true, true), (palette::ACCENT, None));
+        // A field that can't be changed doesn't react.
+        assert_eq!(choice_ring(false, false, false), (palette::CARD_EDGE, None));
+    }
+
+    #[test]
+    fn only_the_dot_of_the_chosen_option_is_in_the_accent() {
+        assert_eq!(
+            choice_parts(true, true),
+            ("●", palette::ACCENT, palette::TEXT_STRONG)
+        );
+        assert_eq!(
+            choice_parts(false, true),
+            ("○", palette::TEXT_MUTED, palette::TEXT_MUTED)
+        );
+        assert_eq!(
+            choice_parts(true, false),
+            ("●", palette::TEXT_FAINT, palette::TEXT_FAINT)
+        );
     }
 
     #[test]
