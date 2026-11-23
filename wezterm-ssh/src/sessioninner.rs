@@ -545,7 +545,7 @@ impl SessionInner {
                 )),
             )
             .context("poll")?;
-            sleep_delay += sleep_delay;
+            sleep_delay = next_backoff(sleep_delay);
 
             for (idx, poll) in poll_array.iter().enumerate() {
                 if poll.revents != 0 {
@@ -1197,6 +1197,15 @@ fn poll_timeout(
     }
 }
 
+/// The idle backoff after one more quiet poll: twice as long, until it can't
+/// be. With a keepalive the loop comes round at least that often whatever
+/// the backoff, and poll drops the timeout's fraction of a millisecond, so a
+/// quiet minute can double it a hundred times over; plain doubling overflowed
+/// and took the session's thread down.
+fn next_backoff(backoff: Duration) -> Duration {
+    backoff.saturating_add(backoff)
+}
+
 fn read_into_buf<R: Read>(r: &mut R, buf: &mut VecDeque<u8>) -> std::io::Result<()> {
     let current_len = buf.len();
     buf.resize(buf.capacity(), 0);
@@ -1398,5 +1407,16 @@ mod test {
         // Already due: don't wait at all.
         assert_eq!(poll_timeout(s(400), Some(s(30)), s(45)), Duration::ZERO);
         assert_eq!(poll_timeout(s(400), None, s(10)), s(400));
+    }
+
+    #[test]
+    fn idle_backoff_stops_growing_instead_of_overflowing() {
+        let ms = Duration::from_millis;
+        assert_eq!(next_backoff(ms(100)), ms(200));
+        let mut backoff = ms(100);
+        for _ in 0..200 {
+            backoff = next_backoff(backoff);
+        }
+        assert_eq!(backoff, Duration::MAX);
     }
 }
