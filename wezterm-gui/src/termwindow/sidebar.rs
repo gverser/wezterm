@@ -130,11 +130,11 @@ impl MenuAction {
     }
 }
 
-/// Which ssh session the form edits: a node that exists, or one to be
-/// created under `parent` when the form is saved (so that cancelling leaves
-/// nothing behind).
+/// Which session a form edits: a node that exists, or one to be created
+/// under `parent` when the form is saved (so that cancelling leaves nothing
+/// behind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SshEditTarget {
+pub enum EditTarget {
     New { parent: Option<NodeId> },
     Existing(NodeId),
 }
@@ -747,40 +747,34 @@ impl super::TermWindow {
         self.close_sidebar_menu();
 
         match action {
-            MenuAction::NewSession | MenuAction::NewFolder => {
+            // A folder only needs a name, so it is made at once and renamed in
+            // place.
+            MenuAction::NewFolder => {
                 let parent = self.insertion_parent(target);
-                let is_folder = action == MenuAction::NewFolder;
                 let id = with_store(|store| {
                     store.mutate(|tree| {
-                        let id = tree.alloc_id_skipping(id_in_use_elsewhere);
-                        let node = if is_folder {
+                        tree.add_new(parent, id_in_use_elsewhere, |id| {
                             SessionNode::folder(id, "新建文件夹")
-                        } else {
-                            SessionNode::session(id, "新建会话", SessionSpawn::default())
-                        };
-                        if tree.insert(parent, node.clone()) {
-                            Some(id)
-                        } else {
-                            // The parent vanished between opening the menu and
-                            // choosing an item; fall back to the top level.
-                            tree.insert(None, node);
-                            Some(id)
-                        }
+                        })
                     })
                 });
-                match (id, is_folder) {
-                    // A folder only needs a name, so rename it in place. A
-                    // session also needs a directory and possibly a domain, so
-                    // go straight to the editor rather than leaving a node
-                    // called "New Session" that opens a default shell.
-                    (Some(id), true) => self.begin_rename(id),
-                    (Some(id), false) => self.show_session_editor(id),
-                    (None, _) => {}
-                }
+                self.begin_rename(id);
+            }
+            // A session also needs a directory and possibly a domain, so it
+            // goes straight to the editor, and only exists once that is saved:
+            // cancelling leaves no node called "新建会话" that opens a default
+            // shell.
+            MenuAction::NewSession => {
+                let parent = self.insertion_parent(target);
+                self.show_local_editor(
+                    EditTarget::New { parent },
+                    "新建会话".to_string(),
+                    SessionSpawn::default(),
+                );
             }
             MenuAction::NewSshSession => {
                 let parent = self.insertion_parent(target);
-                self.show_ssh_editor(SshEditTarget::New { parent });
+                self.show_ssh_editor(EditTarget::New { parent });
             }
             MenuAction::Rename => {
                 if let Some(id) = target {
@@ -823,9 +817,9 @@ impl super::TermWindow {
         }
 
         if crate::sessions::ssh::is_ssh_node(id) {
-            self.show_ssh_editor(SshEditTarget::Existing(id));
+            self.show_ssh_editor(EditTarget::Existing(id));
         } else {
-            self.show_local_editor(id, name, spawn);
+            self.show_local_editor(EditTarget::Existing(id), name, spawn);
         }
     }
 
@@ -838,33 +832,50 @@ impl super::TermWindow {
         self.set_modal(std::rc::Rc::new(form));
     }
 
-    fn show_local_editor(&mut self, id: NodeId, name: String, spawn: SessionSpawn) {
+    fn show_local_editor(&mut self, target: EditTarget, name: String, spawn: SessionSpawn) {
         let old = spawn.clone();
         let form = FormModal::new(forms::local_form(&name, &spawn))
             .validate(forms::validate_local_form)
             .on_submit(move |state, tw| {
-                let (name, spawn) = forms::local_form_values(state, &old);
-                with_store(|store| {
-                    store.mutate(|tree| {
-                        if let Some(node) = tree.find_mut(id) {
-                            if !name.is_empty() {
-                                node.name = name;
+                let (new_name, spawn) = forms::local_form_values(state, &old);
+                match target {
+                    EditTarget::Existing(id) => with_store(|store| {
+                        store.mutate(|tree| {
+                            if let Some(node) = tree.find_mut(id) {
+                                if !new_name.is_empty() {
+                                    node.name = new_name;
+                                }
+                                if let NodeKind::Session { spawn: s } = &mut node.kind {
+                                    *s = spawn;
+                                }
                             }
-                            if let NodeKind::Session { spawn: s } = &mut node.kind {
-                                *s = spawn;
-                            }
-                        }
-                    })
-                });
+                        })
+                    }),
+                    EditTarget::New { parent } => {
+                        let name = if new_name.is_empty() {
+                            name.clone()
+                        } else {
+                            new_name
+                        };
+                        let id = with_store(|store| {
+                            store.mutate(|tree| {
+                                tree.add_new(parent, id_in_use_elsewhere, |id| {
+                                    SessionNode::session(id, name, spawn)
+                                })
+                            })
+                        });
+                        tw.sidebar.selected = Some(id);
+                    }
+                }
                 tw.invalidate_sidebar();
             });
         self.open_form(form);
     }
 
-    pub fn show_ssh_editor(&mut self, target: SshEditTarget) {
+    pub fn show_ssh_editor(&mut self, target: EditTarget) {
         let (name, host) = match target {
-            SshEditTarget::New { .. } => (String::new(), None),
-            SshEditTarget::Existing(id) => {
+            EditTarget::New { .. } => (String::new(), None),
+            EditTarget::Existing(id) => {
                 let name = with_store(|store| store.tree().find(id).map(|n| n.name.clone()));
                 let Some(name) = name else {
                     return;
@@ -879,25 +890,23 @@ impl super::TermWindow {
             .on_submit(move |state, tw| {
                 let (name, host) = forms::ssh_form_values(state);
                 let id = match target {
-                    SshEditTarget::Existing(id) => {
+                    EditTarget::Existing(id) => {
                         with_store(|store| store.mutate(|tree| tree.rename(id, name.clone())));
                         id
                     }
-                    SshEditTarget::New { parent } => with_store(|store| {
+                    EditTarget::New { parent } => with_store(|store| {
                         store.mutate(|tree| {
-                            let id = tree.alloc_id_skipping(id_in_use_elsewhere);
-                            let spawn = SessionSpawn {
-                                // Recorded so that an older build, which knows
-                                // nothing of ssh_hosts.json, fails to open this
-                                // node rather than opening a local shell.
-                                domain: SpawnTabDomain::DomainName(ssh_domain_name(id)),
-                                ..SessionSpawn::default()
-                            };
-                            let node = SessionNode::session(id, name.clone(), spawn);
-                            if !tree.insert(parent, node.clone()) {
-                                tree.insert(None, node);
-                            }
-                            id
+                            tree.add_new(parent, id_in_use_elsewhere, |id| {
+                                let spawn = SessionSpawn {
+                                    // Recorded so that an older build, which
+                                    // knows nothing of ssh_hosts.json, fails to
+                                    // open this node rather than opening a
+                                    // local shell.
+                                    domain: SpawnTabDomain::DomainName(ssh_domain_name(id)),
+                                    ..SessionSpawn::default()
+                                };
+                                SessionNode::session(id, name.clone(), spawn)
+                            })
                         })
                     }),
                 };

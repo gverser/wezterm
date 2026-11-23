@@ -236,6 +236,23 @@ impl SessionTree {
         }
     }
 
+    /// Add the node `make` builds, with a fresh id (see `alloc_id_skipping`),
+    /// as the last child of `parent`; at the top level when `parent` is None
+    /// or has gone, as it can while a menu or a form is open.
+    pub fn add_new(
+        &mut self,
+        parent: Option<NodeId>,
+        taken: impl Fn(NodeId) -> bool,
+        make: impl FnOnce(NodeId) -> SessionNode,
+    ) -> NodeId {
+        let id = self.alloc_id_skipping(taken);
+        let node = make(id);
+        if !self.insert(parent, node.clone()) {
+            self.insert(None, node);
+        }
+        id
+    }
+
     pub fn is_empty(&self) -> bool {
         self.roots.is_empty()
     }
@@ -633,6 +650,30 @@ mod test {
         assert_eq!(tree.alloc_id_skipping(taken), NodeId(8));
         // The next one moves on rather than landing on 8 again.
         assert_eq!(tree.alloc_id_skipping(taken), NodeId(9));
+    }
+
+    #[test]
+    fn a_new_node_goes_into_its_folder_or_to_the_top_when_that_is_gone() {
+        let mut tree = sample();
+        let work = tree.roots[0].id;
+        let gamma = tree.roots[1].id;
+        let session =
+            |name: &'static str| move |id| SessionNode::session(id, name, SessionSpawn::default());
+
+        let new = tree.add_new(Some(work), |_| false, session("new"));
+        assert_eq!(tree.parent_of(new), Some(work));
+        assert_eq!(tree.find(new).unwrap().name, "new");
+
+        // A session can't hold it, and a folder deleted meanwhile isn't there.
+        let beside = tree.add_new(Some(gamma), |_| false, session("beside"));
+        let orphan = tree.add_new(Some(NodeId(999)), |_| false, session("orphan"));
+        let top: Vec<NodeId> = tree.roots.iter().map(|n| n.id).collect();
+        assert_eq!(top, vec![work, gamma, beside, orphan]);
+
+        // Ids still in use elsewhere are passed over, as by alloc_id_skipping.
+        let next = NodeId(tree.next_id);
+        let skipped = tree.add_new(None, |id| id == next, session("skipped"));
+        assert_ne!(skipped, next);
     }
 
     #[test]

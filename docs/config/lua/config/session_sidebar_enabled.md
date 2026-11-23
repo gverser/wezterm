@@ -69,8 +69,9 @@ others running with nothing to reach them.
 
 *新建 SSH 会话* in the right click menu opens a form for the host, port, user
 name and either a password or a private key file; *编辑…* on an ssh entry
-opens the same form, and *编辑…* on any other entry a form for its domain,
-directory and command. Fields can be filled in any order; <kbd>Tab</kbd> moves
+opens the same form, and *新建会话* or *编辑…* on any other entry a form for
+its domain, directory and command. A new entry is only added once its form is
+saved. Fields can be filled in any order; <kbd>Tab</kbd> moves
 between them, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels. A blank port
 means the one `~/.ssh/config` gives the host, or 22. Each entry has an icon in
 front of its name: a server for an ssh entry, a penguin for one that opens in

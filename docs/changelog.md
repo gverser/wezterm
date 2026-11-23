@@ -221,6 +221,9 @@ As features stabilize some brief notes about them will accumulate here.
   nothing come back; a request gives up after as long as those keepalives
   would take. Sidebar SSH sessions notice within about three minutes.
   [ssh](ssh.md)
+* Sidebar: cancelling the form *新建会话* opens left an entry called 新建会话
+  behind. It is now only added when the form is saved, as with
+  *新建 SSH 会话*.
 * Sidebar, forms and the Feishu panel: placeholders, hints and key hints were
   drawn in a grey too faint to read comfortably (3.1–3.6:1); they now meet
   4.5:1. Disabled fields, stale status numbers and small glyphs keep the
