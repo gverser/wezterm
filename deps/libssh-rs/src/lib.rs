@@ -1171,6 +1171,19 @@ impl Session {
         Ok(sftp)
     }
 
+    /// Send a `keepalive@openssh.com` global request that asks for a reply.
+    /// In blocking mode this waits for the reply. Otherwise the reply is taken
+    /// in later, and until it has been, a further call sends nothing; the
+    /// first call after it has been only clears the request. Nothing is
+    /// reported: the reply is usually a refusal, which says no more than that
+    /// the server is there.
+    pub fn send_keepalive(&self) {
+        let sess = self.lock_session();
+        unsafe {
+            sys::ssh_send_keepalive(**sess);
+        }
+    }
+
     /// Send a message that should be ignored by the peer
     pub fn send_ignore(&self, data: &[u8]) -> SshResult<()> {
         let sess = self.lock_session();

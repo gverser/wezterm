@@ -60,12 +60,17 @@ All other options are parsed but have no effect.  Notably, neither `Match` or
 `ProxyUseFDpass` is now supported. (But not on Microsoft Windows).
 
 `ServerAliveInterval` is now supported by the `libssh` backend.  Setting it to
-a non-zero value will cause wezterm to send an `IGNORE` packet on that interval.
-`ServerAliveCountMax` is NOT supported by this backend.  This keepalive
-mechanism will not actively track the number of keepalives or disconnect the
-session; the packets are sent in a fire-and-forget manner as a least effort way
-to keep some traffic flowing on the connection to persuade intervening network
-hardware to keep the session alive.
+a non-zero value will cause wezterm to send a keepalive on that interval.
+
+`ServerAliveCountMax` is now supported by the `libssh` backend too.  Each
+keepalive asks the server for a reply, and once more than
+`ServerAliveCountMax` (3 by default) keepalives in a row have had nothing at
+all come back, the session is ended, as OpenSSH does.  Counting what comes
+back needs the system to say how much has arrived on the socket, which it does
+for a TCP connection on Windows and Linux; elsewhere, and through a
+`ProxyCommand` on Linux, the keepalives are still sent but nobody counts.  The
+`ssh2` backend sends its keepalives without asking for a reply and doesn't
+count them: libssh2 would keep every reply for the life of the session.
 
 ### CLI Overrides
 

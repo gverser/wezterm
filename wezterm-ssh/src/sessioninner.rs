@@ -1,3 +1,5 @@
+#[cfg(feature = "libssh-rs")]
+use crate::alive::{bytes_received, ServerAlive};
 use crate::channelwrap::ChannelWrap;
 use crate::config::ConfigMap;
 use crate::dirwrap::DirWrap;
@@ -52,6 +54,9 @@ pub(crate) struct SessionInner {
     pub shown_accept_env_error: bool,
     pub last_keep_alive: Instant,
     pub keep_alive: Option<Duration>,
+    /// ServerAliveCountMax, for the libssh backend; see alive.rs.
+    #[cfg(feature = "libssh-rs")]
+    pub server_alive: ServerAlive,
 }
 
 impl Drop for SessionInner {
@@ -428,6 +433,8 @@ impl SessionInner {
     }
 
     fn do_keepalive(&mut self, sess: &mut SessionWrap) -> anyhow::Result<()> {
+        #[cfg(feature = "libssh-rs")]
+        let sock = sess.as_socket_descriptor();
         match sess {
             // libssh2 has no way to ask whether the socket is still there,
             // so the keepalive itself is the probe: one that can't go out
@@ -450,24 +457,30 @@ impl SessionInner {
             }
             #[cfg(feature = "libssh-rs")]
             SessionWrap::LibSsh(sess) => {
-                // We implement a very basic keep alive mechanism here;
-                // every ServerAliveInterval seconds (if non-zero), we will
-                // send an ignore packet.
-                // Unlike the openssh client, we do not have a ServerAliveCountMax
-                // limit (because it is not clear how we could correctly implement
-                // that based on what we can see here in this crate), nor do we
-                // explicitly trigger a disconnect if there is an error with
-                // the ignore packet.
+                // Every ServerAliveInterval seconds (if non-zero), ask the
+                // server for a reply. What the reply says doesn't matter:
+                // anything at all arriving shows the server is still there,
+                // and once more than ServerAliveCountMax keepalives in a row
+                // have had nothing back, it is taken to be gone. That covers
+                // a connection the network dropped without a word as well as
+                // a server that hangs while TCP stays up. See alive.rs.
                 if let Some(duration) = self.keep_alive {
                     if self.last_keep_alive.elapsed() >= duration {
                         log::trace!("sending keep alive");
                         self.last_keep_alive = Instant::now();
-                        let ignore_me = [0x42; 128];
-                        if let Err(err) = sess.sess.send_ignore(&ignore_me) {
+                        if self.server_alive.gone(bytes_received(sock)) {
                             log::warn!(
-                                "Error sending IGNORE packet: {err:#}. Is peer disconnected?"
+                                "nothing from the server for more than \
+                                 ServerAliveCountMax keepalives"
                             );
+                            anyhow::bail!("与服务器的连接已断开");
                         }
+                        // libssh holds a keepalive open until its reply has
+                        // been taken in, and the call after that only clears
+                        // it. Calling twice sends the next one whenever the
+                        // last was answered, and nothing while it wasn't.
+                        sess.sess.send_keepalive();
+                        sess.sess.send_keepalive();
                     }
                 }
                 Ok(())

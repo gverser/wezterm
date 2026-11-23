@@ -212,6 +212,12 @@ As features stabilize some brief notes about them will accumulate here.
   `CTRL-u` to kill back to the start of the line. Thanks to @bew! #8013
 
 #### Fixed
+* ssh: a connection whose server stopped answering while TCP stayed up (a
+  hung server, or one behind a proxy that keeps the local end open) was never
+  noticed. The `libssh` backend now asks for a reply to each keepalive and,
+  like OpenSSH, ends the session once more than `ServerAliveCountMax` (3 by
+  default) of them in a row have had nothing come back; sidebar SSH sessions
+  notice within about two and a half minutes. [ssh](ssh.md)
 * ssh2 backend: listing a directory with a name that isn't UTF-8 (a server
   whose files are named in GBK, say) crashed the connection's session thread
   on Windows and dropped every tab on it. It now carries such names the way

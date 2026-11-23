@@ -7338,6 +7338,7 @@ dependencies = [
  "thiserror 1.0.69",
  "wezterm-uds",
  "whoami",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
