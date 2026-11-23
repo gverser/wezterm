@@ -315,12 +315,6 @@ impl SessionInner {
         if let Some(version) = sess.banner() {
             log::info!("{remote_address} is {version}");
         }
-        if let Some(interval) = self.keep_alive {
-            // keepalive_send in the request loop sends nothing unless an
-            // interval has been configured.
-            sess.set_keepalive(false, interval.as_secs().max(1) as u32);
-        }
-
         self.host_verification(&sess, &hostname, port, &remote_address)
             .context("host verification")?;
 
@@ -332,7 +326,10 @@ impl SessionInner {
             .context("notifying user that session is authenticated")?;
 
         // As for libssh: without a timeout a request to a server that has
-        // stopped answering is waited on for ever. See check_request_answered.
+        // stopped answering waits out libssh2's own 60 seconds for a reply,
+        // or for ever where that doesn't apply. (libssh2's keepalive would
+        // cut it short, too short; it is only configured while one is sent,
+        // see do_keepalive.) See check_request_answered.
         if let Some(timeout) = self.server_alive.request_timeout() {
             sess.set_timeout(timeout.as_millis() as u32);
         }
@@ -454,7 +451,17 @@ impl SessionInner {
                 if let Some(duration) = self.keep_alive {
                     if self.last_keep_alive.elapsed() >= duration {
                         self.last_keep_alive = Instant::now();
-                        if let Err(err) = sess.sess.keepalive_send() {
+                        // libssh2 sends nothing unless a keepalive interval
+                        // is configured, and while one is, it gives up on any
+                        // request it waits on as soon as the next keepalive
+                        // falls due (_libssh2_wait_socket), whatever
+                        // set_timeout says, leaving the request half done.
+                        // So it is configured just to send this one.
+                        sess.sess
+                            .set_keepalive(false, duration.as_secs().max(1) as u32);
+                        let sent = sess.sess.keepalive_send();
+                        sess.sess.set_keepalive(false, 0);
+                        if let Err(err) = sent {
                             if keepalive_failure_is_fatal(err.code()) {
                                 log::warn!("ssh2 keepalive failed: {err:#}");
                                 anyhow::bail!("与服务器的连接已断开");
@@ -972,9 +979,10 @@ impl SessionInner {
     /// itself; libssh matches each reply to its request, so a late one is
     /// harmless.
     ///
-    /// ssh2: always. libssh2 leaves a request it gave up on half done (its
-    /// channel open and sftp calls carry on with it on the next call, to be
-    /// answered with the old reply), so the session can't be trusted after.
+    /// ssh2: whenever libssh2 gave up (LIBSSH2_ERROR_TIMEOUT). It leaves the
+    /// request half done (its channel open and sftp calls carry on with it on
+    /// the next call, to be answered with the old reply), so the session
+    /// can't be trusted after.
     fn check_request_answered(
         &self,
         sess: &SessionWrap,
@@ -985,7 +993,9 @@ impl SessionInner {
         log::trace!("request took {took:?}; bytes received {before:?} -> {after:?}");
         let gone = match sess {
             #[cfg(feature = "ssh2")]
-            SessionWrap::Ssh2(_) => self.server_alive.request_timed_out(took),
+            SessionWrap::Ssh2(sess) => {
+                libssh2_gave_up(ssh2::Error::last_session_error(&sess.sess).map(|e| e.code()))
+            }
             #[cfg(feature = "libssh-rs")]
             SessionWrap::LibSsh(_) => self.server_alive.request_unanswered(before, after, took),
         };
@@ -1340,6 +1350,14 @@ pub fn describe_error(err: &anyhow::Error) -> String {
         .join("：")
 }
 
+/// Whether libssh2's last error says it gave up waiting: LIBSSH2_ERROR_TIMEOUT,
+/// from set_timeout's limit, its own for some replies, or a failed wait on the
+/// socket.
+#[cfg(feature = "ssh2")]
+fn libssh2_gave_up(code: Option<ssh2::ErrorCode>) -> bool {
+    matches!(code, Some(ssh2::ErrorCode::Session(-9)))
+}
+
 /// Whether a keepalive that libssh2 could not send means the connection is
 /// gone. Only LIBSSH2_ERROR_EAGAIN, a busy socket, doesn't.
 #[cfg(feature = "ssh2")]
@@ -1401,6 +1419,17 @@ mod test {
         // LIBSSH2_ERROR_SOCKET_SEND, LIBSSH2_ERROR_SOCKET_RECV.
         assert!(keepalive_failure_is_fatal(ssh2::ErrorCode::Session(-7)));
         assert!(keepalive_failure_is_fatal(ssh2::ErrorCode::Session(-43)));
+    }
+
+    #[cfg(feature = "ssh2")]
+    #[test]
+    fn only_libssh2_s_timeout_means_it_gave_up_on_a_request() {
+        // LIBSSH2_ERROR_TIMEOUT.
+        assert!(libssh2_gave_up(Some(ssh2::ErrorCode::Session(-9))));
+        // LIBSSH2_ERROR_EAGAIN, a failed sftp call, no error at all.
+        assert!(!libssh2_gave_up(Some(ssh2::ErrorCode::Session(-37))));
+        assert!(!libssh2_gave_up(Some(ssh2::ErrorCode::SFTP(2))));
+        assert!(!libssh2_gave_up(None));
     }
 
     #[test]

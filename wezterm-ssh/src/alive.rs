@@ -7,9 +7,10 @@
 //! makes an idle but healthy server send something each time.
 //!
 //! Requests are waited on in blocking mode, with no keepalives going out
-//! meanwhile, so they get the same allowance: libssh is told to give up on a
-//! reply after as long as the keepalives would take, and a request it gave up
-//! on with nothing at all received in the meantime ends the session too.
+//! meanwhile, so they get the same allowance: the library is told to give up
+//! on a reply after as long as the keepalives would take. With libssh, a
+//! request it gave up on with nothing at all received in the meantime ends
+//! the session too; with libssh2, any it gave up on (see sessioninner.rs).
 
 use crate::config::ConfigMap;
 use filedescriptor::SocketDescriptor;
@@ -38,7 +39,8 @@ pub(crate) fn server_alive_count_max(config: &ConfigMap) -> u32 {
         .unwrap_or(DEFAULT_COUNT_MAX)
 }
 
-// Only libssh's keepalives are counted (`gone`); ssh2 uses the request timeout.
+// Only libssh's keepalives and requests are judged here; ssh2 goes by
+// libssh2's own word that it gave up (sessioninner.rs).
 #[cfg_attr(not(feature = "libssh-rs"), allow(dead_code))]
 pub(crate) struct ServerAlive {
     count_max: u32,
@@ -73,15 +75,6 @@ impl ServerAlive {
     }
 
     /// Whether a request waited on in blocking mode, which took `took`, ran
-    /// out of `request_timeout`.
-    pub fn request_timed_out(&self, took: Duration) -> bool {
-        match self.request_timeout {
-            Some(timeout) => took >= timeout.saturating_sub(LIBSSH_CLOCK_SLACK),
-            None => false,
-        }
-    }
-
-    /// Whether a request waited on in blocking mode, which took `took`, ran
     /// out of `request_timeout` with nothing at all received meanwhile;
     /// `before` and `after` are the socket's totals around it.
     #[cfg_attr(not(feature = "libssh-rs"), allow(dead_code))]
@@ -91,8 +84,10 @@ impl ServerAlive {
         after: Option<u64>,
         took: Duration,
     ) -> bool {
-        match (before, after) {
-            (Some(before), Some(after)) => self.request_timed_out(took) && before == after,
+        match (self.request_timeout, before, after) {
+            (Some(timeout), Some(before), Some(after)) => {
+                took >= timeout.saturating_sub(LIBSSH_CLOCK_SLACK) && before == after
+            }
             _ => false,
         }
     }
@@ -266,16 +261,6 @@ mod test {
         assert!(!ServerAlive::new(1, None).request_unanswered(Some(40), Some(40), s(600)));
     }
 
-    #[test]
-    fn a_request_has_timed_out_once_it_took_the_whole_timeout() {
-        let s = Duration::from_secs;
-        let alive = ServerAlive::new(3, Some(s(30)));
-        assert!(alive.request_timed_out(s(120)));
-        assert!(alive.request_timed_out(s(121)));
-        assert!(!alive.request_timed_out(s(60)));
-        assert!(!ServerAlive::new(3, None).request_timed_out(s(3600)));
-    }
-
     #[cfg(any(windows, all(target_os = "linux", target_env = "gnu")))]
     #[test]
     fn bytes_received_counts_what_arrives_on_a_tcp_socket() {
@@ -324,7 +309,7 @@ mod live_test {
     use smol::channel::Receiver;
     use std::io::{ErrorKind, Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -332,12 +317,14 @@ mod live_test {
         std::env::var(name).unwrap_or_else(|_| panic!("{} is not set; see alive.rs", name))
     }
 
-    /// Accepts one connection and passes it on to `upstream` until frozen.
-    fn proxy(upstream: String) -> (SocketAddr, Arc<AtomicBool>) {
+    /// Accepts one connection and passes it on to `upstream` until frozen,
+    /// holding what the server sends back for `delay` milliseconds first.
+    fn proxy(upstream: String) -> (SocketAddr, Arc<AtomicBool>, Arc<AtomicU64>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let frozen = Arc::new(AtomicBool::new(false));
-        let pumps_frozen = Arc::clone(&frozen);
+        let delay = Arc::new(AtomicU64::new(0));
+        let (pumps_frozen, pumps_delay) = (Arc::clone(&frozen), Arc::clone(&delay));
         std::thread::spawn(move || {
             let (client, _) = listener.accept().unwrap();
             let server = TcpStream::connect(upstream).unwrap();
@@ -345,13 +332,19 @@ mod live_test {
                 client.try_clone().unwrap(),
                 server.try_clone().unwrap(),
                 Arc::clone(&pumps_frozen),
+                Arc::new(AtomicU64::new(0)),
             );
-            pump(server, client, pumps_frozen);
+            pump(server, client, pumps_frozen, pumps_delay);
         });
-        (addr, frozen)
+        (addr, frozen, delay)
     }
 
-    fn pump(mut from: TcpStream, mut to: TcpStream, frozen: Arc<AtomicBool>) {
+    fn pump(
+        mut from: TcpStream,
+        mut to: TcpStream,
+        frozen: Arc<AtomicBool>,
+        delay: Arc<AtomicU64>,
+    ) {
         std::thread::spawn(move || {
             from.set_read_timeout(Some(Duration::from_millis(50)))
                 .unwrap();
@@ -365,6 +358,10 @@ mod live_test {
                 match from.read(&mut buf) {
                     Ok(0) => return,
                     Ok(n) => {
+                        let delay = delay.load(Ordering::SeqCst);
+                        if delay > 0 {
+                            std::thread::sleep(Duration::from_millis(delay));
+                        }
                         if to.write_all(&buf[..n]).is_err() {
                             return;
                         }
@@ -395,11 +392,12 @@ mod live_test {
     }
 
     /// An authenticated session through a fresh proxy, with the given
-    /// backend, keepalives every second, given up after one unanswered.
+    /// backend, ServerAliveInterval and ServerAliveCountMax.
     struct Live {
         session: Session,
         events: Receiver<SessionEvent>,
         frozen: Arc<AtomicBool>,
+        delay: Arc<AtomicU64>,
         known_hosts: std::path::PathBuf,
     }
 
@@ -409,12 +407,12 @@ mod live_test {
         }
     }
 
-    fn connect(name: &str, backend: &str) -> Live {
+    fn connect(name: &str, backend: &str, interval: u64, count_max: u32) -> Live {
         // RUST_LOG=wezterm_ssh=debug shows which check gave up.
         let _ = env_logger::try_init();
         let target = env("WEZTERM_LIVE_SFTP");
         let (user, upstream) = target.split_once('@').expect("user@host:port");
-        let (addr, frozen) = proxy(upstream.to_string());
+        let (addr, frozen, delay) = proxy(upstream.to_string());
         let known_hosts = std::env::temp_dir().join(format!(
             "wezterm-live-alive-known-hosts-{}-{}",
             std::process::id(),
@@ -429,8 +427,8 @@ mod live_test {
             ("identitiesonly", "yes".to_string()),
             ("userknownhostsfile", known_hosts.display().to_string()),
             ("wezterm_ssh_backend", backend.to_string()),
-            ("serveraliveinterval", "1".to_string()),
-            ("serveralivecountmax", "1".to_string()),
+            ("serveraliveinterval", interval.to_string()),
+            ("serveralivecountmax", count_max.to_string()),
         ] {
             config.insert(key.to_string(), value);
         }
@@ -455,6 +453,7 @@ mod live_test {
             session,
             events,
             frozen,
+            delay,
             known_hosts,
         }
     }
@@ -478,7 +477,7 @@ mod live_test {
     #[test]
     #[ignore = "needs a live sshd; see alive.rs"]
     fn live_a_server_that_stops_answering_ends_the_session() {
-        let live = connect("idle", "libssh");
+        let live = connect("idle", "libssh", 1, 1);
         smol::block_on(async {
             // Six keepalives, each answered: the session stays.
             if let Some(SessionEvent::Error(err)) =
@@ -511,7 +510,7 @@ mod live_test {
     }
 
     fn request_never_answered(backend: &str) {
-        let live = connect(&format!("request-{}", backend), backend);
+        let live = connect(&format!("request-{}", backend), backend, 1, 1);
         smol::block_on(async {
             live.frozen.store(true, Ordering::SeqCst);
             let frozen_at = Instant::now();
@@ -533,6 +532,49 @@ mod live_test {
                 matches!(exec, Some(Err(_))),
                 "the request should have failed, not waited on"
             );
+        });
+    }
+
+    /// A server that answers, only slowly, is waited for. libssh2 used to
+    /// give up on a request as soon as its next keepalive came due, a second
+    /// or two here, and leave the request half done.
+    #[cfg(feature = "ssh2")]
+    #[test]
+    #[ignore = "needs a live sshd; see alive.rs"]
+    fn live_ssh2_a_slow_answer_is_waited_for() {
+        slow_answer_is_waited_for("ssh2");
+    }
+
+    #[cfg(feature = "libssh-rs")]
+    #[test]
+    #[ignore = "needs a live sshd; see alive.rs"]
+    fn live_a_slow_answer_is_waited_for() {
+        slow_answer_is_waited_for("libssh");
+    }
+
+    fn slow_answer_is_waited_for(backend: &str) {
+        // Keepalives every 2s (libssh2's least), so requests get 8s.
+        let live = connect(&format!("slow-{}", backend), backend, 2, 3);
+        smol::block_on(async {
+            live.delay.store(3000, Ordering::SeqCst);
+            let exec = smol::future::or(
+                async { Some(live.session.exec("true", None).await) },
+                async {
+                    smol::Timer::after(Duration::from_secs(30)).await;
+                    None
+                },
+            )
+            .await;
+            match exec {
+                Some(Ok(_)) => {}
+                Some(Err(err)) => panic!("the request failed: {:#}", err),
+                None => panic!("no answer in 30s"),
+            }
+            if let Some(SessionEvent::Error(err)) =
+                next_event(&live.events, Duration::from_millis(500)).await
+            {
+                panic!("the session ended: {}", err);
+            }
         });
     }
 }
