@@ -834,7 +834,8 @@ impl super::TermWindow {
 
     fn show_local_editor(&mut self, target: EditTarget, name: String, spawn: SessionSpawn) {
         let old = spawn.clone();
-        let form = FormModal::new(forms::local_form(&name, &spawn))
+        let new = matches!(target, EditTarget::New { .. });
+        let form = FormModal::new(forms::local_form(new, &name, &spawn))
             .validate(forms::validate_local_form)
             .on_submit(move |state, tw| {
                 let (new_name, spawn) = forms::local_form_values(state, &old);

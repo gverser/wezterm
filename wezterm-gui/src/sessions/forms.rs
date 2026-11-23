@@ -154,14 +154,16 @@ fn domain_to_string(domain: &SpawnTabDomain) -> String {
     }
 }
 
-pub fn local_form(name: &str, spawn: &SessionSpawn) -> FormState {
+/// The form for a local session; `new` when it is to be created on saving.
+pub fn local_form(new: bool, name: &str, spawn: &SessionSpawn) -> FormState {
+    let title = if new { "新建会话" } else { "编辑会话" };
     let command = spawn
         .args
         .as_ref()
         .and_then(|args| shlex::try_join(args.iter().map(|s| s.as_str())).ok())
         .unwrap_or_default();
     FormState::new(
-        "编辑会话",
+        title,
         vec![
             Field::text("名称", name),
             Field::text("域", &domain_to_string(&spawn.domain)),
@@ -405,7 +407,7 @@ mod test {
                 .into_iter()
                 .collect(),
         };
-        let mut state = local_form("casb", &old);
+        let mut state = local_form(false, "casb", &old);
         assert_eq!(state.value("域"), "main");
         assert_eq!(state.value("目录"), "D:/work");
         assert_eq!(state.value("命令"), "bash");
@@ -425,8 +427,15 @@ mod test {
     }
 
     #[test]
+    fn a_local_form_is_titled_for_what_it_does() {
+        let spawn = SessionSpawn::default();
+        assert_eq!(local_form(true, "新建会话", &spawn).title, "新建会话");
+        assert_eq!(local_form(false, "casb", &spawn).title, "编辑会话");
+    }
+
+    #[test]
     fn unparsable_command_is_rejected() {
-        let mut state = local_form("x", &SessionSpawn::default());
+        let mut state = local_form(false, "x", &SessionSpawn::default());
         set(&mut state, "命令", "echo \"unterminated");
         assert_eq!(
             validate_local_form(&state),
