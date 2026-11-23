@@ -65,12 +65,21 @@ a non-zero value will cause wezterm to send a keepalive on that interval.
 `ServerAliveCountMax` is now supported by the `libssh` backend too.  Each
 keepalive asks the server for a reply, and once more than
 `ServerAliveCountMax` (3 by default) keepalives in a row have had nothing at
-all come back, the session is ended, as OpenSSH does.  Counting what comes
-back needs the system to say how much has arrived on the socket, which it does
-for a TCP connection on Windows and Linux; elsewhere, and through a
-`ProxyCommand` on Linux, the keepalives are still sent but nobody counts.  The
-`ssh2` backend sends its keepalives without asking for a reply and doesn't
-count them: libssh2 would keep every reply for the life of the session.
+all come back, the session is ended, as OpenSSH does.  A request (opening a
+tab, listing a directory) is given as long as those keepalives would take,
+`ServerAliveInterval` times one more than `ServerAliveCountMax` (at most 30
+minutes): if nothing at all has come back by then the session is ended too,
+and otherwise just that request fails.  Without `ServerAliveInterval`, requests
+wait for their reply as long as it takes, as before.
+
+Counting what comes back needs the system to say how much has arrived on the
+socket, which it does for a TCP socket on Windows and on Linux with glibc,
+including one handed over by `ProxyUseFDpass`.  Elsewhere (macOS, musl, a
+plain `ProxyCommand` on Linux) the keepalives are still sent and requests
+still time out, but nothing counts as unanswered, so the session isn't ended
+for it.  The `ssh2` backend sends its keepalives without asking for a reply and
+doesn't count them: libssh2 would keep every reply for the life of the
+session.
 
 ### CLI Overrides
 

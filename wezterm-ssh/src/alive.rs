@@ -5,12 +5,30 @@
 //! socket is asked instead: the system's count of bytes received on it goes up
 //! whenever anything arrives, whoever reads it. A keepalive that wants a reply
 //! makes an idle but healthy server send something each time.
+//!
+//! Requests are waited on in blocking mode, with no keepalives going out
+//! meanwhile, so they get the same allowance: libssh is told to give up on a
+//! reply after as long as the keepalives would take, and a request it gave up
+//! on with nothing at all received in the meantime ends the session too.
 
 use crate::config::ConfigMap;
 use filedescriptor::SocketDescriptor;
+use std::time::Duration;
 
 /// OpenSSH's default.
 const DEFAULT_COUNT_MAX: u32 = 3;
+
+/// The longest libssh is told to wait for a reply. It takes the timeout as a
+/// C long of microseconds, 32 bits on Windows (about 35 minutes), and refuses
+/// one that doesn't fit.
+const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How much earlier than Instant libssh may find a timeout up. On Windows it
+/// times with GetSystemTimeAsFileTime (libssh-rs-sys doesn't build it with
+/// clock_gettime there), which moves in steps of about 16ms, so its start can
+/// be stale by that much. A request that needs no reply is over long before
+/// this close to the timeout, and one that got its reply received something.
+const LIBSSH_CLOCK_SLACK: Duration = Duration::from_millis(100);
 
 /// `ServerAliveCountMax` from the config, OpenSSH's 3 when unset or unreadable.
 pub(crate) fn server_alive_count_max(config: &ConfigMap) -> u32 {
@@ -22,6 +40,8 @@ pub(crate) fn server_alive_count_max(config: &ConfigMap) -> u32 {
 
 pub(crate) struct ServerAlive {
     count_max: u32,
+    /// See `request_timeout`.
+    request_timeout: Option<Duration>,
     /// Keepalives in a row with nothing received since.
     unanswered: u32,
     /// The socket's total of bytes received when the last keepalive went out.
@@ -29,11 +49,41 @@ pub(crate) struct ServerAlive {
 }
 
 impl ServerAlive {
-    pub fn new(count_max: u32) -> Self {
+    /// `interval` is ServerAliveInterval, None when no keepalives are sent.
+    pub fn new(count_max: u32, interval: Option<Duration>) -> Self {
         Self {
             count_max,
+            request_timeout: interval.map(|interval| {
+                interval
+                    .saturating_mul(count_max.saturating_add(1))
+                    .min(MAX_REQUEST_TIMEOUT)
+            }),
             unanswered: 0,
             received_at_send: None,
+        }
+    }
+
+    /// How long a request waited on in blocking mode may go unanswered: as
+    /// long as it takes the keepalives to give up, `count_max` intervals and
+    /// one more. None without keepalives, where nothing is given up.
+    pub fn request_timeout(&self) -> Option<Duration> {
+        self.request_timeout
+    }
+
+    /// Whether a request waited on in blocking mode, which took `took`, ran
+    /// out of `request_timeout` with nothing at all received meanwhile;
+    /// `before` and `after` are the socket's totals around it.
+    pub fn request_unanswered(
+        &self,
+        before: Option<u64>,
+        after: Option<u64>,
+        took: Duration,
+    ) -> bool {
+        match (self.request_timeout, before, after) {
+            (Some(timeout), Some(before), Some(after)) => {
+                took >= timeout.saturating_sub(LIBSSH_CLOCK_SLACK) && before == after
+            }
+            _ => false,
         }
     }
 
@@ -110,7 +160,7 @@ mod test {
 
     #[test]
     fn a_server_that_answers_is_never_given_up() {
-        let mut alive = ServerAlive::new(3);
+        let mut alive = ServerAlive::new(3, None);
         for n in 0..100 {
             assert!(!alive.gone(Some(n * 52)));
         }
@@ -118,7 +168,7 @@ mod test {
 
     #[test]
     fn more_than_count_max_unanswered_keepalives_mean_the_server_is_gone() {
-        let mut alive = ServerAlive::new(3);
+        let mut alive = ServerAlive::new(3, None);
         // The first goes out with nothing to judge; the next four find
         // nothing new, and only the fourth of those is one too many.
         assert_eq!(
@@ -129,7 +179,7 @@ mod test {
 
     #[test]
     fn anything_received_starts_the_count_again() {
-        let mut alive = ServerAlive::new(1);
+        let mut alive = ServerAlive::new(1, None);
         assert_eq!(
             run(
                 &mut alive,
@@ -141,7 +191,7 @@ mod test {
 
     #[test]
     fn without_a_byte_count_nothing_is_judged() {
-        let mut alive = ServerAlive::new(0);
+        let mut alive = ServerAlive::new(0, None);
         assert_eq!(run(&mut alive, &[None; 5]), [false; 5]);
         // A count that comes and goes never adds up to a verdict either.
         assert_eq!(
@@ -152,7 +202,7 @@ mod test {
 
     #[test]
     fn count_max_zero_gives_up_at_the_first_unanswered_keepalive() {
-        let mut alive = ServerAlive::new(0);
+        let mut alive = ServerAlive::new(0, None);
         assert_eq!(run(&mut alive, &[Some(7), Some(7)]), [false, true]);
     }
 
@@ -164,6 +214,45 @@ mod test {
         assert_eq!(server_alive_count_max(&config), 5);
         config.insert("serveralivecountmax".to_string(), "lots".to_string());
         assert_eq!(server_alive_count_max(&config), 3);
+    }
+
+    #[test]
+    fn a_request_gets_as_long_as_the_keepalives_would_take() {
+        let s = Duration::from_secs;
+        // The sidebar's 30 seconds and OpenSSH's three.
+        assert_eq!(
+            ServerAlive::new(3, Some(s(30))).request_timeout(),
+            Some(s(120))
+        );
+        assert_eq!(
+            ServerAlive::new(0, Some(s(30))).request_timeout(),
+            Some(s(30))
+        );
+        assert_eq!(ServerAlive::new(3, None).request_timeout(), None);
+        // libssh can't be given more than about 35 minutes on Windows.
+        assert_eq!(
+            ServerAlive::new(3, Some(s(3600))).request_timeout(),
+            Some(MAX_REQUEST_TIMEOUT)
+        );
+        assert!(MAX_REQUEST_TIMEOUT.as_micros() <= i32::MAX as u128);
+    }
+
+    #[test]
+    fn a_request_is_unanswered_only_when_it_timed_out_with_nothing_received() {
+        let s = Duration::from_secs;
+        let alive = ServerAlive::new(1, Some(s(1)));
+        assert!(alive.request_unanswered(Some(40), Some(40), s(2)));
+        // libssh's clock is coarser than Instant's and can call time a
+        // little early.
+        assert!(alive.request_unanswered(Some(40), Some(40), Duration::from_millis(1985)));
+        // Something came: the server is there, just slow with this one.
+        assert!(!alive.request_unanswered(Some(40), Some(90), s(2)));
+        // Answered in time.
+        assert!(!alive.request_unanswered(Some(40), Some(40), Duration::from_millis(500)));
+        // No count, no verdict.
+        assert!(!alive.request_unanswered(None, None, s(2)));
+        // Without keepalives libssh isn't given a timeout either.
+        assert!(!ServerAlive::new(1, None).request_unanswered(Some(40), Some(40), s(600)));
     }
 
     #[cfg(any(windows, all(target_os = "linux", target_env = "gnu")))]
@@ -284,15 +373,31 @@ mod live_test {
         .await
     }
 
-    #[test]
-    #[ignore = "needs a live sshd; see alive.rs"]
-    fn live_a_server_that_stops_answering_ends_the_session() {
+    /// An authenticated libssh session through a fresh proxy, keepalives
+    /// every second, given up after one unanswered.
+    struct Live {
+        session: Session,
+        events: Receiver<SessionEvent>,
+        frozen: Arc<AtomicBool>,
+        known_hosts: std::path::PathBuf,
+    }
+
+    impl Drop for Live {
+        fn drop(&mut self) {
+            std::fs::remove_file(&self.known_hosts).ok();
+        }
+    }
+
+    fn connect(name: &str) -> Live {
+        // RUST_LOG=wezterm_ssh=debug shows which check gave up.
+        let _ = env_logger::try_init();
         let target = env("WEZTERM_LIVE_SFTP");
         let (user, upstream) = target.split_once('@').expect("user@host:port");
         let (addr, frozen) = proxy(upstream.to_string());
         let known_hosts = std::env::temp_dir().join(format!(
-            "wezterm-live-alive-known-hosts-{}",
-            std::process::id()
+            "wezterm-live-alive-known-hosts-{}-{}",
+            std::process::id(),
+            name
         ));
 
         let mut config = Config::new().for_host("127.0.0.1");
@@ -324,26 +429,76 @@ mod live_test {
                     SessionEvent::Authenticated => break,
                 }
             }
+        });
+        Live {
+            session,
+            events,
+            frozen,
+            known_hosts,
+        }
+    }
 
+    fn expect_given_up(event: Option<SessionEvent>, since: Instant, what: &str) {
+        match event {
+            Some(SessionEvent::Error(err)) => {
+                assert!(err.contains("与服务器的连接已断开"), "{}", err);
+                eprintln!(
+                    "{}: given up {:?} after the proxy froze",
+                    what,
+                    since.elapsed()
+                );
+            }
+            Some(_) => panic!("{}: an event other than the error", what),
+            None => panic!("{}: still up 10s after the server stopped answering", what),
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a live sshd; see alive.rs"]
+    fn live_a_server_that_stops_answering_ends_the_session() {
+        let live = connect("idle");
+        smol::block_on(async {
             // Six keepalives, each answered: the session stays.
             if let Some(SessionEvent::Error(err)) =
-                next_event(&events, Duration::from_secs(6)).await
+                next_event(&live.events, Duration::from_secs(6)).await
             {
                 panic!("ended while the server was answering: {}", err);
             }
 
-            frozen.store(true, Ordering::SeqCst);
+            live.frozen.store(true, Ordering::SeqCst);
             let frozen_at = Instant::now();
-            match next_event(&events, Duration::from_secs(10)).await {
-                Some(SessionEvent::Error(err)) => {
-                    assert!(err.contains("与服务器的连接已断开"), "{}", err);
-                    eprintln!("given up {:?} after the proxy froze", frozen_at.elapsed());
-                }
-                Some(_) => panic!("an event other than the error"),
-                None => panic!("still up 10s after the server stopped answering"),
-            }
+            let event = next_event(&live.events, Duration::from_secs(10)).await;
+            expect_given_up(event, frozen_at, "idle");
         });
-        drop(session);
-        std::fs::remove_file(known_hosts).ok();
+    }
+
+    /// A request is waited on with no keepalives going out, so it has to be
+    /// given up on by itself.
+    #[test]
+    #[ignore = "needs a live sshd; see alive.rs"]
+    fn live_a_request_the_server_never_answers_ends_the_session() {
+        let live = connect("request");
+        smol::block_on(async {
+            live.frozen.store(true, Ordering::SeqCst);
+            let frozen_at = Instant::now();
+            // A pump in the middle of a read when it froze still passes that
+            // on (what the server sends straight after authentication, say);
+            // let that land first, so the request goes out to silence.
+            smol::Timer::after(Duration::from_millis(300)).await;
+            let exec = smol::future::or(
+                async { Some(live.session.exec("true", None).await) },
+                async {
+                    smol::Timer::after(Duration::from_secs(15)).await;
+                    None
+                },
+            );
+            let (exec, event) =
+                smol::future::zip(exec, next_event(&live.events, Duration::from_secs(10))).await;
+            expect_given_up(event, frozen_at, "request");
+            assert!(
+                matches!(exec, Some(Err(_))),
+                "the request should have failed, not waited on"
+            );
+        });
     }
 }

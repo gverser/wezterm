@@ -110,7 +110,7 @@ impl Session {
         });
 
         #[cfg(feature = "libssh-rs")]
-        let server_alive = ServerAlive::new(server_alive_count_max(&config));
+        let server_alive = ServerAlive::new(server_alive_count_max(&config), keep_alive);
 
         let now = Instant::now();
 

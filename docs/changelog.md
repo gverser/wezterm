@@ -214,10 +214,13 @@ As features stabilize some brief notes about them will accumulate here.
 #### Fixed
 * ssh: a connection whose server stopped answering while TCP stayed up (a
   hung server, or one behind a proxy that keeps the local end open) was never
-  noticed. The `libssh` backend now asks for a reply to each keepalive and,
-  like OpenSSH, ends the session once more than `ServerAliveCountMax` (3 by
-  default) of them in a row have had nothing come back; sidebar SSH sessions
-  notice within about two and a half minutes. [ssh](ssh.md)
+  noticed, and a request made to it (a new tab, a directory listing) waited
+  for ever, freezing every tab on the connection. The `libssh` backend now
+  asks for a reply to each keepalive and, like OpenSSH, ends the session once
+  more than `ServerAliveCountMax` (3 by default) of them in a row have had
+  nothing come back; a request gives up after as long as those keepalives
+  would take. Sidebar SSH sessions notice within about three minutes.
+  [ssh](ssh.md)
 * Sidebar, forms and the Feishu panel: placeholders, hints and key hints were
   drawn in a grey too faint to read comfortably (3.1–3.6:1); they now meet
   4.5:1. Disabled fields, stale status numbers and small glyphs keep the

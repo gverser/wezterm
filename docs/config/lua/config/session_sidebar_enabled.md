@@ -91,10 +91,12 @@ with **连接失败：** and the reason, and the tab stays open with
 
 The connection sends a keepalive every 30 seconds, so one that has dropped
 (wifi, VPN, sleep, the server going away) is noticed even while nobody is
-typing. With the default `libssh` backend, when nothing comes back from the
-server for more than three of them in a row, the connection is given up
-within about two and a half minutes of going quiet, even where the network
-itself never says it is gone. Its tabs then stay open with
+typing. With the default `libssh` backend on Windows or Linux, when nothing
+comes back from the server for more than three of them in a row, or for two
+minutes while something waits on it (a new tab, the file page, the status
+bar), the connection is given up within about three minutes of going quiet,
+even where the network itself never says it is gone. Its tabs then stay open
+with
 **⚠️ SSH 连接已断开，再次打开这个会话会重新连接。** at the bottom instead of
 disappearing; double clicking the entry again connects afresh, whether or not
 those tabs have been closed yet. A tab whose shell exits normally closes as

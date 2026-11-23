@@ -258,6 +258,12 @@ impl SessionInner {
                 log::error!("ForwardAgent is set to yes, but IdentityAgent is not set");
             }
         }
+        // Without a timeout libssh waits for a reply to a request for ever,
+        // and no keepalive goes out to find the server gone while it does.
+        // See alive.rs and check_request_answered.
+        if let Some(timeout) = self.server_alive.request_timeout() {
+            sess.set_option(libssh_rs::SshOption::Timeout(timeout))?;
+        }
         sess.set_blocking(false);
         let mut sess = SessionWrap::with_libssh(sess);
         self.request_loop(&mut sess)
@@ -722,6 +728,8 @@ impl SessionInner {
             Err(TryRecvError::Closed) => anyhow::bail!("all clients are closed"),
             Err(TryRecvError::Empty) => Ok(false),
             Ok(req) => {
+                #[cfg(feature = "libssh-rs")]
+                let watch = (Instant::now(), bytes_received(sess.as_socket_descriptor()));
                 sess.set_blocking(true);
                 let res = match req {
                     SessionRequest::SessionDropped => {
@@ -946,9 +954,47 @@ impl SessionInner {
                     }
                 };
                 sess.set_blocking(false);
+                #[cfg(feature = "libssh-rs")]
+                self.check_request_answered(sess, watch)?;
                 res
             }
         }
+    }
+
+    /// A request libssh gave up waiting on, with nothing at all from the
+    /// server in the meantime, means the server is gone: it has said nothing
+    /// for as long as ServerAliveCountMax keepalives would have waited. One
+    /// that only took long while other things arrived just fails by itself.
+    #[cfg(feature = "libssh-rs")]
+    fn check_request_answered(
+        &self,
+        sess: &SessionWrap,
+        (started, before): (Instant, Option<u64>),
+    ) -> anyhow::Result<()> {
+        let timed = match sess {
+            #[cfg(feature = "ssh2")]
+            SessionWrap::Ssh2(_) => false,
+            SessionWrap::LibSsh(_) => true,
+        };
+        let after = bytes_received(sess.as_socket_descriptor());
+        log::trace!(
+            "request took {:?}; bytes received {:?} -> {:?}",
+            started.elapsed(),
+            before,
+            after
+        );
+        if timed
+            && self
+                .server_alive
+                .request_unanswered(before, after, started.elapsed())
+        {
+            log::warn!(
+                "nothing from the server while a request waited {:?}",
+                started.elapsed()
+            );
+            anyhow::bail!("与服务器的连接已断开");
+        }
+        Ok(())
     }
 
     fn connect_pending_agent_forward_channels(&mut self, sess: &mut SessionWrap) {
