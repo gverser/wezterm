@@ -1,7 +1,6 @@
 #[cfg(not(any(feature = "libssh-rs", feature = "ssh2")))]
 compile_error!("Either libssh-rs or ssh2 must be enabled!");
 
-#[cfg(feature = "libssh-rs")]
 mod alive;
 mod auth;
 mod channelwrap;

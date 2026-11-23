@@ -219,8 +219,8 @@ As features stabilize some brief notes about them will accumulate here.
   asks for a reply to each keepalive and, like OpenSSH, ends the session once
   more than `ServerAliveCountMax` (3 by default) of them in a row have had
   nothing come back; a request gives up after as long as those keepalives
-  would take. Sidebar SSH sessions notice within about three minutes.
-  [ssh](ssh.md)
+  would take, with the `ssh2` backend too. Sidebar SSH sessions notice within
+  about three minutes. [ssh](ssh.md)
 * Sidebar: cancelling the form *新建会话* opens left an entry called 新建会话
   behind. It is now only added when the form is saved, as with
   *新建 SSH 会话*.

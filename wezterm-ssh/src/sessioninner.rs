@@ -1,4 +1,3 @@
-#[cfg(feature = "libssh-rs")]
 use crate::alive::{bytes_received, ServerAlive};
 use crate::channelwrap::ChannelWrap;
 use crate::config::ConfigMap;
@@ -54,8 +53,7 @@ pub(crate) struct SessionInner {
     pub shown_accept_env_error: bool,
     pub last_keep_alive: Instant,
     pub keep_alive: Option<Duration>,
-    /// ServerAliveCountMax, for the libssh backend; see alive.rs.
-    #[cfg(feature = "libssh-rs")]
+    /// ServerAliveCountMax and the request timeout; see alive.rs.
     pub server_alive: ServerAlive,
 }
 
@@ -333,6 +331,11 @@ impl SessionInner {
             .try_send(SessionEvent::Authenticated)
             .context("notifying user that session is authenticated")?;
 
+        // As for libssh: without a timeout a request to a server that has
+        // stopped answering is waited on for ever. See check_request_answered.
+        if let Some(timeout) = self.server_alive.request_timeout() {
+            sess.set_timeout(timeout.as_millis() as u32);
+        }
         sess.set_blocking(false);
 
         let mut sess = SessionWrap::with_ssh2(sess);
@@ -728,7 +731,6 @@ impl SessionInner {
             Err(TryRecvError::Closed) => anyhow::bail!("all clients are closed"),
             Err(TryRecvError::Empty) => Ok(false),
             Ok(req) => {
-                #[cfg(feature = "libssh-rs")]
                 let watch = (Instant::now(), bytes_received(sess.as_socket_descriptor()));
                 sess.set_blocking(true);
                 let res = match req {
@@ -954,44 +956,41 @@ impl SessionInner {
                     }
                 };
                 sess.set_blocking(false);
-                #[cfg(feature = "libssh-rs")]
                 self.check_request_answered(sess, watch)?;
                 res
             }
         }
     }
 
-    /// A request libssh gave up waiting on, with nothing at all from the
-    /// server in the meantime, means the server is gone: it has said nothing
-    /// for as long as ServerAliveCountMax keepalives would have waited. One
-    /// that only took long while other things arrived just fails by itself.
-    #[cfg(feature = "libssh-rs")]
+    /// After a request waited on in blocking mode: whether the library gave
+    /// up on it (see `ServerAlive::request_timeout`) in a way that means the
+    /// session can't go on.
+    ///
+    /// libssh: only if nothing at all came from the server meanwhile, which
+    /// says the server is gone, as that many unanswered keepalives would.
+    /// One that took that long while other things arrived just fails by
+    /// itself; libssh matches each reply to its request, so a late one is
+    /// harmless.
+    ///
+    /// ssh2: always. libssh2 leaves a request it gave up on half done (its
+    /// channel open and sftp calls carry on with it on the next call, to be
+    /// answered with the old reply), so the session can't be trusted after.
     fn check_request_answered(
         &self,
         sess: &SessionWrap,
         (started, before): (Instant, Option<u64>),
     ) -> anyhow::Result<()> {
-        let timed = match sess {
-            #[cfg(feature = "ssh2")]
-            SessionWrap::Ssh2(_) => false,
-            SessionWrap::LibSsh(_) => true,
-        };
+        let took = started.elapsed();
         let after = bytes_received(sess.as_socket_descriptor());
-        log::trace!(
-            "request took {:?}; bytes received {:?} -> {:?}",
-            started.elapsed(),
-            before,
-            after
-        );
-        if timed
-            && self
-                .server_alive
-                .request_unanswered(before, after, started.elapsed())
-        {
-            log::warn!(
-                "nothing from the server while a request waited {:?}",
-                started.elapsed()
-            );
+        log::trace!("request took {took:?}; bytes received {before:?} -> {after:?}");
+        let gone = match sess {
+            #[cfg(feature = "ssh2")]
+            SessionWrap::Ssh2(_) => self.server_alive.request_timed_out(took),
+            #[cfg(feature = "libssh-rs")]
+            SessionWrap::LibSsh(_) => self.server_alive.request_unanswered(before, after, took),
+        };
+        if gone {
+            log::warn!("the server didn't answer a request in {took:?}");
             anyhow::bail!("与服务器的连接已断开");
         }
         Ok(())

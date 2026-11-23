@@ -79,7 +79,9 @@ plain `ProxyCommand` on Linux) the keepalives are still sent and requests
 still time out, but nothing counts as unanswered, so the session isn't ended
 for it.  The `ssh2` backend sends its keepalives without asking for a reply and
 doesn't count them: libssh2 would keep every reply for the life of the
-session.
+session.  Its requests time out the same way, and one that does ends the
+session whatever came back meanwhile, since libssh2 would carry on with the
+abandoned request at the next call.
 
 ### CLI Overrides
 

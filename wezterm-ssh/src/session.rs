@@ -1,4 +1,3 @@
-#[cfg(feature = "libssh-rs")]
 use crate::alive::{server_alive_count_max, ServerAlive};
 use crate::auth::*;
 use crate::config::ConfigMap;
@@ -109,7 +108,6 @@ impl Session {
             }
         });
 
-        #[cfg(feature = "libssh-rs")]
         let server_alive = ServerAlive::new(server_alive_count_max(&config), keep_alive);
 
         let now = Instant::now();
@@ -128,7 +126,6 @@ impl Session {
             shown_accept_env_error: false,
             last_keep_alive: now,
             keep_alive,
-            #[cfg(feature = "libssh-rs")]
             server_alive,
         };
         std::thread::spawn(move || inner.run());

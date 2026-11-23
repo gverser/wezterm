@@ -38,6 +38,8 @@ pub(crate) fn server_alive_count_max(config: &ConfigMap) -> u32 {
         .unwrap_or(DEFAULT_COUNT_MAX)
 }
 
+// Only libssh's keepalives are counted (`gone`); ssh2 uses the request timeout.
+#[cfg_attr(not(feature = "libssh-rs"), allow(dead_code))]
 pub(crate) struct ServerAlive {
     count_max: u32,
     /// See `request_timeout`.
@@ -71,18 +73,26 @@ impl ServerAlive {
     }
 
     /// Whether a request waited on in blocking mode, which took `took`, ran
+    /// out of `request_timeout`.
+    pub fn request_timed_out(&self, took: Duration) -> bool {
+        match self.request_timeout {
+            Some(timeout) => took >= timeout.saturating_sub(LIBSSH_CLOCK_SLACK),
+            None => false,
+        }
+    }
+
+    /// Whether a request waited on in blocking mode, which took `took`, ran
     /// out of `request_timeout` with nothing at all received meanwhile;
     /// `before` and `after` are the socket's totals around it.
+    #[cfg_attr(not(feature = "libssh-rs"), allow(dead_code))]
     pub fn request_unanswered(
         &self,
         before: Option<u64>,
         after: Option<u64>,
         took: Duration,
     ) -> bool {
-        match (self.request_timeout, before, after) {
-            (Some(timeout), Some(before), Some(after)) => {
-                took >= timeout.saturating_sub(LIBSSH_CLOCK_SLACK) && before == after
-            }
+        match (before, after) {
+            (Some(before), Some(after)) => self.request_timed_out(took) && before == after,
             _ => false,
         }
     }
@@ -90,6 +100,7 @@ impl ServerAlive {
     /// Call as each keepalive goes out, with the socket's total of bytes
     /// received so far, or None where the system can't say. True once more
     /// than `count_max` keepalives in a row have had nothing come back.
+    #[cfg_attr(not(feature = "libssh-rs"), allow(dead_code))]
     pub fn gone(&mut self, received: Option<u64>) -> bool {
         match (received, self.received_at_send) {
             (Some(now), Some(then)) if now == then => self.unanswered += 1,
@@ -255,6 +266,16 @@ mod test {
         assert!(!ServerAlive::new(1, None).request_unanswered(Some(40), Some(40), s(600)));
     }
 
+    #[test]
+    fn a_request_has_timed_out_once_it_took_the_whole_timeout() {
+        let s = Duration::from_secs;
+        let alive = ServerAlive::new(3, Some(s(30)));
+        assert!(alive.request_timed_out(s(120)));
+        assert!(alive.request_timed_out(s(121)));
+        assert!(!alive.request_timed_out(s(60)));
+        assert!(!ServerAlive::new(3, None).request_timed_out(s(3600)));
+    }
+
     #[cfg(any(windows, all(target_os = "linux", target_env = "gnu")))]
     #[test]
     fn bytes_received_counts_what_arrives_on_a_tcp_socket() {
@@ -373,8 +394,8 @@ mod live_test {
         .await
     }
 
-    /// An authenticated libssh session through a fresh proxy, keepalives
-    /// every second, given up after one unanswered.
+    /// An authenticated session through a fresh proxy, with the given
+    /// backend, keepalives every second, given up after one unanswered.
     struct Live {
         session: Session,
         events: Receiver<SessionEvent>,
@@ -388,7 +409,7 @@ mod live_test {
         }
     }
 
-    fn connect(name: &str) -> Live {
+    fn connect(name: &str, backend: &str) -> Live {
         // RUST_LOG=wezterm_ssh=debug shows which check gave up.
         let _ = env_logger::try_init();
         let target = env("WEZTERM_LIVE_SFTP");
@@ -407,7 +428,7 @@ mod live_test {
             ("identityfile", env("WEZTERM_LIVE_SFTP_KEY")),
             ("identitiesonly", "yes".to_string()),
             ("userknownhostsfile", known_hosts.display().to_string()),
-            ("wezterm_ssh_backend", "libssh".to_string()),
+            ("wezterm_ssh_backend", backend.to_string()),
             ("serveraliveinterval", "1".to_string()),
             ("serveralivecountmax", "1".to_string()),
         ] {
@@ -453,10 +474,11 @@ mod live_test {
         }
     }
 
+    #[cfg(feature = "libssh-rs")]
     #[test]
     #[ignore = "needs a live sshd; see alive.rs"]
     fn live_a_server_that_stops_answering_ends_the_session() {
-        let live = connect("idle");
+        let live = connect("idle", "libssh");
         smol::block_on(async {
             // Six keepalives, each answered: the session stays.
             if let Some(SessionEvent::Error(err)) =
@@ -474,10 +496,22 @@ mod live_test {
 
     /// A request is waited on with no keepalives going out, so it has to be
     /// given up on by itself.
+    #[cfg(feature = "libssh-rs")]
     #[test]
     #[ignore = "needs a live sshd; see alive.rs"]
     fn live_a_request_the_server_never_answers_ends_the_session() {
-        let live = connect("request");
+        request_never_answered("libssh");
+    }
+
+    #[cfg(feature = "ssh2")]
+    #[test]
+    #[ignore = "needs a live sshd; see alive.rs"]
+    fn live_ssh2_a_request_the_server_never_answers_ends_the_session() {
+        request_never_answered("ssh2");
+    }
+
+    fn request_never_answered(backend: &str) {
+        let live = connect(&format!("request-{}", backend), backend);
         smol::block_on(async {
             live.frozen.store(true, Ordering::SeqCst);
             let frozen_at = Instant::now();
@@ -494,7 +528,7 @@ mod live_test {
             );
             let (exec, event) =
                 smol::future::zip(exec, next_event(&live.events, Duration::from_secs(10))).await;
-            expect_given_up(event, frozen_at, "request");
+            expect_given_up(event, frozen_at, &format!("request ({})", backend));
             assert!(
                 matches!(exec, Some(Err(_))),
                 "the request should have failed, not waited on"
