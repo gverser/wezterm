@@ -628,6 +628,7 @@ impl FormModal {
         let text_linear = lin(palette::TEXT);
         let text_color: InheritableColor = text_linear.into();
         let dim_text = lin(palette::TEXT_FAINT);
+        let hint_text = lin(palette::TEXT_HINT);
         let label_text = lin(palette::TEXT_MUTED);
         let well = lin(palette::PANEL);
         let white = lin(palette::WHITE);
@@ -647,7 +648,7 @@ impl FormModal {
         };
         let well_colors = |fg: LinearRgba| fill(well, fg);
         let button_colors = |bg: LinearRgba| fill(bg, white);
-        let placeholder_text: InheritableColor = dim_text.into();
+        let placeholder_text: InheritableColor = hint_text.into();
 
         let state = self.state.borrow();
         let mut targets = vec![];
@@ -885,7 +886,7 @@ impl FormModal {
             ElementColors {
                 border: BorderColor::default(),
                 bg: InheritableColor::Inherited,
-                text: dim_text.into(),
+                text: hint_text.into(),
             },
         )]));
 

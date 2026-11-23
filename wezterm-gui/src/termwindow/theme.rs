@@ -35,7 +35,14 @@ pub mod palette {
     pub const TEXT: u32 = 0xc9d1d9;
     pub const TEXT_STRONG: u32 = 0xe6edf3;
     pub const TEXT_MUTED: u32 = 0x8b949e;
+    /// What needn't be read as body text: disabled fields, stale numbers,
+    /// glyphs such as arrows and crosses.
     pub const TEXT_FAINT: u32 = 0x6e7681;
+    /// Text that is there to be read though it isn't content: placeholders,
+    /// hints, key hints. Held to 4.5:1 on RAISED, the lightest ground it is
+    /// drawn on. TEXT_FAINT gets only 3.1:1 there, and the grey that gets
+    /// 4.5 is as good as TEXT_MUTED's.
+    pub const TEXT_HINT: u32 = TEXT_MUTED;
     pub const MENU_TEXT: u32 = 0xd6dde5;
     pub const DANGER: u32 = 0xff7b72;
     pub const OK: u32 = 0x3fb950;
@@ -415,6 +422,14 @@ mod test {
             ),
             ("size on a selected row", size, palette::ROW_SELECTED),
             ("size on a row", idle_size, palette::PANEL),
+            // Search box and form key hints and the Feishu panel are on
+            // RAISED; sidebar hints and form placeholders on PANEL.
+            (
+                "hint on a raised ground",
+                palette::TEXT_HINT,
+                palette::RAISED,
+            ),
+            ("hint on the panel", palette::TEXT_HINT, palette::PANEL),
         ] {
             let ratio = contrast(fg, bg);
             assert!(ratio >= 4.5, "{}: {:.2}", what, ratio);

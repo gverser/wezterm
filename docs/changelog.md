@@ -218,6 +218,10 @@ As features stabilize some brief notes about them will accumulate here.
   like OpenSSH, ends the session once more than `ServerAliveCountMax` (3 by
   default) of them in a row have had nothing come back; sidebar SSH sessions
   notice within about two and a half minutes. [ssh](ssh.md)
+* Sidebar, forms and the Feishu panel: placeholders, hints and key hints were
+  drawn in a grey too faint to read comfortably (3.1–3.6:1); they now meet
+  4.5:1. Disabled fields, stale status numbers and small glyphs keep the
+  fainter grey.
 * ssh2 backend: listing a directory with a name that isn't UTF-8 (a server
   whose files are named in GBK, say) crashed the connection's session thread
   on Windows and dropped every tab on it. It now carries such names the way

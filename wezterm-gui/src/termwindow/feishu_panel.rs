@@ -222,7 +222,7 @@ impl FeishuPanel {
         }
 
         elements.push(row(String::new(), palette::TEXT));
-        elements.push(row("  [Esc] 关闭这个面板".to_string(), palette::TEXT_FAINT));
+        elements.push(row("  [Esc] 关闭这个面板".to_string(), palette::TEXT_HINT));
 
         let dimensions = term_window.dimensions;
         let size = term_window.terminal_size;

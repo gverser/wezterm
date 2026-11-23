@@ -505,7 +505,7 @@ impl crate::TermWindow {
                 format!("{}{composing}_", self.sidebar.search),
                 palette::TEXT_STRONG,
             ),
-            (false, true) => ("搜索会话".to_string(), palette::TEXT_FAINT),
+            (false, true) => ("搜索会话".to_string(), palette::TEXT_HINT),
             (false, false) => (self.sidebar.search.clone(), palette::TEXT),
         };
 
@@ -866,7 +866,7 @@ impl crate::TermWindow {
                     bottom: Dimension::Pixels(0.),
                 })
                 .min_width(Some(Dimension::Pixels(room)))
-                .colors(fill(lin(palette::PANEL), lin(palette::TEXT_FAINT)))
+                .colors(fill(lin(palette::PANEL), lin(palette::TEXT_HINT)))
         };
         let mut lines = self.files_wrap(text, room);
         if lines.len() == 1 {
