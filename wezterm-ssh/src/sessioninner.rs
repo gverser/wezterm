@@ -524,7 +524,7 @@ impl SessionInner {
                 },
                 pollfd {
                     fd: sess.as_socket_descriptor(),
-                    events: sess.get_poll_flags(),
+                    events: session_poll_events(sess.get_poll_flags(), !self.channels.is_empty()),
                     revents: 0,
                 },
             ];
@@ -1219,6 +1219,19 @@ fn next_backoff(backoff: Duration) -> Duration {
     backoff.saturating_add(backoff)
 }
 
+/// What the request loop waits for on the session's socket, given what the
+/// library wants (`flags`). Only channel reads in `tick_io` take in what
+/// arrives there; with no channel nothing would, and a socket left readable
+/// (by a keepalive's reply, say) would wake poll at once, again and again,
+/// until the next keepalive took it in: a busy loop.
+fn session_poll_events(flags: i16, has_channels: bool) -> i16 {
+    if has_channels {
+        flags
+    } else {
+        flags & !POLLIN
+    }
+}
+
 fn read_into_buf<R: Read>(r: &mut R, buf: &mut VecDeque<u8>) -> std::io::Result<()> {
     let current_len = buf.len();
     buf.resize(buf.capacity(), 0);
@@ -1431,5 +1444,16 @@ mod test {
             backoff = next_backoff(backoff);
         }
         assert_eq!(backoff, Duration::MAX);
+    }
+
+    #[test]
+    fn with_no_channel_to_read_it_the_session_socket_is_not_waited_on_for_input() {
+        assert_eq!(
+            session_poll_events(POLLIN | POLLOUT, true),
+            POLLIN | POLLOUT
+        );
+        assert_eq!(session_poll_events(POLLIN, true), POLLIN);
+        assert_eq!(session_poll_events(POLLIN | POLLOUT, false), POLLOUT);
+        assert_eq!(session_poll_events(POLLIN, false), 0);
     }
 }
